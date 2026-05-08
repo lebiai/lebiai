@@ -1,0 +1,76 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hermes-core",
+    "crates/hermes-llm",
+    "crates/hermes-mcp",
+    "crates/hermes-store",
+    "crates/hermes-reflect",
+    "crates/hermes-cli",
+    "crates/hermes-tui",
+    "crates/hermes-gui", "crates/hermes-skills", "crates/hermes-memory", "crates/hermes-tools",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+license = "MIT OR Apache-2.0"
+authors = ["small-rust-hermes contributors"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+futures-util = "0.3"
+
+# Errors / logging
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# HTTP
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+
+# Time / IDs
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Filesystem helpers
+walkdir = "2"
+gray_matter = "0.3"
+dirs = "5"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# TUI
+ratatui = "0.30"
+crossterm = "0.29"
+
+# MCP
+rmcp = { version = "1.6", default-features = false, features = ["client", "macros", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
+
+# Internal
+hermes-core = { path = "crates/hermes-core" }
+hermes-llm = { path = "crates/hermes-llm" }
+hermes-mcp = { path = "crates/hermes-mcp" }
+hermes-store = { path = "crates/hermes-store" }
+hermes-skills = { path = "crates/hermes-skills" }
+hermes-memory = { path = "crates/hermes-memory" }
+hermes-tools = { path = "crates/hermes-tools" }
+hermes-reflect = { path = "crates/hermes-reflect" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
