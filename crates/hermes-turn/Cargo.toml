@@ -1,0 +1,21 @@
+[package]
+name = "hermes-turn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared agent turn execution loop for all Hermes frontends"
+
+[dependencies]
+hermes-core = { workspace = true }
+hermes-reflect = { workspace = true }
+hermes-skills = { workspace = true }
+hermes-memory = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

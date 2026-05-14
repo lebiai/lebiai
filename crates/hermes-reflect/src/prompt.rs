@@ -71,6 +71,29 @@ pub fn system_prompt() -> String {
 pub fn user_prompt(session: &Session, skills: &[LoadedSkill], memories: &[LoadedMemory]) -> String {
     let mut buf = String::new();
 
+    // Feed back recent reflection outcomes so the LLM learns from accept/reject patterns.
+    if let Ok(outcomes) = crate::log::recent_outcomes(10) {
+        if !outcomes.is_empty() {
+            buf.push_str("=== Recent reflection outcomes (learn from these) ===\n");
+            for e in &outcomes {
+                let action = match e.action {
+                    crate::log::ActionTaken::Accept => "ACCEPTED",
+                    crate::log::ActionTaken::Reject => "REJECTED",
+                    crate::log::ActionTaken::Defer => "DEFERRED",
+                    _ => "OTHER",
+                };
+                let kind = match e.kind {
+                    crate::log::CandidateKind::Skill => "skill",
+                    crate::log::CandidateKind::Memory => "memory",
+                    crate::log::CandidateKind::ConflictMemory => "conflict-memory",
+                    crate::log::CandidateKind::OrphanConflict => "orphan-conflict",
+                };
+                buf.push_str(&format!("- [{action}] {kind}: \"{}\"\n", e.label));
+            }
+            buf.push('\n');
+        }
+    }
+
     buf.push_str("=== Session transcript ===\n");
     if session.messages.is_empty() {
         buf.push_str("(empty)\n");

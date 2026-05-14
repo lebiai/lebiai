@@ -139,6 +139,13 @@ pub fn stats(last_n: Option<usize>) -> Result<Stats> {
     Ok(s)
 }
 
+/// Return the `n` most recent log entries (newest last).
+pub fn recent_outcomes(n: usize) -> Result<Vec<ReflectLogEntry>> {
+    let mut all = read_all()?;
+    let start = all.len().saturating_sub(n);
+    Ok(all.drain(start..).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

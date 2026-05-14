@@ -561,9 +561,8 @@ fn spawn_turn(
     writer: &std::sync::Mutex<SessionWriter>,
     user_input: String,
     tx: mpsc::UnboundedSender<TurnMsg>,
-    mut cancel: tokio::sync::oneshot::Receiver<()>,
+    cancel: tokio::sync::oneshot::Receiver<()>,
 ) {
-    // Build per-turn system prompt from the snapshot in `app`.
     let sources = ContextSources {
         base: None,
         pinned: &app.pinned_memories,
@@ -572,150 +571,77 @@ fn spawn_turn(
     };
     let turn_system = sources.build_turn_system(&user_input);
 
-    // Push user message into session + persist.
     let user_msg = session.push_user(&user_input).clone();
     if let Ok(mut w) = writer.lock() {
         let _ = w.append(&SessionEvent::Message(user_msg));
     }
 
-    // Clone the vec of messages out of session for the async task. The
-    // session + writer stay on the UI side; the async task owns `messages`
-    // and the writer persists when the task flushes via an explicit event
-    // (not implemented yet — post-MVP).
-    let mut messages = session.messages.clone();
+    let messages = session.messages.clone();
+    let skills = app.skills.clone();
+    let memories = app.active_memories.clone();
 
     tokio::spawn(async move {
-        let sys_opt = if turn_system.is_empty() {
-            None
-        } else {
-            Some(turn_system)
+        let config = hermes_turn::TurnConfig {
+            model,
+            system: if turn_system.is_empty() { None } else { Some(turn_system) },
+            max_tokens,
+            max_tool_rounds: MAX_TOOL_ROUNDS,
+            enable_micro_reflect: false,
+            turns_since_last_reflect: 0,
         };
-        for _round in 0..MAX_TOOL_ROUNDS {
-            let req = CompletionRequest {
-                model: model.clone(),
-                system: sys_opt.clone(),
-                messages: messages.clone(),
-                tools: tools.clone(),
-                max_tokens,
-                temperature: None,
-                enable_caching: provider.capabilities().prompt_caching,
-            };
-            let mut stream = match provider.stream(req).await {
-                Ok(s) => s,
-                Err(e) => {
-                    let _ = tx.send(TurnMsg::Error(format!("stream start: {e}")));
-                    let _ = tx.send(TurnMsg::Done);
-                    return;
+
+        let tx2 = tx.clone();
+        let on_event = move |event: hermes_turn::TurnEvent| {
+            match event {
+                hermes_turn::TurnEvent::TextDelta(text) => {
+                    let _ = tx2.send(TurnMsg::Text(text));
                 }
-            };
+                hermes_turn::TurnEvent::ThinkingDelta(_) => {
+                    let _ = tx2.send(TurnMsg::Thinking);
+                }
+                hermes_turn::TurnEvent::ToolUseStart { name, .. } => {
+                    let _ = tx2.send(TurnMsg::ToolStart(name));
+                }
+                hermes_turn::TurnEvent::ToolUseResult { .. } => {}
+                hermes_turn::TurnEvent::Usage { .. } => {}
+                hermes_turn::TurnEvent::MicroReflection(_) => {}
+                hermes_turn::TurnEvent::Error(msg) => {
+                    let _ = tx2.send(TurnMsg::Error(msg));
+                }
+                hermes_turn::TurnEvent::Done => {}
+            }
+        };
 
-            let mut final_resp: Option<hermes_core::CompletionResponse> = None;
-            let mut text_started = false;
+        let result = hermes_turn::run_turn(
+            provider.as_ref(),
+            host.as_ref(),
+            &tools,
+            &messages,
+            &config,
+            &skills,
+            &memories,
+            on_event,
+            cancel,
+        )
+        .await;
 
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = &mut cancel => {
-                        let _ = tx.send(TurnMsg::Error("cancelled".into()));
-                        let _ = tx.send(TurnMsg::Done);
-                        return;
-                    }
-                    ev = stream.next() => {
-                        let Some(ev) = ev else { break };
-                        match ev {
-                            Ok(StreamEvent::TextDelta { text, .. }) => {
-                                text_started = true;
-                                let _ = tx.send(TurnMsg::Text(text));
-                            }
-                            Ok(StreamEvent::ThinkingDelta { .. }) => {
-                                if !text_started {
-                                    let _ = tx.send(TurnMsg::Thinking);
-                                }
-                            }
-                            Ok(StreamEvent::ToolUseStart { name, .. }) => {
-                                let _ = tx.send(TurnMsg::ToolStart(name));
-                            }
-                            Ok(StreamEvent::Final(resp)) => {
-                                final_resp = Some(resp);
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                let _ = tx.send(TurnMsg::Error(format!("stream: {e}")));
-                                let _ = tx.send(TurnMsg::Done);
-                                return;
-                            }
-                        }
+        match result {
+            Ok(output) => {
+                for msg in &output.new_messages {
+                    if msg.role == Role::Assistant {
+                        let resp = hermes_core::CompletionResponse {
+                            content: msg.content.clone(),
+                            stop_reason: StopReason::EndTurn,
+                            usage: output.usage,
+                        };
+                        let _ = tx.send(TurnMsg::AssistantFinal(resp));
+                    } else {
+                        let _ = tx.send(TurnMsg::ToolResults(msg.clone()));
                     }
                 }
             }
-
-            let Some(resp) = final_resp else {
-                let _ = tx.send(TurnMsg::Error("stream ended without Final".into()));
-                let _ = tx.send(TurnMsg::Done);
-                return;
-            };
-
-            // Synthesise assistant message into messages so the next
-            // round sees it. We don't have the writer Mutex here; the UI
-            // loop handles tokens via AssistantFinal and persistence of
-            // messages happens post-hoc via a batch flush. Keep simple:
-            // persist via tx is out of scope — instead, forward Final to
-            // the UI loop which updates tokens; we maintain the `messages`
-            // locally for the tool-round.
-            let assistant_msg = Message {
-                role: Role::Assistant,
-                content: resp.content.clone(),
-            };
-            messages.push(assistant_msg);
-
-            let _ = tx.send(TurnMsg::AssistantFinal(resp.clone()));
-
-            if resp.stop_reason != StopReason::ToolUse {
-                let _ = tx.send(TurnMsg::Done);
-                return;
-            }
-
-            // Execute tool_use blocks, append tool_result message, loop.
-            let tool_uses: Vec<(String, String, serde_json::Value)> = resp
-                .content
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::ToolUse { id, name, input } => {
-                        Some((id.clone(), name.clone(), input.clone()))
-                    }
-                    _ => None,
-                })
-                .collect();
-            if tool_uses.is_empty() {
-                let _ = tx.send(TurnMsg::Done);
-                return;
-            }
-            let mut results = Vec::with_capacity(tool_uses.len());
-            for (id, name, input) in tool_uses {
-                let _ = tx.send(TurnMsg::ToolStart(format!("{name} running")));
-                let outcome = match host.call(&name, input).await {
-                    Ok(o) => o,
-                    Err(e) => hermes_core::ToolCallOutcome {
-                        content: format!("tool call failed: {e}"),
-                        is_error: true,
-                    },
-                };
-                results.push(ContentBlock::ToolResult {
-                    tool_use_id: id,
-                    content: outcome.content,
-                    is_error: outcome.is_error,
-                });
-            }
-            messages.push(Message {
-                role: Role::User,
-                content: results.clone(),
-            });
-            let _ = tx.send(TurnMsg::ToolResults(Message {
-                role: Role::User,
-                content: results,
-            }));
+            Err(_) => {}
         }
-        let _ = tx.send(TurnMsg::Error("max tool rounds reached".into()));
         let _ = tx.send(TurnMsg::Done);
     });
 }

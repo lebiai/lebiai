@@ -19,6 +19,7 @@ hermes-store = { workspace = true }
 hermes-skills = { workspace = true }
 hermes-memory = { workspace = true }
 hermes-reflect = { workspace = true }
+hermes-turn = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

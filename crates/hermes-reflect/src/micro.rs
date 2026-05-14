@@ -7,7 +7,7 @@
 //! never blocks the user's next input.
 
 use hermes_core::{
-    CompletionRequest, ContentBlock, LlmProvider, Message, Role, ToolSpec,
+    CompletionRequest, ContentBlock, LlmProvider, Message, Role,
 };
 use hermes_memory::LoadedMemory;
 use hermes_skills::LoadedSkill;
@@ -42,7 +42,7 @@ pub fn should_micro_reflect(
                 }
                 ContentBlock::ToolUse { name, .. } => {
                     tool_call_count += 1;
-                    if matches!(name.as_str(), "write" | "edit" | "memory_save") {
+                    if matches!(name.as_str(), "write" | "edit") {
                         has_write_or_edit = true;
                     }
                 }

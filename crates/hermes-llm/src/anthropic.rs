@@ -310,7 +310,6 @@ fn handle_sse_line(
                 tracing::warn!(error=%e, line=%payload, "skipping unparseable SSE data");
             }
         }
-        return;
     }
     // Other prefixes (`id:`, `retry:`, `:` comments) — ignore.
 }

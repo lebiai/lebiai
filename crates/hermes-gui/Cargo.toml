@@ -5,14 +5,36 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "small-rust-hermes GUI binary (placeholder, deferred)"
+description = "small-rust-hermes GUI binary (Tauri 2.x desktop app)"
 
 [[bin]]
 name = "hermes-gui"
 path = "src/main.rs"
 
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
 [dependencies]
+hermes-core = { workspace = true }
+hermes-llm = { workspace = true }
+hermes-mcp = { workspace = true }
+hermes-store = { workspace = true }
+hermes-skills = { workspace = true }
+hermes-memory = { workspace = true }
+hermes-reflect = { workspace = true }
+hermes-tools = { workspace = true }
+hermes-turn = { workspace = true }
+tauri = { version = "2", features = [] }
+tokio = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

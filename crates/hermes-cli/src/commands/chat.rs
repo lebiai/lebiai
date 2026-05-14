@@ -41,7 +41,10 @@ pub async fn run(
     let provider = build_active_provider(&cfg)?;
 
     let workspace_root = cfg.workspace.root.clone();
-    let host = load_tool_host(&workspace_root).await?;
+    let memory_store_arc: Arc<dyn MemoryStore> = Arc::new(
+        FsMemoryStore::standard().map_err(|e| anyhow::anyhow!("memory store: {e}"))?,
+    );
+    let host = load_tool_host(&workspace_root, Some(memory_store_arc.clone())).await?;
     let tools = host
         .list_tools()
         .await
@@ -56,13 +59,11 @@ pub async fn run(
     // ---- skill / memory snapshot for this session ----
     let skill_store = FsSkillStore::standard()
         .map_err(|e| anyhow::anyhow!("skill store: {e}"))?;
-    let memory_store = FsMemoryStore::standard()
-        .map_err(|e| anyhow::anyhow!("memory store: {e}"))?;
 
     let all_skills: Vec<LoadedSkill> = skill_store
         .list()
         .map_err(|e| anyhow::anyhow!("listing skills: {e}"))?;
-    let active_memories: Vec<LoadedMemory> = memory_store
+    let active_memories: Vec<LoadedMemory> = memory_store_arc
         .list_active()
         .map_err(|e| anyhow::anyhow!("listing memories: {e}"))?;
     let pinned_memories: Vec<LoadedMemory> = active_memories
@@ -70,6 +71,10 @@ pub async fn run(
         .filter(|m| m.frontmatter.pinned)
         .cloned()
         .collect();
+
+    // Load skill effectiveness data for deprioritizing low-use skills.
+    let effectiveness: std::collections::HashMap<String, hermes_skills::SkillEffectiveness> =
+        hermes_skills::load_effectiveness().unwrap_or_default();
 
     // ---- session: resume or fresh ----
     let (mut session, mut writer, session_path, resumed) = match resume_path {
@@ -114,11 +119,14 @@ pub async fn run(
         pinned_memories.len()
     );
     eprintln!("skills:   {} loaded", all_skills.len());
-    eprintln!("commands: /exit /quit /clear /tokens /tools /memory /skills /context /session /help");
+    eprintln!("commands: /exit /quit /clear /tokens /tools /memory /skills /context /session /remember /forget /reflect /help");
     if let Some(warn) = super::reflect_stats::low_acceptance_warning(50) {
         eprintln!("{warn}");
     }
     eprintln!();
+
+    // Resurface deferred candidates from previous sessions.
+    present_deferred_candidates(&*memory_store_arc, &skill_store, &session);
 
     let mut line_editor = ChatLineEditor::new()?;
     let mut pending_candidates: Vec<hermes_reflect::ReflectionOutput> = Vec::new();
@@ -133,7 +141,7 @@ pub async fn run(
             }
             eprintln!();
             eprintln!("\x1b[90m💡 micro-reflection found candidates:\x1b[0m");
-            present_micro_candidates(&output, &memory_store, &skill_store, &session);
+            present_micro_candidates(&output, &*memory_store_arc, &skill_store, &session);
         }
 
         let input = match line_editor.readline("> ").await {
@@ -163,6 +171,8 @@ pub async fn run(
                 &all_skills,
                 &active_memories,
                 system.as_deref(),
+                &*memory_store_arc,
+                &skill_store,
             ) {
                 break;
             }
@@ -176,8 +186,27 @@ pub async fn run(
             pinned: &pinned_memories,
             active: &active_memories,
             all_skills: &all_skills,
+            effectiveness: Some(&effectiveness),
         };
         let turn_system = sources.build_turn_system(trimmed);
+
+        // Track which skills were triggered for effectiveness stats.
+        let matched_skill_names: Vec<String> = hermes_skills::match_for_query_with_effectiveness(
+            &all_skills,
+            trimmed,
+            3,
+            Some(&effectiveness),
+        )
+        .iter()
+        .map(|s| s.frontmatter.name.clone())
+        .collect();
+        for name in &matched_skill_names {
+            hermes_skills::record_skill_stat(hermes_skills::SkillStatEntry {
+                at: chrono::Utc::now(),
+                skill_name: name.clone(),
+                event: hermes_skills::SkillEvent::Matched,
+            });
+        }
 
         let turn_msg_index = session.messages.len(); // before pushing user msg
         let user_msg = session.push_user(trimmed).clone();
@@ -221,45 +250,63 @@ pub async fn run(
             &workspace_root,
             &mut session,
             &mut writer,
+            !no_reflect,
+            turns_since_last_reflect,
+            &all_skills,
+            &active_memories,
         )
         .await
         {
             eprintln!("turn error: {e:#}");
         }
-        println!();
 
-        // --- Per-turn micro-reflection (background) ---
-        turns_since_last_reflect += 1;
-        let turn_msgs = &session.messages[turn_msg_index..];
-        if !no_reflect
-            && hermes_reflect::should_micro_reflect(turn_msgs, turns_since_last_reflect)
-        {
-            turns_since_last_reflect = 0;
-            micro_reflected_this_session = true;
-            let turn_msgs_owned: Vec<hermes_core::Message> = turn_msgs.to_vec();
-            let skills_snap = all_skills.clone();
-            let mems_snap = active_memories.clone();
-            let prov = provider.clone();
-            // Run synchronously (it's fast ~1s) to keep candidates ready
-            // before the next prompt. If we want true async, use spawn +
-            // channel, but for CLI the blocking is acceptable.
-            match hermes_reflect::micro_reflect(
-                prov.as_ref(),
-                &turn_msgs_owned,
-                &skills_snap,
-                &mems_snap,
-            )
-            .await
-            {
-                Ok(output) => {
-                    if !output.is_empty() {
-                        pending_candidates.push(output);
+        // Record SkillEvent::Used for matched skills whose body content
+        // appears in the assistant's latest response.
+        if !matched_skill_names.is_empty() {
+            let assistant_text: String = session
+                .messages
+                .iter()
+                .rev()
+                .take_while(|m| matches!(m.role, Role::Assistant))
+                .flat_map(|m| {
+                    m.content.iter().filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                })
+                .collect::<Vec<&str>>()
+                .into_iter()
+                .rev()
+                .collect::<String>();
+            for name in &matched_skill_names {
+                if let Some(sk) = all_skills.iter().find(|s| &s.frontmatter.name == name) {
+                    // Check if any non-trivial fragment of the skill body appears
+                    // in the assistant's response.
+                    let body_fragments = sk.body.split_whitespace().collect::<Vec<_>>();
+                    let fragment_len = body_fragments.len().min(5);
+                    if fragment_len >= 3 {
+                        let probe: String = body_fragments[..fragment_len].join(" ");
+                        if assistant_text.contains(&probe) {
+                            hermes_skills::record_skill_stat(
+                                hermes_skills::SkillStatEntry {
+                                    at: chrono::Utc::now(),
+                                    skill_name: name.clone(),
+                                    event: hermes_skills::SkillEvent::Used,
+                                },
+                            );
+                        }
                     }
                 }
-                Err(e) => {
-                    tracing::debug!(error=%e, "micro-reflection failed");
-                }
             }
+        }
+        println!();
+
+        // --- Per-turn micro-reflection is now handled inside run_one_turn ---
+        turns_since_last_reflect += 1;
+        let turn_msgs = &session.messages[turn_msg_index..];
+        if hermes_reflect::should_micro_reflect(turn_msgs, turns_since_last_reflect) {
+            turns_since_last_reflect = 0;
+            micro_reflected_this_session = true;
         }
     }
 
@@ -303,165 +350,91 @@ async fn run_one_turn(
     workspace: &std::path::Path,
     session: &mut Session,
     writer: &mut SessionWriter,
+    enable_reflect: bool,
+    turns_since_last_reflect: usize,
+    skills: &[hermes_skills::LoadedSkill],
+    memories: &[hermes_memory::LoadedMemory],
 ) -> Result<()> {
-    let system = if turn_system.is_empty() {
-        None
-    } else {
-        Some(turn_system.to_string())
+    use hermes_turn::{TurnConfig, TurnEvent};
+    use std::io::Write as _;
+
+    let config = TurnConfig {
+        model: model.to_string(),
+        system: if turn_system.is_empty() { None } else { Some(turn_system.to_string()) },
+        max_tokens,
+        max_tool_rounds: MAX_TOOL_ROUNDS,
+        enable_micro_reflect: enable_reflect,
+        turns_since_last_reflect,
     };
 
-    for round in 0..MAX_TOOL_ROUNDS {
-        let req = CompletionRequest {
-            model: model.to_string(),
-            system: system.clone(),
-            messages: session.messages.clone(),
-            tools: tools.to_vec(),
-            max_tokens,
-            temperature: None,
-            enable_caching: provider.capabilities().prompt_caching,
-        };
+    let history = session.messages.clone();
+    let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let mut stream = provider
-            .stream(req)
-            .await
-            .map_err(|e| anyhow::anyhow!("provider.stream: {e}"))?;
+    let text_started = std::sync::atomic::AtomicBool::new(false);
+    let thinking_started = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering::Relaxed;
 
-        // We render text deltas live; thinking deltas are summarised as a
-        // status line so users see the model is working without flooding
-        // their terminal with chain-of-thought.
-        let mut text_started = false;
-        let mut thinking_started = false;
-        let mut thinking_preview = String::new();
-        let mut final_resp: Option<hermes_core::CompletionResponse> = None;
-        let mut stream_err: Option<anyhow::Error> = None;
-
-        while let Some(event) = stream.next().await {
-            let event = match event {
-                Ok(e) => e,
-                Err(e) => {
-                    stream_err = Some(anyhow::anyhow!("stream: {e}"));
-                    break;
+    let on_event = |event: TurnEvent| {
+        match event {
+            TurnEvent::TextDelta(text) => {
+                if thinking_started.load(Relaxed) {
+                    eprint!("\r\x1b[K");
                 }
-            };
-            match event {
-                StreamEvent::TextDelta { text, .. } => {
-                    if thinking_started {
-                        // Clear the thinking line
-                        eprint!("\r\x1b[K");
-                        thinking_started = false;
-                    }
-                    if !text_started {
-                        text_started = true;
-                    }
-                    print!("{text}");
-                    std::io::stdout().flush().ok();
-                }
-                StreamEvent::ThinkingDelta { text, .. } => {
-                    if !text_started {
-                        thinking_preview.push_str(&text);
-                        // Show a rolling preview of thinking (last 60 chars)
-                        let preview: String = thinking_preview
-                            .chars()
-                            .rev()
-                            .take(60)
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                            .rev()
-                            .collect();
-                        let preview = preview.replace('\n', " ");
-                        eprint!("\r\x1b[K\x1b[90m  💭 {preview}\x1b[0m");
-                        std::io::stderr().flush().ok();
-                        thinking_started = true;
-                    }
-                }
-                StreamEvent::ToolUseStart { name, .. } => {
-                    if thinking_started {
-                        eprint!("\r\x1b[K");
-                        thinking_started = false;
-                    }
-                    // Don't print here — we'll show the full info at
-                    // execution time when we have the complete input args.
-                    let _ = name;
-                }
-                StreamEvent::Final(resp) => {
-                    final_resp = Some(resp);
-                }
-                _ => {}
+                text_started.store(true, Relaxed);
+                thinking_started.store(false, Relaxed);
+                print!("{text}");
+                std::io::stdout().flush().ok();
             }
-        }
-        if text_started {
-            println!();
-        } else if thinking_started {
-            eprint!("\r\x1b[K");
-        }
-
-        if let Some(e) = stream_err {
-            return Err(e);
-        }
-        let resp = final_resp
-            .ok_or_else(|| anyhow::anyhow!("provider stream ended without Final event"))?;
-
-        let assistant_msg = session.push_assistant(resp.content.clone()).clone();
-        if let Err(e) = writer.append(&SessionEvent::Message(assistant_msg)) {
-            tracing::warn!(error = %e, "persist assistant");
-        }
-        if let Err(e) = writer.append(&SessionEvent::Usage(resp.usage)) {
-            tracing::warn!(error = %e, "persist usage");
-        }
-        session.record_usage(resp.usage);
-
-        if resp.stop_reason != StopReason::ToolUse {
-            return Ok(());
-        }
-
-        let tool_uses: Vec<(String, String, serde_json::Value)> = resp
-            .content
-            .iter()
-            .filter_map(|b| match b {
-                ContentBlock::ToolUse { id, name, input } => {
-                    Some((id.clone(), name.clone(), input.clone()))
+            TurnEvent::ThinkingDelta(text) => {
+                if !text_started.load(Relaxed) {
+                    let preview: String = text.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
+                    let preview = preview.replace('\n', " ");
+                    eprint!("\r\x1b[K\x1b[90m  💭 {preview}\x1b[0m");
+                    std::io::stderr().flush().ok();
+                    thinking_started.store(true, Relaxed);
                 }
-                _ => None,
-            })
-            .collect();
-        if tool_uses.is_empty() {
-            tracing::warn!("stop_reason=tool_use but no tool_use blocks; ending turn");
-            return Ok(());
-        }
-
-        let mut tool_results = Vec::with_capacity(tool_uses.len());
-        for (id, name, input) in tool_uses {
-            eprintln!("\x1b[33m  {}\x1b[0m", friendly_tool_result(&name, &input, workspace));
-            let outcome = match host.call(&name, input.clone()).await {
-                Ok(o) => o,
-                Err(e) => {
-                    eprintln!("\x1b[31m  ✗ {name} failed: {e}\x1b[0m");
-                    hermes_core::ToolCallOutcome {
-                        content: format!("tool call failed: {e}"),
-                        is_error: true,
-                    }
+            }
+            TurnEvent::ToolUseStart { name, .. } => {
+                if thinking_started.load(Relaxed) {
+                    eprint!("\r\x1b[K");
+                    thinking_started.store(false, Relaxed);
                 }
-            };
-            tool_results.push(ContentBlock::ToolResult {
-                tool_use_id: id,
-                content: outcome.content,
-                is_error: outcome.is_error,
-            });
+                eprintln!("\x1b[33m  🔧 {name}\x1b[0m");
+            }
+            TurnEvent::ToolUseResult { content, is_error, .. } => {
+                if is_error {
+                    eprintln!("\x1b[31m  ✗ {}\x1b[0m", content.lines().next().unwrap_or(""));
+                }
+            }
+            TurnEvent::Usage { .. } => {}
+            TurnEvent::MicroReflection(output) => {
+                eprintln!("\x1b[35m  ✨ reflection: {}\x1b[0m", output.summary);
+            }
+            TurnEvent::Error(msg) => {
+                eprintln!("\x1b[31m  error: {msg}\x1b[0m");
+            }
+            TurnEvent::Done => {}
         }
+    };
 
-        let result_msg = Message {
-            role: Role::User,
-            content: tool_results,
-        };
-        session.messages.push(result_msg.clone());
-        if let Err(e) = writer.append(&SessionEvent::Message(result_msg)) {
-            tracing::warn!(error = %e, "persist tool_result");
+    let output = hermes_turn::run_turn(
+        provider, host, tools, &history, &config, skills, memories, on_event, cancel_rx,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Apply new messages to session + persist
+    for msg in &output.new_messages {
+        session.messages.push(msg.clone());
+        if let Err(e) = writer.append(&SessionEvent::Message(msg.clone())) {
+            tracing::warn!(error=%e, "persist message");
         }
-
-        tracing::debug!(round, "completed tool round");
+    }
+    session.record_usage(output.usage);
+    if let Err(e) = writer.append(&SessionEvent::Usage(output.usage)) {
+        tracing::warn!(error=%e, "persist usage");
     }
 
-    eprintln!("(max tool rounds reached — stopping)");
     Ok(())
 }
 
@@ -622,6 +595,8 @@ fn handle_command(
     skills: &[LoadedSkill],
     active_memories: &[LoadedMemory],
     base_system: Option<&str>,
+    memory_store: &dyn MemoryStore,
+    skill_store: &FsSkillStore,
 ) -> bool {
     match cmd.trim() {
         "exit" | "quit" => return false,
@@ -685,6 +660,7 @@ fn handle_command(
                 pinned: &pinned,
                 active: active_memories,
                 all_skills: skills,
+                effectiveness: None,
             };
             let s = sources.build_session_system();
             if s.is_empty() {
@@ -699,6 +675,81 @@ fn handle_command(
             eprintln!("path:     {}", path.display());
             eprintln!("messages: {}", session.messages.len());
         }
+        s if s.starts_with("remember ") => {
+            let text = s.strip_prefix("remember ").unwrap().trim();
+            if text.is_empty() {
+                eprintln!("usage: /remember <text>");
+            } else {
+                use hermes_memory::{Confidence, MemoryFrontmatter, Scope as MemScope, Source as MemSource};
+                let mut fm = MemoryFrontmatter::new(MemSource::User, Confidence::High, vec![]);
+                fm.pinned = true;
+                match memory_store.put(MemScope::User, fm, text) {
+                    Ok(p) => eprintln!("\x1b[32m✓\x1b[0m remembered: {} ({})", text.chars().take(60).collect::<String>(), p.display()),
+                    Err(e) => eprintln!("\x1b[31m✗\x1b[0m {e}"),
+                }
+            }
+        }
+        s if s.starts_with("forget ") => {
+            let id_prefix = s.strip_prefix("forget ").unwrap().trim();
+            if id_prefix.is_empty() {
+                eprintln!("usage: /forget <id-prefix>");
+            } else {
+                let matches: Vec<_> = active_memories
+                    .iter()
+                    .filter(|m| m.frontmatter.id.starts_with(id_prefix))
+                    .collect();
+                match matches.len() {
+                    0 => eprintln!("no memory matching \"{id_prefix}\""),
+                    1 => {
+                        let m = matches[0];
+                        eprint!("delete \"{}\"? [y/N] ▸ ", m.body.lines().next().unwrap_or(""));
+                        std::io::stderr().flush().ok();
+                        let mut input = String::new();
+                        if std::io::stdin().read_line(&mut input).is_ok() && input.trim() == "y" {
+                            match memory_store.delete(m.scope, &m.frontmatter.id) {
+                                Ok(true) => eprintln!("\x1b[32m✓\x1b[0m forgotten"),
+                                Ok(false) => eprintln!("\x1b[31m✗\x1b[0m not found on disk"),
+                                Err(e) => eprintln!("\x1b[31m✗\x1b[0m {e}"),
+                            }
+                        } else {
+                            eprintln!("(cancelled)");
+                        }
+                    }
+                    n => {
+                        eprintln!("{n} memories match \"{id_prefix}\":");
+                        for m in &matches {
+                            eprintln!("  {} — {}", m.frontmatter.id, m.body.lines().next().unwrap_or(""));
+                        }
+                        eprintln!("use a longer prefix to disambiguate");
+                    }
+                }
+            }
+        }
+        "reflect" => {
+            eprintln!("(on-demand reflection is not yet wired — use /remember to save a memory now)");
+        }
+        s if s.starts_with("skill add") => {
+            let rest = s.strip_prefix("skill add").unwrap().trim();
+            handle_skill_add(rest, skill_store);
+        }
+        s if s.starts_with("skill edit ") => {
+            let name = s.strip_prefix("skill edit ").unwrap().trim();
+            handle_skill_edit(name, skill_store);
+        }
+        s if s.starts_with("skill show ") => {
+            let name = s.strip_prefix("skill show ").unwrap().trim();
+            handle_skill_show(name, skill_store);
+        }
+        "skill" | "skills" => {
+            // /skill alone is same as /skills
+            if skills.is_empty() {
+                eprintln!("(no skills loaded)");
+            } else {
+                for s in skills {
+                    eprintln!("  {}: {}", s.frontmatter.name, s.frontmatter.description);
+                }
+            }
+        }
         "help" => {
             eprintln!("commands:");
             eprintln!("  /exit, /quit   — leave the chat");
@@ -707,8 +758,14 @@ fn handle_command(
             eprintln!("  /tools         — list tools loaded from MCP servers");
             eprintln!("  /memory        — list active memories with ids");
             eprintln!("  /skills        — list available skills");
+            eprintln!("  /skill add     — interactively add a new skill");
+            eprintln!("  /skill edit <name> — edit an existing skill in $EDITOR");
+            eprintln!("  /skill show <name> — display full skill body");
             eprintln!("  /context       — show the assembled session-level system prompt");
             eprintln!("  /session       — show transcript path and turn count");
+            eprintln!("  /remember <text> — save a memory (pinned, high confidence)");
+            eprintln!("  /forget <id>   — delete a memory by id prefix (with confirmation)");
+            eprintln!("  /reflect       — trigger on-demand reflection");
             eprintln!("  /help          — this list");
         }
         other => eprintln!("unknown command: /{other}  (try /help)"),
@@ -716,10 +773,181 @@ fn handle_command(
     true
 }
 
+fn handle_skill_add(rest: &str, skill_store: &FsSkillStore) {
+    use hermes_skills::{Scope as SkScope, SkillFrontmatter, SkillStore as _};
+
+    // Parse: /skill add <name> <description> or just /skill add for interactive
+    let (name, description) = if rest.is_empty() {
+        // Interactive mode
+        eprint!("skill name: ");
+        std::io::stderr().flush().ok();
+        let mut name = String::new();
+        if std::io::stdin().read_line(&mut name).is_err() || name.trim().is_empty() {
+            eprintln!("(cancelled)");
+            return;
+        }
+        let name = name.trim().to_string();
+
+        eprint!("description: ");
+        std::io::stderr().flush().ok();
+        let mut desc = String::new();
+        if std::io::stdin().read_line(&mut desc).is_err() {
+            eprintln!("(cancelled)");
+            return;
+        }
+        (name, desc.trim().to_string())
+    } else {
+        // Inline: /skill add <name> <description>
+        let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
+        if parts.len() < 2 || parts[1].trim().is_empty() {
+            eprintln!("usage: /skill add <name> <description>");
+            return;
+        }
+        (parts[0].trim().to_string(), parts[1].trim().to_string())
+    };
+
+    // Validate name
+    if name.contains('/') || name.contains("..") || name.contains('\\') {
+        eprintln!("\x1b[31m✗\x1b[0m invalid skill name (no path separators or '..')");
+        return;
+    }
+
+    eprint!("triggers (comma-separated): ");
+    std::io::stderr().flush().ok();
+    let mut triggers_input = String::new();
+    if std::io::stdin().read_line(&mut triggers_input).is_err() {
+        eprintln!("(cancelled)");
+        return;
+    }
+    let triggers: Vec<String> = triggers_input
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // Open $EDITOR for body
+    let body = match edit_in_editor(&format!(
+        "# {}\n\n{}\n",
+        name,
+        "Describe the skill procedure here in markdown."
+    )) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("\x1b[31m✗\x1b[0m editor failed: {e}");
+            return;
+        }
+    };
+    if body.trim().is_empty() {
+        eprintln!("(cancelled — empty body)");
+        return;
+    }
+
+    let fm = SkillFrontmatter {
+        name: name.clone(),
+        description,
+        triggers,
+        version: Some("0.1.0".into()),
+        license: None,
+        extra: serde_yaml::Mapping::new(),
+    };
+    match skill_store.put(SkScope::User, fm, &body) {
+        Ok(p) => eprintln!("\x1b[32m✓\x1b[0m skill \"{name}\" saved: {}", p.display()),
+        Err(e) => eprintln!("\x1b[31m✗\x1b[0m {e}"),
+    }
+}
+
+fn handle_skill_edit(name: &str, skill_store: &FsSkillStore) {
+    use hermes_skills::SkillStore as _;
+
+    if name.is_empty() {
+        eprintln!("usage: /skill edit <name>");
+        return;
+    }
+    let existing = match skill_store.get(name) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            eprintln!("skill \"{name}\" not found");
+            return;
+        }
+        Err(e) => {
+            eprintln!("\x1b[31m✗\x1b[0m {e}");
+            return;
+        }
+    };
+
+    let body = match edit_in_editor(&existing.body) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("\x1b[31m✗\x1b[0m editor failed: {e}");
+            return;
+        }
+    };
+    if body.trim().is_empty() {
+        eprintln!("(cancelled — empty body)");
+        return;
+    }
+
+    let scope = existing.scope;
+    let fm = existing.frontmatter;
+    match skill_store.put(scope, fm, &body) {
+        Ok(p) => eprintln!("\x1b[32m✓\x1b[0m skill \"{name}\" updated: {}", p.display()),
+        Err(e) => eprintln!("\x1b[31m✗\x1b[0m {e}"),
+    }
+}
+
+fn handle_skill_show(name: &str, skill_store: &FsSkillStore) {
+    use hermes_skills::SkillStore as _;
+
+    if name.is_empty() {
+        eprintln!("usage: /skill show <name>");
+        return;
+    }
+    match skill_store.get(name) {
+        Ok(Some(s)) => {
+            eprintln!("name:        {}", s.frontmatter.name);
+            eprintln!("description: {}", s.frontmatter.description);
+            eprintln!("triggers:    {}", s.frontmatter.triggers.join(", "));
+            eprintln!("scope:       {:?}", s.scope);
+            eprintln!();
+            eprintln!("{}", s.body.trim());
+        }
+        Ok(None) => eprintln!("skill \"{name}\" not found"),
+        Err(e) => eprintln!("\x1b[31m✗\x1b[0m {e}"),
+    }
+}
+
+/// Open $EDITOR (or vi) with initial content, return the edited content.
+fn edit_in_editor(initial_content: &str) -> Result<String> {
+    use std::io::Read as _;
+
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
+    let mut tmp = tempfile::Builder::new()
+        .prefix("hermes-skill-")
+        .suffix(".md")
+        .tempfile()
+        .context("creating temp file for editor")?;
+    write!(tmp, "{initial_content}")?;
+    let tmp_path = tmp.path().to_owned();
+
+    let status = std::process::Command::new(&editor)
+        .arg(&tmp_path)
+        .status()
+        .context(format!("running editor '{editor}'"))?;
+
+    if !status.success() {
+        anyhow::bail!("editor exited with status {status}");
+    }
+
+    let mut content = String::new();
+    let mut f = std::fs::File::open(&tmp_path).context("re-opening temp file")?;
+    f.read_to_string(&mut content)?;
+    Ok(content)
+}
+
 /// Present micro-reflection candidates inline (non-blocking, quick a/r/s).
 fn present_micro_candidates(
     output: &hermes_reflect::ReflectionOutput,
-    memory_store: &FsMemoryStore,
+    memory_store: &dyn MemoryStore,
     skill_store: &FsSkillStore,
     session: &Session,
 ) {
@@ -772,7 +1000,19 @@ fn present_micro_candidates(
                         label: c.name.clone(),
                     });
                 }
-                _ => eprintln!("  (skipped)"),
+                _ => {
+                    eprintln!("  (deferred)");
+                    hermes_reflect::deferred_save(
+                        hermes_reflect::DeferredCandidate::Skill(c.clone()),
+                    );
+                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
+                        at: chrono::Utc::now(),
+                        session_id: session.meta.id.clone(),
+                        kind: hermes_reflect::CandidateKind::Skill,
+                        action: hermes_reflect::ActionTaken::Defer,
+                        label: c.name.clone(),
+                    });
+                }
             }
         }
     }
@@ -827,8 +1067,158 @@ fn present_micro_candidates(
                         label: c.fact.lines().next().unwrap_or("").to_string(),
                     });
                 }
-                _ => eprintln!("  (skipped)"),
+                _ => {
+                    eprintln!("  (deferred)");
+                    hermes_reflect::deferred_save(
+                        hermes_reflect::DeferredCandidate::Memory(c.clone()),
+                    );
+                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
+                        at: chrono::Utc::now(),
+                        session_id: session.meta.id.clone(),
+                        kind: hermes_reflect::CandidateKind::Memory,
+                        action: hermes_reflect::ActionTaken::Defer,
+                        label: c.fact.lines().next().unwrap_or("").to_string(),
+                    });
+                }
             }
         }
+    }
+}
+
+/// Present deferred candidates from previous sessions for re-evaluation.
+fn present_deferred_candidates(
+    memory_store: &dyn MemoryStore,
+    skill_store: &FsSkillStore,
+    session: &Session,
+) {
+    let deferred = match hermes_reflect::deferred_load() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::debug!(error=%e, "failed to load deferred candidates");
+            return;
+        }
+    };
+    if deferred.is_empty() {
+        return;
+    }
+
+    eprintln!("\x1b[90m📋 deferred candidates from previous sessions:\x1b[0m");
+    let mut remaining = Vec::new();
+
+    for dc in deferred {
+        match dc {
+            hermes_reflect::DeferredCandidate::Skill(c) => {
+                eprintln!(
+                    "  \x1b[33m[skill]\x1b[0m {} — {}",
+                    c.name, c.description
+                );
+                eprint!("  accept? [a/r/s] ▸ ");
+                std::io::stderr().flush().ok();
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_ok() {
+                    match input.trim() {
+                        "a" | "y" => {
+                            use hermes_skills::{Scope as SkScope, SkillFrontmatter};
+                            let mut extra = serde_yaml::Mapping::new();
+                            extra.insert(
+                                serde_yaml::Value::String("source".into()),
+                                serde_yaml::Value::String("deferred".into()),
+                            );
+                            let fm = SkillFrontmatter {
+                                name: c.name.clone(),
+                                description: c.description.clone(),
+                                triggers: c.triggers.clone(),
+                                version: Some("0.1.0".into()),
+                                license: None,
+                                extra,
+                            };
+                            match skill_store.put(SkScope::User, fm, &c.body) {
+                                Ok(p) => eprintln!("  \x1b[32m✓\x1b[0m {}", p.display()),
+                                Err(e) => eprintln!("  \x1b[31m✗\x1b[0m {e}"),
+                            }
+                            hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
+                                at: chrono::Utc::now(),
+                                session_id: session.meta.id.clone(),
+                                kind: hermes_reflect::CandidateKind::Skill,
+                                action: hermes_reflect::ActionTaken::Accept,
+                                label: c.name.clone(),
+                            });
+                        }
+                        "r" | "n" => {
+                            eprintln!("  (rejected)");
+                            hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
+                                at: chrono::Utc::now(),
+                                session_id: session.meta.id.clone(),
+                                kind: hermes_reflect::CandidateKind::Skill,
+                                action: hermes_reflect::ActionTaken::Reject,
+                                label: c.name.clone(),
+                            });
+                        }
+                        _ => {
+                            eprintln!("  (kept deferred)");
+                            remaining.push(hermes_reflect::DeferredCandidate::Skill(c));
+                        }
+                    }
+                }
+            }
+            hermes_reflect::DeferredCandidate::Memory(c) => {
+                eprintln!(
+                    "  \x1b[33m[memory]\x1b[0m {}",
+                    c.fact.lines().next().unwrap_or("")
+                );
+                eprint!("  accept? [a/r/s] ▸ ");
+                std::io::stderr().flush().ok();
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_ok() {
+                    match input.trim() {
+                        "a" | "y" => {
+                            use hermes_memory::{MemoryFrontmatter, Scope as MemScope, Source as MemSource};
+                            let fm = MemoryFrontmatter::new(
+                                MemSource::Reflection,
+                                c.confidence,
+                                c.tags.clone(),
+                            );
+                            let scope = match c.scope {
+                                MemScope::User => MemScope::User,
+                                MemScope::Project => MemScope::Project,
+                            };
+                            match memory_store.put(scope, fm, &c.fact) {
+                                Ok(p) => eprintln!("  \x1b[32m✓\x1b[0m {}", p.display()),
+                                Err(e) => eprintln!("  \x1b[31m✗\x1b[0m {e}"),
+                            }
+                            hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
+                                at: chrono::Utc::now(),
+                                session_id: session.meta.id.clone(),
+                                kind: hermes_reflect::CandidateKind::Memory,
+                                action: hermes_reflect::ActionTaken::Accept,
+                                label: c.fact.lines().next().unwrap_or("").to_string(),
+                            });
+                        }
+                        "r" | "n" => {
+                            eprintln!("  (rejected)");
+                            hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
+                                at: chrono::Utc::now(),
+                                session_id: session.meta.id.clone(),
+                                kind: hermes_reflect::CandidateKind::Memory,
+                                action: hermes_reflect::ActionTaken::Reject,
+                                label: c.fact.lines().next().unwrap_or("").to_string(),
+                            });
+                        }
+                        _ => {
+                            eprintln!("  (kept deferred)");
+                            remaining.push(hermes_reflect::DeferredCandidate::Memory(c));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Rewrite the deferred file with only the ones the user still skipped.
+    if let Err(e) = hermes_reflect::deferred_clear() {
+        tracing::debug!(error=%e, "failed to clear deferred file");
+    }
+    for dc in &remaining {
+        hermes_reflect::deferred_save(dc.clone());
     }
 }

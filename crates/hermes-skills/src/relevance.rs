@@ -3,28 +3,68 @@
 //! v1: deterministic token overlap. No LLM, no embedding. Cheap enough to
 //! re-run on every user turn.
 //!
+//! v2 (hybrid): combines token overlap (weight 0.4) with optional embedding
+//! similarity (weight 0.6). Falls back to pure token overlap when embeddings
+//! are unavailable.
+//!
 //! Scoring rules:
 //! - Tokenise the query on non-alphanumeric boundaries, lowercase, drop
 //!   tokens shorter than 3 chars.
 //! - For each skill build a token bag from `triggers ∪ name ∪ description`,
 //!   same normalisation.
-//! - Score = number of distinct query tokens that appear in the skill bag.
+//! - Token score = number of distinct query tokens that appear in the skill
+//!   bag, multiplied by the skill's effectiveness factor (from usage stats).
+//! - Hybrid score = 0.4 * normalised_token_score + 0.6 * embedding_score
 //! - Tie-break: more triggers > fewer triggers (trigger-rich skills are
 //!   more intentional).
 //! - Floor: skills with score 0 are dropped.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use crate::skill::LoadedSkill;
+use crate::stats::SkillEffectiveness;
 
 const MIN_TOKEN_LEN: usize = 3;
+const TOKEN_WEIGHT: f64 = 0.4;
+const EMBED_WEIGHT: f64 = 0.6;
 
 /// Return the top-`k` skills relevant to `query`, highest score first.
 /// An empty `query` or no matches yields an empty Vec.
+///
+/// When `effectiveness` is provided, each skill's token-overlap score is
+/// multiplied by its effectiveness factor so that skills with low used/match
+/// ratios are deprioritized.
 pub fn match_for_query<'a>(
     skills: &'a [LoadedSkill],
     query: &str,
     k: usize,
+) -> Vec<&'a LoadedSkill> {
+    match_for_query_with_effectiveness(skills, query, k, None)
+}
+
+/// Like `match_for_query` but accepts optional per-skill effectiveness data.
+pub fn match_for_query_with_effectiveness<'a>(
+    skills: &'a [LoadedSkill],
+    query: &str,
+    k: usize,
+    effectiveness: Option<&HashMap<String, SkillEffectiveness>>,
+) -> Vec<&'a LoadedSkill> {
+    match_for_query_hybrid(skills, query, k, effectiveness, None)
+}
+
+/// Hybrid matching: combines token overlap with optional embedding similarity.
+///
+/// When `embed_scores` is provided, the final score is:
+/// `0.4 * normalised_token_score + 0.6 * embedding_score`
+///
+/// When `embed_scores` is `None`, falls back to pure token overlap.
+pub fn match_for_query_hybrid<'a>(
+    skills: &'a [LoadedSkill],
+    query: &str,
+    k: usize,
+    effectiveness: Option<&HashMap<String, SkillEffectiveness>>,
+    embed_scores: Option<&HashMap<String, f64>>,
 ) -> Vec<&'a LoadedSkill> {
     if k == 0 {
         return Vec::new();
@@ -34,12 +74,37 @@ pub fn match_for_query<'a>(
         return Vec::new();
     }
 
-    let mut scored: Vec<(usize, usize, &LoadedSkill)> = skills
+    let has_embed = embed_scores.is_some_and(|m| !m.is_empty());
+
+    let mut scored: Vec<(f64, usize, &LoadedSkill)> = skills
         .iter()
         .filter_map(|s| {
             let bag = skill_bag(s);
-            let score = q.iter().filter(|t| bag.contains(t.as_str())).count();
-            if score == 0 {
+            let raw_token = q.iter().filter(|t| bag.contains(t.as_str())).count();
+            if raw_token == 0 && !has_embed {
+                return None;
+            }
+
+            let factor = effectiveness
+                .and_then(|e| e.get(&s.frontmatter.name))
+                .map(|e| e.factor())
+                .unwrap_or(1.0);
+
+            let token_score = raw_token as f64 * factor;
+
+            let score = if has_embed {
+                let emb = embed_scores
+                    .and_then(|m| m.get(&s.frontmatter.name))
+                    .copied()
+                    .unwrap_or(0.0);
+                // Normalise token score to [0, 1] range (cap at 5 tokens = 1.0)
+                let norm_token = (token_score / 5.0).min(1.0);
+                TOKEN_WEIGHT * norm_token + EMBED_WEIGHT * emb
+            } else {
+                token_score
+            };
+
+            if score <= 0.0 {
                 None
             } else {
                 Some((score, s.frontmatter.triggers.len(), s))
@@ -47,7 +112,11 @@ pub fn match_for_query<'a>(
         })
         .collect();
 
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.1.cmp(&a.1))
+    });
     scored.into_iter().take(k).map(|(_, _, s)| s).collect()
 }
 
@@ -154,5 +223,41 @@ mod tests {
         let hits = match_for_query(&skills, "rust", 1);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].frontmatter.name, "b");
+    }
+
+    #[test]
+    fn hybrid_with_embed_scores() {
+        let sk1 = skill("rust-error", "Switch unwrap to anyhow", &["rust", "anyhow"]);
+        let sk2 = skill("python-hints", "Add type hints", &["python", "typing"]);
+        let skills = vec![sk1, sk2];
+
+        // Embed scores strongly favour python-hints despite token overlap
+        // favouring rust-error.
+        let mut embed = HashMap::new();
+        embed.insert("rust-error".into(), 0.2);
+        embed.insert("python-hints".into(), 0.9);
+
+        let hits = match_for_query_hybrid(&skills, "rust unwrap", 2, None, Some(&embed));
+        assert_eq!(hits.len(), 2);
+        // python-hints should win because 0.6*0.9 >> 0.4*norm_token
+        assert_eq!(hits[0].frontmatter.name, "python-hints");
+    }
+
+    #[test]
+    fn hybrid_without_embed_falls_back_to_token() {
+        let sk1 = skill("rust-error", "Switch unwrap to anyhow", &["rust", "anyhow"]);
+        let skills = vec![sk1];
+        let hits = match_for_query_hybrid(&skills, "rust unwrap", 3, None, None);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].frontmatter.name, "rust-error");
+    }
+
+    #[test]
+    fn hybrid_empty_embed_map_falls_back() {
+        let sk1 = skill("rust-error", "Switch unwrap to anyhow", &["rust"]);
+        let skills = vec![sk1];
+        let embed = HashMap::new();
+        let hits = match_for_query_hybrid(&skills, "rust", 3, None, Some(&embed));
+        assert_eq!(hits.len(), 1);
     }
 }

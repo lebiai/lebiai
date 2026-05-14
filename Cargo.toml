@@ -9,6 +9,7 @@ members = [
     "crates/hermes-cli",
     "crates/hermes-tui",
     "crates/hermes-gui", "crates/hermes-skills", "crates/hermes-memory", "crates/hermes-tools",
+    "crates/hermes-turn",
 ]
 
 [workspace.package]
@@ -59,6 +60,9 @@ crossterm = "0.29"
 # MCP
 rmcp = { version = "1.6", default-features = false, features = ["client", "macros", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
 
+# Embeddings (feature-gated at crate level)
+fastembed = "5"
+
 # Internal
 hermes-core = { path = "crates/hermes-core" }
 hermes-llm = { path = "crates/hermes-llm" }
@@ -68,6 +72,7 @@ hermes-skills = { path = "crates/hermes-skills" }
 hermes-memory = { path = "crates/hermes-memory" }
 hermes-tools = { path = "crates/hermes-tools" }
 hermes-reflect = { path = "crates/hermes-reflect" }
+hermes-turn = { path = "crates/hermes-turn" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

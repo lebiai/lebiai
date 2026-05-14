@@ -7,6 +7,7 @@ pub mod bash;
 pub mod edit;
 pub mod glob;
 pub mod grep;
+pub mod memory;
 pub mod read;
 pub mod safety;
 pub mod todo;
@@ -15,25 +16,36 @@ pub mod web_search;
 pub mod write;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use hermes_core::{Error, Result, ToolCallOutcome, ToolHost, ToolSpec};
+use hermes_memory::MemoryStore;
 
 const BASIC_TOOLS: &[&str] = &["read", "write", "edit", "bash", "glob", "grep"];
 
 pub struct BuiltinToolHost {
     workspace: PathBuf,
+    memory_store: Option<Arc<dyn MemoryStore>>,
 }
 
 impl BuiltinToolHost {
     pub fn new(workspace: PathBuf) -> Self {
-        Self { workspace }
+        Self {
+            workspace,
+            memory_store: None,
+        }
+    }
+
+    pub fn with_memory_store(mut self, store: Arc<dyn MemoryStore>) -> Self {
+        self.memory_store = Some(store);
+        self
     }
 
     pub fn handles(&self, name: &str) -> bool {
         BASIC_TOOLS.contains(&name)
             || todo::handles(name)
-            || matches!(name, "web_fetch" | "web_search")
+            || matches!(name, "web_fetch" | "web_search" | "memory_search")
     }
 }
 
@@ -51,6 +63,9 @@ impl ToolHost for BuiltinToolHost {
             web_search::spec(),
         ];
         tools.extend(todo::specs());
+        if self.memory_store.is_some() {
+            tools.push(memory::spec());
+        }
         Ok(tools)
     }
 
@@ -64,6 +79,12 @@ impl ToolHost for BuiltinToolHost {
             "grep" => grep::run(&self.workspace, args).await,
             "web_fetch" => web_fetch::run(&self.workspace, args).await,
             "web_search" => web_search::run(&self.workspace, args).await,
+            "memory_search" => {
+                let store = self.memory_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("memory_search: no memory store configured".into())
+                })?;
+                memory::run(store.as_ref(), args).await
+            }
             n if todo::handles(n) => todo::run(&self.workspace, n, args).await,
             _ => Err(Error::ToolHost(format!("unknown built-in tool: {name}"))),
         }

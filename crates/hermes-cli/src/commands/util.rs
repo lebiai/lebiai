@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use hermes_core::{LlmProvider, NullToolHost, SessionMeta, ToolHost};
 use hermes_llm::Config;
 use hermes_mcp::{McpConfig, McpToolHost, ServerSpec};
+use hermes_memory::MemoryStore;
 use hermes_tools::{BuiltinToolHost, CompositeToolHost};
 
 /// Build the active [`LlmProvider`] selected by `default_provider` in
@@ -29,12 +30,18 @@ pub fn session_path_for(meta: &SessionMeta) -> Result<PathBuf> {
 }
 
 /// Load built-in tools + MCP tools as a composite host.
-pub async fn load_tool_host(workspace_root: &Path) -> Result<Arc<dyn ToolHost>> {
+pub async fn load_tool_host(
+    workspace_root: &Path,
+    memory_store: Option<Arc<dyn MemoryStore>>,
+) -> Result<Arc<dyn ToolHost>> {
     std::fs::create_dir_all(workspace_root).with_context(|| {
         format!("ensuring workspace exists: {}", workspace_root.display())
     })?;
 
-    let builtin = BuiltinToolHost::new(workspace_root.to_path_buf());
+    let mut builtin = BuiltinToolHost::new(workspace_root.to_path_buf());
+    if let Some(store) = memory_store {
+        builtin = builtin.with_memory_store(store);
+    }
 
     let mut cfg = McpConfig::load_default().context("loading mcp.json")?;
     rewrite_filesystem_servers(&mut cfg, workspace_root);

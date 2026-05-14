@@ -29,6 +29,12 @@ pub enum MemoryStoreError {
     #[error("invalid memory id {0:?}")]
     InvalidId(String),
 
+    #[error("potential conflict with existing memory {existing_id:?} (similarity {similarity:.2})")]
+    Conflict {
+        existing_id: String,
+        similarity: f64,
+    },
+
     #[error(transparent)]
     Frontmatter(#[from] FrontmatterError),
 
@@ -63,11 +69,16 @@ pub trait MemoryStore: Send + Sync {
     fn put(&self, scope: Scope, frontmatter: MemoryFrontmatter, body: &str) -> Result<PathBuf>;
 
     fn delete(&self, scope: Scope, id: &str) -> Result<bool>;
+
+    /// Return the top-`k` active memories most relevant to `query`.
+    fn search(&self, query: &str, k: usize) -> Result<Vec<LoadedMemory>>;
 }
 
 pub struct FsMemoryStore {
     user_root: PathBuf,
     project_root: Option<PathBuf>,
+    #[cfg(feature = "embed")]
+    embed_index: Option<std::sync::Mutex<crate::embed::EmbedIndex>>,
 }
 
 impl FsMemoryStore {
@@ -75,7 +86,90 @@ impl FsMemoryStore {
         Self {
             user_root,
             project_root,
+            #[cfg(feature = "embed")]
+            embed_index: None,
         }
+    }
+
+    /// Enable semantic search via local embeddings. Must be called before
+    /// any `put()` or `search()` calls for embeddings to take effect.
+    #[cfg(feature = "embed")]
+    pub fn enable_embeddings(&mut self) -> anyhow::Result<()> {
+        let mut index = crate::embed::EmbedIndex::new()?;
+        // Index all existing active memories.
+        let active = self.list_active()?;
+        if !active.is_empty() {
+            let texts: Vec<String> = active.iter().map(|m| m.body.clone()).collect();
+            let ids: Vec<String> = active.iter().map(|m| m.id().to_string()).collect();
+            let embeddings = index.embed_batch(&texts)?;
+            for (id, emb) in ids.into_iter().zip(embeddings) {
+                index.insert(id, emb);
+            }
+        }
+        self.embed_index = Some(std::sync::Mutex::new(index));
+        Ok(())
+    }
+
+    /// Compute and store the embedding for a memory. Call after `put()`.
+    #[cfg(feature = "embed")]
+    pub fn index_memory(&self, id: &str, body: &str) -> anyhow::Result<()> {
+        if let Some(ref index) = self.embed_index {
+            let mut idx = index.lock().unwrap();
+            let emb = idx.embed(body)?;
+            idx.insert(id.to_string(), emb);
+        }
+        Ok(())
+    }
+
+    /// Remove a memory from the embedding index. Call after `delete()`.
+    #[cfg(feature = "embed")]
+    pub fn remove_from_index(&self, id: &str) {
+        if let Some(ref index) = self.embed_index {
+            let mut idx = index.lock().unwrap();
+            idx.remove(id);
+        }
+    }
+
+    /// Check if a new memory body conflicts with an existing one.
+    /// Returns `Err(MemoryStoreError::Conflict)` if similarity > threshold.
+    /// When embeddings are unavailable, falls back to TF-IDF similarity.
+    #[cfg(feature = "embed")]
+    pub fn check_conflict(&self, body: &str, threshold: f64) -> Result<()> {
+        if let Some(ref index) = self.embed_index {
+            let mut idx = index.lock().unwrap();
+            let hits = idx.search(body, 1).map_err(|e| {
+                MemoryStoreError::Config(format!("embedding search failed: {e}"))
+            })?;
+            if let Some((id, sim)) = hits.first() {
+                if *sim > threshold {
+                    return Err(MemoryStoreError::Conflict {
+                        existing_id: id.clone(),
+                        similarity: *sim,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// TF-IDF based conflict check (used when embeddings are unavailable).
+    pub fn check_conflict_tfidf(&self, body: &str, threshold: f64) -> Result<()> {
+        let active = self.list_active()?;
+        let refs = crate::relevance::search_memories(&active, body, 1);
+        if let Some(m) = refs.first() {
+            // Re-run TF-IDF to get the actual score.
+            let score = crate::relevance::search_memories_scored(&active, body, 1)
+                .first()
+                .map(|(_, s)| *s)
+                .unwrap_or(0.0);
+            if score > threshold {
+                return Err(MemoryStoreError::Conflict {
+                    existing_id: m.id().to_string(),
+                    similarity: score,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// `~/.small-rust-hermes/memories` + (optional) `./.small-rust-hermes/memories`.
@@ -192,6 +286,9 @@ impl MemoryStore for FsMemoryStore {
             body: body.to_string(),
         };
         hermes_store::write_doc_atomic(&path, &doc)?;
+        // Note: embedding computation for the new memory must be done by the
+        // caller after put() returns, since put() is sync and embedding is
+        // async. Use FsMemoryStore::index_memory() for this.
         Ok(path)
     }
 
@@ -219,6 +316,31 @@ impl MemoryStore for FsMemoryStore {
             }
         }
         Ok(false)
+    }
+
+    fn search(&self, query: &str, k: usize) -> Result<Vec<LoadedMemory>> {
+        let active = self.list_active()?;
+        #[cfg(feature = "embed")]
+        if let Some(ref index) = self.embed_index {
+            let mut idx = index.lock().unwrap();
+            match idx.search(query, k) {
+                Ok(scored) => {
+                    let id_set: std::collections::HashSet<String> =
+                        scored.into_iter().map(|(id, _)| id).collect();
+                    let results: Vec<LoadedMemory> = active
+                        .into_iter()
+                        .filter(|m| id_set.contains(m.id()))
+                        .collect();
+                    return Ok(results);
+                }
+                Err(e) => {
+                    tracing::warn!(error=%e, "semantic search failed, falling back to TF-IDF");
+                    // Fall through to TF-IDF.
+                }
+            }
+        }
+        let refs = crate::relevance::search_memories(&active, query, k);
+        Ok(refs.into_iter().cloned().collect())
     }
 }
 

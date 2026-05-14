@@ -20,18 +20,22 @@
 //! <full body>
 //! ```
 
+use std::collections::HashMap;
+
 use hermes_memory::LoadedMemory;
-use hermes_skills::LoadedSkill;
+use hermes_skills::{LoadedSkill, SkillEffectiveness};
 
 const ACTIVE_MEMORY_INDEX_CAP: usize = 50;
 const SKILL_INDEX_CAP: usize = 50;
 const TRIGGERED_SKILL_CAP: usize = 3;
+const RELEVANT_MEMORY_CAP: usize = 3;
 
 pub struct ContextSources<'a> {
     pub base: Option<&'a str>,
     pub pinned: &'a [LoadedMemory],
     pub active: &'a [LoadedMemory],
     pub all_skills: &'a [LoadedSkill],
+    pub effectiveness: Option<&'a HashMap<String, SkillEffectiveness>>,
 }
 
 impl<'a> ContextSources<'a> {
@@ -92,14 +96,40 @@ impl<'a> ContextSources<'a> {
         buf.trim_end().to_string()
     }
 
-    /// Build the per-turn system prompt: session-level prefix + the bodies
-    /// of the skills triggered by this user turn.
+    /// Build the per-turn system prompt: session-level prefix + relevant
+    /// memory bodies + the bodies of the skills triggered by this user turn.
     pub fn build_turn_system(&self, user_query: &str) -> String {
         let mut buf = self.build_session_system();
-        let matched =
-            hermes_skills::match_for_query(self.all_skills, user_query, TRIGGERED_SKILL_CAP);
+
+        // Inject relevant memory bodies (episodic, not pinned — those are
+        // already in the session-level prompt).
+        let relevant: Vec<&LoadedMemory> = hermes_memory::search_memories(
+            self.active,
+            user_query,
+            RELEVANT_MEMORY_CAP + self.pinned.len(), // over-fetch to allow filtering
+        )
+        .into_iter()
+        .filter(|m| !m.frontmatter.pinned)
+        .take(RELEVANT_MEMORY_CAP)
+        .collect();
+        if !relevant.is_empty() {
+            if !buf.is_empty() {
+                buf.push_str("\n\n");
+            }
+            buf.push_str("## Relevant memories for this turn\n\n");
+            for m in relevant {
+                buf.push_str(&format!("- [{}] {}\n", m.frontmatter.id, m.body.trim()));
+            }
+        }
+
+        let matched = hermes_skills::match_for_query_with_effectiveness(
+            self.all_skills,
+            user_query,
+            TRIGGERED_SKILL_CAP,
+            self.effectiveness,
+        );
         if matched.is_empty() {
-            return buf;
+            return buf.trim_end().to_string();
         }
         if !buf.is_empty() {
             buf.push_str("\n\n");
@@ -168,6 +198,7 @@ mod tests {
             pinned: &[],
             active: &[],
             all_skills: &[],
+            effectiveness: None,
         };
         assert_eq!(sources.build_session_system(), "");
     }
@@ -187,6 +218,7 @@ mod tests {
             pinned: &[pinned],
             active: &[ep],
             all_skills: &[sk],
+            effectiveness: None,
         };
         let s = sources.build_session_system();
         assert!(s.contains("you are a helpful agent."));
@@ -214,6 +246,7 @@ mod tests {
             pinned: &[],
             active: &[],
             all_skills: &[sk],
+            effectiveness: None,
         };
         let s = sources.build_turn_system("please rewrite the rust unwrap calls");
         assert!(s.contains("Skills triggered for this turn"));
@@ -229,9 +262,29 @@ mod tests {
             pinned: &[],
             active: &[],
             all_skills: &[sk],
+            effectiveness: None,
         };
         let s = sources.build_turn_system("rust unwrap question");
         assert!(!s.contains("Skills triggered"));
+    }
+
+    #[test]
+    fn build_turn_system_injects_relevant_memory_bodies() {
+        let ep = episodic_memory("mem_r", "user prefers anyhow over thiserror for app-layer errors");
+        let sources = ContextSources {
+            base: None,
+            pinned: &[],
+            active: &[ep],
+            all_skills: &[],
+            effectiveness: None,
+        };
+        let s = sources.build_turn_system("how should I handle errors in the app layer?");
+        assert!(s.contains("Relevant memories for this turn"));
+        assert!(s.contains("[mem_r]"));
+        assert!(
+            s.contains("user prefers anyhow"),
+            "full body should be injected, not just one-line index"
+        );
     }
 
     #[test]
@@ -244,6 +297,7 @@ mod tests {
             pinned: &[p.clone()],
             active: &[p],
             all_skills: &[],
+            effectiveness: None,
         };
         let s = sources.build_session_system();
         let occurrences = s.matches("mem_p").count();

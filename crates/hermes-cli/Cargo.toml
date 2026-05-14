@@ -20,6 +20,7 @@ hermes-skills = { workspace = true }
 hermes-memory = { workspace = true }
 hermes-tools = { workspace = true }
 hermes-reflect = { workspace = true }
+hermes-turn = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -32,6 +33,7 @@ serde_yaml = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
 rustyline = "18"
+tempfile = "3"
 
 [lints]
 workspace = true
