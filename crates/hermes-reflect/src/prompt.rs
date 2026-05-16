@@ -22,7 +22,10 @@ case truly meets the bar:
 
 3. CONFLICTS — when a new memory candidate contradicts, duplicates, or
    subsumes an existing memory, report a conflict referencing the existing
-   memory id and proposing resolution options.
+   memory id and proposing resolution options. Use kind "stale" when an
+   existing memory is factually wrong or outdated (e.g. the user corrects
+   a previously stored preference, or context has changed). Always pair a
+   stale conflict with a memory_candidate that supersedes the old id.
 
 CRITICAL — the agent's user sees every candidate and must decide. Spammy
 proposals erode trust. Default to empty arrays. Prefer false negatives over
@@ -56,7 +59,7 @@ markdown fences. No commentary.
   "conflicts": [
     {
       "with": "mem_xxxx",
-      "kind": "contradiction" | "redundancy" | "scope_overlap",
+      "kind": "contradiction" | "redundancy" | "scope_overlap" | "stale",
       "explain": "what the disagreement is",
       "options": ["keep_old", "keep_new", "merge", "scope_split"]
     }

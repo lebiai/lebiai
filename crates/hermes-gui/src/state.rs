@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 
 pub type Sessions = Arc<Mutex<HashMap<String, ActiveSession>>>;
 pub type CancelTokens = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>;
+pub type ConfirmTokens = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<hermes_turn::ConfirmAction>>>>;
 
 #[allow(dead_code)]
 pub struct AppState {
@@ -24,6 +25,7 @@ pub struct AppState {
     pub memory_store: FsMemoryStore,
     pub sessions: Sessions,
     pub cancel_tokens: CancelTokens,
+    pub confirm_tokens: ConfirmTokens,
     pub tools: Mutex<Vec<ToolSpec>>,
     pub skills: Mutex<Vec<LoadedSkill>>,
     pub pinned_memories: Mutex<Vec<LoadedMemory>>,
@@ -69,6 +71,7 @@ impl AppState {
             memory_store,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             cancel_tokens: Arc::new(Mutex::new(HashMap::new())),
+            confirm_tokens: Arc::new(Mutex::new(HashMap::new())),
             tools: Mutex::new(tools),
             skills: Mutex::new(skills),
             pinned_memories: Mutex::new(pinned),

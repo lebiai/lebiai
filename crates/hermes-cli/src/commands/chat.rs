@@ -13,10 +13,9 @@ use std::io::Write;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use futures::StreamExt;
 use hermes_core::{
-    CompletionRequest, ContentBlock, LlmProvider, Message, Role, Session, SessionEvent,
-    SessionMeta, StopReason, StreamEvent, ToolHost,
+    ContentBlock, LlmProvider, Role, Session, SessionEvent,
+    SessionMeta, ToolHost,
 };
 use hermes_llm::Config;
 use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore};
@@ -141,7 +140,7 @@ pub async fn run(
             }
             eprintln!();
             eprintln!("\x1b[90m💡 micro-reflection found candidates:\x1b[0m");
-            present_micro_candidates(&output, &*memory_store_arc, &skill_store, &session);
+            present_micro_candidates(&output, &*memory_store_arc, &skill_store, &session, &active_memories);
         }
 
         let input = match line_editor.readline("> ").await {
@@ -173,7 +172,10 @@ pub async fn run(
                 system.as_deref(),
                 &*memory_store_arc,
                 &skill_store,
-            ) {
+                provider.as_ref(),
+                &mut turns_since_last_reflect,
+                &mut micro_reflected_this_session,
+            ).await {
                 break;
             }
             continue;
@@ -208,7 +210,7 @@ pub async fn run(
             });
         }
 
-        let turn_msg_index = session.messages.len(); // before pushing user msg
+        let _turn_msg_index = session.messages.len(); // before pushing user msg
         let user_msg = session.push_user(trimmed).clone();
         if let Err(e) = writer.append(&SessionEvent::Message(user_msg)) {
             tracing::warn!(error = %e, "failed to persist user message");
@@ -240,7 +242,7 @@ pub async fn run(
             }
         }
 
-        if let Err(e) = run_one_turn(
+        match run_one_turn(
             provider.as_ref(),
             host.as_ref(),
             &tools,
@@ -257,7 +259,11 @@ pub async fn run(
         )
         .await
         {
-            eprintln!("turn error: {e:#}");
+            Ok(Some(reflection)) if !reflection.is_empty() => {
+                pending_candidates.push(reflection);
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("turn error: {e:#}"),
         }
 
         // Record SkillEvent::Used for matched skills whose body content
@@ -303,8 +309,7 @@ pub async fn run(
 
         // --- Per-turn micro-reflection is now handled inside run_one_turn ---
         turns_since_last_reflect += 1;
-        let turn_msgs = &session.messages[turn_msg_index..];
-        if hermes_reflect::should_micro_reflect(turn_msgs, turns_since_last_reflect) {
+        if pending_candidates.iter().any(|o| !o.is_empty()) {
             turns_since_last_reflect = 0;
             micro_reflected_this_session = true;
         }
@@ -347,15 +352,15 @@ async fn run_one_turn(
     model: &str,
     turn_system: &str,
     max_tokens: u32,
-    workspace: &std::path::Path,
+    _workspace: &std::path::Path,
     session: &mut Session,
     writer: &mut SessionWriter,
     enable_reflect: bool,
     turns_since_last_reflect: usize,
     skills: &[hermes_skills::LoadedSkill],
     memories: &[hermes_memory::LoadedMemory],
-) -> Result<()> {
-    use hermes_turn::{TurnConfig, TurnEvent};
+) -> Result<Option<hermes_reflect::ReflectionOutput>> {
+    use hermes_turn::{ConfirmAction, TurnConfig, TurnEvent};
     use std::io::Write as _;
 
     let config = TurnConfig {
@@ -369,6 +374,31 @@ async fn run_one_turn(
 
     let history = session.messages.clone();
     let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+
+    // Confirmation channel: the turn loop sends ConfirmRequest, a spawned
+    // task reads from confirm_rx and prompts the user on stdin.
+    let (confirm_tx, mut confirm_rx) = tokio::sync::mpsc::channel::<hermes_turn::ConfirmRequest>(8);
+
+    // Spawn a task that reads confirmation requests and prompts the user.
+    let confirm_task = tokio::spawn(async move {
+        while let Some(req) = confirm_rx.recv().await {
+            eprint!(
+                "\x1b[1m\x1b[33m  ⚠ confirm\x1b[0m {}: {}  \x1b[1m[y/N]\x1b[0m ",
+                req.tool_name, req.summary,
+            );
+            std::io::stderr().flush().ok();
+            let mut input = String::new();
+            let action = if std::io::stdin().read_line(&mut input).is_ok()
+                && input.trim().eq_ignore_ascii_case("y")
+            {
+                ConfirmAction::Allow
+            } else {
+                ConfirmAction::Deny
+            };
+            // If the reply channel is closed (turn cancelled), just drop it.
+            let _ = req.reply.send(action);
+        }
+    });
 
     let text_started = std::sync::atomic::AtomicBool::new(false);
     let thinking_started = std::sync::atomic::AtomicBool::new(false);
@@ -406,6 +436,11 @@ async fn run_one_turn(
                     eprintln!("\x1b[31m  ✗ {}\x1b[0m", content.lines().next().unwrap_or(""));
                 }
             }
+            TurnEvent::ToolConfirmPending { tool_name, summary, .. } => {
+                // The spawned confirm_task handles the actual stdin prompt.
+                // This event is for frontends that render their own UI.
+                tracing::debug!(tool_name, summary, "tool confirmation pending");
+            }
             TurnEvent::Usage { .. } => {}
             TurnEvent::MicroReflection(output) => {
                 eprintln!("\x1b[35m  ✨ reflection: {}\x1b[0m", output.summary);
@@ -418,10 +453,15 @@ async fn run_one_turn(
     };
 
     let output = hermes_turn::run_turn(
-        provider, host, tools, &history, &config, skills, memories, on_event, cancel_rx,
+        provider, host, tools, &history, &config, skills, memories,
+        Some(confirm_tx), on_event, cancel_rx,
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Shut down the confirm task (drop the sender side already happened when
+    // run_turn returned, but abort the task to be safe).
+    confirm_task.abort();
 
     // Apply new messages to session + persist
     for msg in &output.new_messages {
@@ -435,9 +475,10 @@ async fn run_one_turn(
         tracing::warn!(error=%e, "persist usage");
     }
 
-    Ok(())
+    Ok(output.reflection)
 }
 
+#[allow(dead_code)]
 fn summarise_input(v: &serde_json::Value) -> String {
     let s = serde_json::to_string(v).unwrap_or_default();
     if s.chars().count() <= 80 {
@@ -448,6 +489,7 @@ fn summarise_input(v: &serde_json::Value) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn friendly_tool_desc(name: &str) -> String {
     match name {
         "read" => "📖 Reading file...".into(),
@@ -468,6 +510,7 @@ fn friendly_tool_desc(name: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn friendly_tool_result(name: &str, input: &serde_json::Value, workspace: &std::path::Path) -> String {
     let full_path = |rel: &str| -> String {
         if std::path::Path::new(rel).is_absolute() {
@@ -587,7 +630,7 @@ fn compose_system_prompt(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn handle_command(
+async fn handle_command(
     cmd: &str,
     session: &mut Session,
     path: &std::path::Path,
@@ -597,6 +640,9 @@ fn handle_command(
     base_system: Option<&str>,
     memory_store: &dyn MemoryStore,
     skill_store: &FsSkillStore,
+    provider: &dyn LlmProvider,
+    turns_since_last_reflect: &mut usize,
+    micro_reflected_this_session: &mut bool,
 ) -> bool {
     match cmd.trim() {
         "exit" | "quit" => return false,
@@ -726,7 +772,18 @@ fn handle_command(
             }
         }
         "reflect" => {
-            eprintln!("(on-demand reflection is not yet wired — use /remember to save a memory now)");
+            if session.messages.is_empty() {
+                eprintln!("(nothing to reflect on yet — send a message first)");
+            } else {
+                eprintln!("\x1b[90m(reflecting on session so far...)\x1b[0m");
+                match super::reflect::run_with_min_turns(provider, session, 0).await {
+                    Ok(()) => {
+                        *turns_since_last_reflect = 0;
+                        *micro_reflected_this_session = true;
+                    }
+                    Err(e) => eprintln!("\x1b[31m(reflection failed: {e:#})\x1b[0m"),
+                }
+            }
         }
         s if s.starts_with("skill add") => {
             let rest = s.strip_prefix("skill add").unwrap().trim();
@@ -740,7 +797,7 @@ fn handle_command(
             let name = s.strip_prefix("skill show ").unwrap().trim();
             handle_skill_show(name, skill_store);
         }
-        "skill" | "skills" => {
+        "skill" => {
             // /skill alone is same as /skills
             if skills.is_empty() {
                 eprintln!("(no skills loaded)");
@@ -950,6 +1007,7 @@ fn present_micro_candidates(
     memory_store: &dyn MemoryStore,
     skill_store: &FsSkillStore,
     session: &Session,
+    active_memories: &[LoadedMemory],
 ) {
     use hermes_memory::{MemoryFrontmatter, Scope as MemScope, Source as MemSource};
     use hermes_skills::{Scope as SkScope, SkillFrontmatter};
@@ -1031,10 +1089,7 @@ fn present_micro_candidates(
                     let mut fm =
                         MemoryFrontmatter::new(MemSource::Reflection, c.confidence, c.tags.clone());
                     fm.supersedes = c.supersedes.clone();
-                    let scope = match c.scope {
-                        MemScope::User => MemScope::User,
-                        MemScope::Project => MemScope::Project,
-                    };
+                    let scope = c.scope;
                     match memory_store.put(scope, fm.clone(), &c.fact) {
                         Ok(p) => eprintln!("  \x1b[32m✓\x1b[0m {}", p.display()),
                         Err(e) => {
@@ -1082,6 +1137,113 @@ fn present_micro_candidates(
                 }
             }
         }
+    }
+
+    // --- conflicts ---
+    if output.conflicts.is_empty() {
+        return;
+    }
+
+    // Build lookup: memory_id -> LoadedMemory
+    let mem_by_id: std::collections::HashMap<&str, &LoadedMemory> = active_memories
+        .iter()
+        .map(|m| (m.frontmatter.id.as_str(), m))
+        .collect();
+
+    // Track which conflicts were handled via a linked memory candidate
+    let mut handled_conflict_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for mc in &output.memory_candidates {
+        for old_id in &mc.supersedes {
+            handled_conflict_ids.insert(old_id.clone());
+        }
+    }
+
+    // Linked conflicts: a memory candidate supersedes the old memory
+    for c in &output.conflicts {
+        if !handled_conflict_ids.contains(&c.with) {
+            continue;
+        }
+        eprintln!(
+            "  \x1b[33m[conflict]\x1b[0m {} is {}: {}",
+            c.with, c.kind, c.explain
+        );
+        if let Some(old) = mem_by_id.get(c.with.as_str()) {
+            eprintln!("    OLD: {}", old.body.trim());
+        }
+        // Find the linked replacement candidate
+        let replacement = output
+            .memory_candidates
+            .iter()
+            .find(|mc| mc.supersedes.contains(&c.with));
+        if let Some(rep) = replacement {
+            eprintln!("    NEW: {}", rep.fact.trim());
+        }
+        eprint!("  resolve? [n]ew replaces old / [o]ld keep / [k]ip ▸ ");
+        std::io::stderr().flush().ok();
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).is_ok() {
+            match input.trim() {
+                "n" | "new" => {
+                    if let Some(rep) = replacement {
+                        let mut fm = MemoryFrontmatter::new(
+                            MemSource::Reflection,
+                            rep.confidence,
+                            rep.tags.clone(),
+                        );
+                        fm.supersedes = rep.supersedes.clone();
+                        match memory_store.put(rep.scope, fm, &rep.fact) {
+                            Ok(p) => eprintln!("  \x1b[32m✓\x1b[0m new memory written ({})", p.display()),
+                            Err(e) => eprintln!("  \x1b[31m✗\x1b[0m {e}"),
+                        }
+                    }
+                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
+                        at: chrono::Utc::now(),
+                        session_id: session.meta.id.clone(),
+                        kind: hermes_reflect::CandidateKind::ConflictMemory,
+                        action: hermes_reflect::ActionTaken::Accept,
+                        label: c.explain.clone(),
+                    });
+                }
+                "o" | "old" => {
+                    eprintln!("  (kept old — no changes)");
+                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
+                        at: chrono::Utc::now(),
+                        session_id: session.meta.id.clone(),
+                        kind: hermes_reflect::CandidateKind::ConflictMemory,
+                        action: hermes_reflect::ActionTaken::Reject,
+                        label: c.explain.clone(),
+                    });
+                }
+                _ => {
+                    eprintln!("  (skipped — will review at session end)");
+                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
+                        at: chrono::Utc::now(),
+                        session_id: session.meta.id.clone(),
+                        kind: hermes_reflect::CandidateKind::ConflictMemory,
+                        action: hermes_reflect::ActionTaken::Defer,
+                        label: c.explain.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    // Orphan conflicts: no linked memory candidate
+    for c in &output.conflicts {
+        if handled_conflict_ids.contains(&c.with) {
+            continue;
+        }
+        eprintln!(
+            "  \x1b[33m[conflict]\x1b[0m {}: {} — {} (will review at session end)",
+            c.with, c.kind, c.explain
+        );
+        hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
+            at: chrono::Utc::now(),
+            session_id: session.meta.id.clone(),
+            kind: hermes_reflect::CandidateKind::OrphanConflict,
+            action: hermes_reflect::ActionTaken::Defer,
+            label: c.explain.clone(),
+        });
     }
 }
 
@@ -1172,16 +1334,13 @@ fn present_deferred_candidates(
                 if std::io::stdin().read_line(&mut input).is_ok() {
                     match input.trim() {
                         "a" | "y" => {
-                            use hermes_memory::{MemoryFrontmatter, Scope as MemScope, Source as MemSource};
+                            use hermes_memory::{MemoryFrontmatter, Source as MemSource};
                             let fm = MemoryFrontmatter::new(
                                 MemSource::Reflection,
                                 c.confidence,
                                 c.tags.clone(),
                             );
-                            let scope = match c.scope {
-                                MemScope::User => MemScope::User,
-                                MemScope::Project => MemScope::Project,
-                            };
+                            let scope = c.scope;
                             match memory_store.put(scope, fm, &c.fact) {
                                 Ok(p) => eprintln!("  \x1b[32m✓\x1b[0m {}", p.display()),
                                 Err(e) => eprintln!("  \x1b[31m✗\x1b[0m {e}"),

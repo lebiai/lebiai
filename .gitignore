@@ -1,4 +1,6 @@
 target
 .claude
 article.md
+article2.md
+article3.md
 node_modules/

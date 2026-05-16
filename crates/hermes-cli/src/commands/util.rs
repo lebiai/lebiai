@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use hermes_core::{LlmProvider, NullToolHost, SessionMeta, ToolHost};
+use hermes_core::{LlmProvider, SessionMeta, ToolHost};
 use hermes_llm::Config;
 use hermes_mcp::{McpConfig, McpToolHost, ServerSpec};
 use hermes_memory::MemoryStore;

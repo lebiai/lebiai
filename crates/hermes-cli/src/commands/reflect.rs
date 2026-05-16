@@ -45,6 +45,7 @@ enum ConflictAction {
     Skip,
 }
 
+#[allow(dead_code)]
 pub async fn run_after_chat(provider: &dyn LlmProvider, session: &Session) -> Result<()> {
     run_with_min_turns(provider, session, 0).await
 }
@@ -179,7 +180,7 @@ pub async fn run_with_min_turns(
                     log_action(
                         &session.meta.id,
                         hermes_reflect::CandidateKind::ConflictMemory,
-                        &c.fact.lines().next().unwrap_or("").to_string(),
+                        c.fact.lines().next().unwrap_or(""),
                         map_conflict_action(action),
                     );
                     match apply_conflict_action(&memory_store, c, old_id, action) {
@@ -198,7 +199,7 @@ pub async fn run_with_min_turns(
                     log_action(
                         &session.meta.id,
                         hermes_reflect::CandidateKind::ConflictMemory,
-                        &c.fact.lines().next().unwrap_or("").to_string(),
+                        c.fact.lines().next().unwrap_or(""),
                         hermes_reflect::ActionTaken::Cancelled,
                     );
                     return Ok(());
@@ -224,7 +225,7 @@ pub async fn run_with_min_turns(
                 log_action(
                     &session.meta.id,
                     hermes_reflect::CandidateKind::Memory,
-                    &c.fact.lines().next().unwrap_or("").to_string(),
+                    c.fact.lines().next().unwrap_or(""),
                     hermes_reflect::ActionTaken::Cancelled,
                 );
                 return Ok(());
@@ -234,7 +235,7 @@ pub async fn run_with_min_turns(
             log_action(
                 &session.meta.id,
                 hermes_reflect::CandidateKind::Memory,
-                &c.fact.lines().next().unwrap_or("").to_string(),
+                c.fact.lines().next().unwrap_or(""),
                 map_action(act),
             );
         }
@@ -252,15 +253,77 @@ pub async fn run_with_min_turns(
             "== Unresolved conflicts (no linked memory candidate): {} ==",
             leftover.len()
         );
-        for c in leftover {
+        for c in &leftover {
             eprintln!("  with {}: {} — {}", c.with, c.kind, c.explain);
-            if !c.options.is_empty() {
-                eprintln!("    LLM suggestions: {}", c.options.join(", "));
+            if let Some(old) = memory_by_id.get(&c.with) {
+                eprintln!("    OLD: {}", old.body.trim());
             }
+            loop {
+                eprint!("    [d]elete old / [k]eep / [m]anual edit ▸ ");
+                std::io::stderr().flush().ok();
+                let line = reader.next_line().await.context("reading stdin")?;
+                let Some(line) = line else { break };
+                match line.trim().to_lowercase().as_str() {
+                    "d" | "delete" => {
+                        if let Some(old) = memory_by_id.get(&c.with) {
+                            match memory_store.delete(old.scope, &c.with) {
+                                Ok(true) => eprintln!("    ✓ deleted {}", c.with),
+                                Ok(false) => eprintln!("    (not found on disk)"),
+                                Err(e) => eprintln!("    ✗ delete failed: {e:#}"),
+                            }
+                        } else {
+                            eprintln!("    (memory {} not found — may have been hallucinated)", c.with);
+                        }
+                        break;
+                    }
+                    "k" | "keep" | "" => {
+                        eprintln!("    (kept — no changes)");
+                        break;
+                    }
+                    "m" | "manual" => {
+                        if let Some(old) = memory_by_id.get(&c.with) {
+                            let initial = format!(
+                                "# Edit the memory body. Blank = cancel.\n\n{}\n",
+                                old.body.trim()
+                            );
+                            match super::editor::edit(&initial, "memory-edit") {
+                                Ok(Some(edited)) => {
+                                    let body: String = edited
+                                        .lines()
+                                        .filter(|l| !l.trim_start().starts_with('#'))
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                        .trim()
+                                        .to_string();
+                                    if body.is_empty() {
+                                        eprintln!("    (empty body; cancelled)");
+                                    } else {
+                                        let mut fm = old.frontmatter.clone();
+                                        fm.supersedes.push(c.with.clone());
+                                        match memory_store.put(old.scope, fm, &body) {
+                                            Ok(p) => eprintln!("    ✓ wrote {}", p.display()),
+                                            Err(e) => eprintln!("    ✗ write failed: {e:#}"),
+                                        }
+                                    }
+                                }
+                                Ok(None) => eprintln!("    (editor cancelled)"),
+                                Err(e) => eprintln!("    ✗ editor failed: {e:#}"),
+                            }
+                        } else {
+                            eprintln!("    (memory {} not found — cannot edit)", c.with);
+                        }
+                        break;
+                    }
+                    other => eprintln!("    (unknown action {other:?} — try d / k / m)"),
+                }
+            }
+            log_action(
+                &session.meta.id,
+                hermes_reflect::CandidateKind::OrphanConflict,
+                &c.explain,
+                hermes_reflect::ActionTaken::Defer,
+            );
         }
-        eprintln!(
-            "(resolve by editing files directly under ~/.small-rust-hermes/memories/ for now)"
-        );
     }
 
     eprintln!();
@@ -483,10 +546,7 @@ fn persist_skill(store: &FsSkillStore, c: &SkillCandidate) -> Result<PathBuf> {
 fn persist_memory(store: &FsMemoryStore, c: &MemoryCandidate) -> Result<PathBuf> {
     let mut fm = MemoryFrontmatter::new(MemorySource::Reflection, c.confidence, c.tags.clone());
     fm.supersedes = c.supersedes.clone();
-    let scope = match c.scope {
-        MemoryScope::User => MemoryScope::User,
-        MemoryScope::Project => MemoryScope::Project,
-    };
+    let scope = c.scope;
     // Fall back to User scope if Project was requested but no project
     // root is configured — the LLM often proposes Project scope without
     // knowing the user's filesystem layout.

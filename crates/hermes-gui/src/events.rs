@@ -16,6 +16,12 @@ pub enum ChatStreamEvent {
         is_error: bool,
     },
     #[serde(rename_all = "camelCase")]
+    ConfirmRequired {
+        id: String,
+        tool_name: String,
+        summary: String,
+    },
+    #[serde(rename_all = "camelCase")]
     UsageUpdate {
         input_tokens: u32,
         output_tokens: u32,

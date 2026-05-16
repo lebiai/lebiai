@@ -33,12 +33,13 @@ pub enum Streaming {
 
 /// Top-level UI mode. `Normal` is the chat REPL; `Reflect` walks a
 /// queue of reflection candidates produced at session end or via
-/// the `/reflect` command.
+/// the `/reflect` command. `Confirm` pauses for tool-call approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
     Reflect,
     ReflectWaiting,
+    Confirm,
 }
 
 /// A single reflection candidate awaiting user action.
@@ -95,6 +96,9 @@ pub struct App {
     /// True when the pending reflection was triggered explicitly by the
     /// user (e.g. `/reflect`); skips the min_turns gate.
     pub reflect_force: bool,
+    /// Pending tool confirmation: the oneshot sender to reply Allow/Deny,
+    /// plus a human-readable summary for the prompt.
+    pub pending_confirm: Option<(tokio::sync::oneshot::Sender<hermes_turn::ConfirmAction>, String)>,
 }
 
 impl App {

@@ -1,6 +1,6 @@
-use hermes_core::{Message, Session, SessionEvent, SessionMeta};
+use hermes_core::{Session, SessionEvent, SessionMeta};
 use hermes_store::SessionWriter;
-use hermes_turn::{TurnConfig, TurnEvent};
+use hermes_turn::{ConfirmAction, TurnConfig, TurnEvent};
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -80,6 +80,11 @@ pub async fn send_message(
         .await
         .insert(session_id.clone(), cancel_tx);
 
+    // Confirmation channel for dangerous tool calls.
+    let (confirm_tx, mut confirm_rx) =
+        tokio::sync::mpsc::channel::<hermes_turn::ConfirmRequest>(8);
+    let confirm_tokens_arc = state.confirm_tokens.clone();
+
     let sid = session_id.clone();
     let sessions_arc = state.sessions.clone();
     let cancel_tokens_arc = state.cancel_tokens.clone();
@@ -95,6 +100,7 @@ pub async fn send_message(
         };
 
         let evt = on_event.clone();
+        let confirm_tokens = confirm_tokens_arc.clone();
         let on_turn_event = move |event: TurnEvent| {
             match event {
                 TurnEvent::TextDelta(text) => {
@@ -105,6 +111,16 @@ pub async fn send_message(
                 }
                 TurnEvent::ToolUseStart { id, name } => {
                     let _ = evt.send(ChatStreamEvent::ToolUseStart { id, name });
+                }
+                TurnEvent::ToolConfirmPending { id, tool_name, summary } => {
+                    // The confirm_rx bridge below will pick up the full
+                    // ConfirmRequest and store the reply sender. Here we
+                    // just notify the frontend that a confirmation is needed.
+                    let _ = evt.send(ChatStreamEvent::ConfirmRequired {
+                        id,
+                        tool_name,
+                        summary,
+                    });
                 }
                 TurnEvent::ToolUseResult { id, content, is_error } => {
                     let _ = evt.send(ChatStreamEvent::ToolUseResult { id, content, is_error });
@@ -128,6 +144,16 @@ pub async fn send_message(
             }
         };
 
+        // Bridge: receive ConfirmRequest from the turn loop, store the
+        // oneshot reply sender by tool-use-id so respond_confirm can
+        // look it up later.
+        let ct = confirm_tokens.clone();
+        let confirm_bridge = tokio::spawn(async move {
+            while let Some(req) = confirm_rx.recv().await {
+                ct.lock().await.insert(req.id, req.reply);
+            }
+        });
+
         let result = hermes_turn::run_turn(
             provider.as_ref(),
             host.as_ref(),
@@ -136,10 +162,13 @@ pub async fn send_message(
             &config,
             &skills,
             &active,
+            Some(confirm_tx),
             on_turn_event,
             cancel_rx,
         )
         .await;
+
+        confirm_bridge.abort();
 
         match result {
             Ok(output) => {
@@ -170,6 +199,22 @@ pub async fn cancel_stream(
 ) -> Result<(), GuiError> {
     if let Some(tx) = state.cancel_tokens.lock().await.remove(&session_id) {
         let _ = tx.send(());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn respond_confirm(
+    state: State<'_, AppState>,
+    id: String,
+    action: String,
+) -> Result<(), GuiError> {
+    let action = match action.to_lowercase().as_str() {
+        "allow" | "y" => ConfirmAction::Allow,
+        _ => ConfirmAction::Deny,
+    };
+    if let Some(reply) = state.confirm_tokens.lock().await.remove(&id) {
+        let _ = reply.send(action);
     }
     Ok(())
 }

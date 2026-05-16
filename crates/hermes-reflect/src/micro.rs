@@ -59,7 +59,23 @@ pub fn should_micro_reflect(
         || user_lower.contains("总是")
         || user_lower.contains("remember")
         || user_lower.contains("always")
-        || user_lower.contains("prefer");
+        || user_lower.contains("prefer")
+        || user_lower.contains("不是")
+        || user_lower.contains("不对")
+        || user_lower.contains("错了")
+        || user_lower.contains("don't")
+        || user_lower.contains("wrong")
+        || user_lower.contains("actually")
+        || user_lower.contains("no,");
+
+    tracing::debug!(
+        user_text_len = user_text.len(),
+        output_chars,
+        tool_call_count,
+        has_explicit_intent,
+        turns_since_last_reflect,
+        "should_micro_reflect decision inputs"
+    );
 
     // Decision matrix:
     if has_explicit_intent {
@@ -78,7 +94,7 @@ pub fn should_micro_reflect(
     false
 }
 
-const MICRO_REFLECT_SYSTEM: &str = r##"You are a micro-reflection module. You just observed ONE turn of conversation (user request + assistant response). Decide if anything from this turn is worth persisting as a memory or skill.
+const MICRO_REFLECT_SYSTEM: &str = r##"You are a micro-reflection module. You just observed ONE turn of conversation (user request + assistant response). Decide if anything from this turn is worth persisting as a memory or skill, and whether any existing memory is now stale.
 
 Rules:
 - Default to empty arrays. Most turns produce nothing.
@@ -86,13 +102,14 @@ Rules:
 - Only propose a skill if the assistant followed a multi-step procedure that would be reusable verbatim next time.
 - Never propose more than 1 memory and 1 skill per micro-reflection.
 - Confidence should be "low" or "medium" — never "high" for micro-reflection (that's reserved for explicit user requests caught by full reflection).
+- If the conversation reveals that an existing memory is WRONG or OUTDATED, produce a memory_candidates entry with the corrected fact and set `supersedes` to the old memory's id, plus a conflicts entry with kind "stale" explaining why the old memory is no longer accurate.
 
 Reply with EXACTLY ONE JSON object:
 {
   "summary": "<one sentence>",
   "skill_candidates": [],
-  "memory_candidates": [],
-  "conflicts": []
+  "memory_candidates": [{"fact": "<short statement>", "tags": [], "scope": "user", "confidence": "low|medium", "rationale": "<why>", "supersedes": ["mem_xxx"]}],
+  "conflicts": [{"with": "mem_xxx", "kind": "stale", "explain": "<why old memory is wrong>", "options": ["keep_new", "keep_old"]}]
 }
 "##;
 
@@ -111,7 +128,7 @@ pub async fn micro_reflect(
         system: Some(MICRO_REFLECT_SYSTEM.to_string()),
         messages: vec![Message::user_text(user_prompt)],
         tools: Vec::new(),
-        max_tokens: 1024,
+        max_tokens: 2048,
         temperature: Some(0.1),
         enable_caching: false,
     };
@@ -124,10 +141,21 @@ pub async fn micro_reflect(
     let text = resp.text();
     let json_str = crate::runner::strip_code_fence_pub(&text);
 
-    serde_json::from_str(json_str).map_err(|e| ReflectError::ParseFailed {
-        error: e.to_string(),
-        raw: text,
-    })
+    match serde_json::from_str(json_str) {
+        Ok(out) => Ok(out),
+        Err(first_err) => {
+            if let Some(repaired) = crate::runner::repair_truncated_json(json_str) {
+                if let Ok(out) = serde_json::from_str(&repaired) {
+                    tracing::info!("recovered truncated micro-reflection JSON");
+                    return Ok(out);
+                }
+            }
+            Err(ReflectError::ParseFailed {
+                error: first_err.to_string(),
+                raw: text,
+            })
+        }
+    }
 }
 
 fn build_micro_prompt(
@@ -177,4 +205,106 @@ fn build_micro_prompt(
     }
 
     buf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hermes_core::{ContentBlock, Role};
+
+    fn user_msg(text: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    fn assistant_msg(text: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn should_reflect_explicit_intent_remember() {
+        let msgs = [user_msg("remember this")];
+        assert!(should_micro_reflect(&msgs, 5));
+    }
+
+    #[test]
+    fn should_reflect_explicit_intent_chinese_correction() {
+        let msgs = [user_msg("不对，我不用 VSCode")];
+        assert!(should_micro_reflect(&msgs, 5));
+    }
+
+    #[test]
+    fn should_reflect_explicit_intent_wrong() {
+        let msgs = [user_msg("that's wrong, actually I prefer vim")];
+        assert!(should_micro_reflect(&msgs, 5));
+    }
+
+    #[test]
+    fn should_not_reflect_too_soon() {
+        let msgs = [user_msg("remember this")];
+        assert!(!should_micro_reflect(&msgs, 1));
+    }
+
+    #[test]
+    fn should_not_reflect_trivial_turn() {
+        let msgs = [user_msg("hello"), assistant_msg("hi there")];
+        assert!(!should_micro_reflect(&msgs, 5));
+    }
+
+    #[test]
+    fn should_reflect_many_tool_calls() {
+        let msgs = [Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::ToolUse {
+                    name: "read".to_string(),
+                    input: serde_json::Value::Null,
+                    id: "1".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    name: "write".to_string(),
+                    input: serde_json::Value::Null,
+                    id: "2".to_string(),
+                },
+            ],
+        }];
+        assert!(should_micro_reflect(&msgs, 5));
+    }
+
+    #[test]
+    fn parse_output_with_conflict_and_supersedes() {
+        let json = r#"{
+            "summary": "user corrected a preference",
+            "skill_candidates": [],
+            "memory_candidates": [{
+                "fact": "user prefers vim over VSCode",
+                "tags": ["editor", "preference"],
+                "scope": "user",
+                "confidence": "medium",
+                "rationale": "user explicitly corrected",
+                "supersedes": ["mem_editor_pref"]
+            }],
+            "conflicts": [{
+                "with": "mem_editor_pref",
+                "kind": "stale",
+                "explain": "user said they don't use VSCode",
+                "options": ["keep_new", "keep_old"]
+            }]
+        }"#;
+        let output: ReflectionOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(output.memory_candidates.len(), 1);
+        assert_eq!(output.memory_candidates[0].supersedes, vec!["mem_editor_pref"]);
+        assert_eq!(output.conflicts.len(), 1);
+        assert_eq!(output.conflicts[0].kind, "stale");
+        assert_eq!(output.conflicts[0].with, "mem_editor_pref");
+    }
 }

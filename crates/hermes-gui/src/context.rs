@@ -6,6 +6,7 @@ const ACTIVE_MEMORY_INDEX_CAP: usize = 50;
 const SKILL_INDEX_CAP: usize = 50;
 const TRIGGERED_SKILL_CAP: usize = 3;
 
+#[allow(dead_code)]
 pub struct ContextSources<'a> {
     pub base: Option<&'a str>,
     pub pinned: &'a [LoadedMemory],

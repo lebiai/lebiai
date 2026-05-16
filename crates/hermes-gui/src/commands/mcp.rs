@@ -43,7 +43,7 @@ pub fn list_mcp_servers(_state: State<'_, AppState>) -> Result<Vec<McpServerInfo
                 hermes_mcp::ServerSpec::Stdio { command, args, .. } => {
                     ("stdio".into(), format!("{} {}", command, args.join(" ")))
                 }
-                hermes_mcp::ServerSpec::Http { url } => ("http".into(), url.clone()),
+                hermes_mcp::ServerSpec::Http { url, .. } => ("http".into(), url.clone()),
             };
             McpServerInfo { name: name.clone(), kind, detail }
         })

@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 use hermes_core::{
-    CompletionRequest, ContentBlock, LlmProvider, Message, Role, Session, SessionEvent,
-    SessionMeta, StopReason, StreamEvent, ToolHost,
+    LlmProvider, Message, Role, Session, SessionEvent,
+    SessionMeta, StopReason, ToolHost,
 };
 use hermes_llm::Config;
 use hermes_memory::{
@@ -35,6 +35,13 @@ enum TurnMsg {
     /// A synthesised user message carrying tool_result blocks. Sent after
     /// each tool round so the UI loop can persist it to the JSONL.
     ToolResults(Message),
+    /// A dangerous tool call needs user confirmation.
+    ConfirmPending {
+        _id: String,
+        _tool_name: String,
+        summary: String,
+        reply: tokio::sync::oneshot::Sender<hermes_turn::ConfirmAction>,
+    },
     Error(String),
     Done,
 }
@@ -108,6 +115,7 @@ pub async fn main_loop() -> Result<()> {
         quit_after_reflect: false,
         reflect_pending: false,
         reflect_force: false,
+        pending_confirm: None,
     };
     for line in hermes_core::banner::LOGO_PLAIN.lines() {
         app.push_info(line.to_string());
@@ -259,6 +267,9 @@ async fn run_event_loop(
                                     // Eat keys; reflection is in flight.
                                     let _ = k;
                                 }
+                                Mode::Confirm => {
+                                    handle_confirm_key(app, k);
+                                }
                             }
                         }
                     }
@@ -300,6 +311,10 @@ async fn run_event_loop(
                         if let Ok(mut w) = writer.lock() {
                             let _ = w.append(&SessionEvent::Message(msg));
                         }
+                    }
+                    TurnMsg::ConfirmPending { reply, summary, .. } => {
+                        app.mode = Mode::Confirm;
+                        app.pending_confirm = Some((reply, summary));
                     }
                     TurnMsg::Error(e) => {
                         app.end_streaming();
@@ -390,6 +405,25 @@ fn take_pending_submit(app: &mut App) -> Option<String> {
 }
 
 use crate::app::Entry;
+
+fn handle_confirm_key(app: &mut App, key: KeyEvent) {
+    let action = match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => hermes_turn::ConfirmAction::Allow,
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            hermes_turn::ConfirmAction::Deny
+        }
+        _ => return,
+    };
+    if let Some((reply, summary)) = app.pending_confirm.take() {
+        let label = match action {
+            hermes_turn::ConfirmAction::Allow => "allowed",
+            hermes_turn::ConfirmAction::Deny => "denied",
+        };
+        app.push_info(format!("  ⚠ {summary} — {label}"));
+        let _ = reply.send(action);
+    }
+    app.mode = Mode::Normal;
+}
 
 async fn handle_key(
     app: &mut App,
@@ -580,7 +614,28 @@ fn spawn_turn(
     let skills = app.skills.clone();
     let memories = app.active_memories.clone();
 
+    // Confirmation channel: the turn loop sends ConfirmRequest, the UI
+    // event loop receives and presents them to the user.
+    let (confirm_tx, mut confirm_rx) =
+        tokio::sync::mpsc::channel::<hermes_turn::ConfirmRequest>(8);
+
+    // Bridge confirm_rx → TurnMsg::ConfirmPending so the UI event loop
+    // can handle it uniformly alongside other TurnMsg variants.
+    let tx_confirm = tx.clone();
+    let confirm_bridge = tokio::spawn(async move {
+        while let Some(req) = confirm_rx.recv().await {
+            let _ = tx_confirm.send(TurnMsg::ConfirmPending {
+                _id: req.id,
+                _tool_name: req.tool_name,
+                summary: req.summary,
+                reply: req.reply,
+            });
+        }
+    });
+
     tokio::spawn(async move {
+        let _guard = confirm_bridge;
+
         let config = hermes_turn::TurnConfig {
             model,
             system: if turn_system.is_empty() { None } else { Some(turn_system) },
@@ -602,6 +657,9 @@ fn spawn_turn(
                 hermes_turn::TurnEvent::ToolUseStart { name, .. } => {
                     let _ = tx2.send(TurnMsg::ToolStart(name));
                 }
+                hermes_turn::TurnEvent::ToolConfirmPending { .. } => {
+                    // Handled via confirm_rx bridge above.
+                }
                 hermes_turn::TurnEvent::ToolUseResult { .. } => {}
                 hermes_turn::TurnEvent::Usage { .. } => {}
                 hermes_turn::TurnEvent::MicroReflection(_) => {}
@@ -620,27 +678,25 @@ fn spawn_turn(
             &config,
             &skills,
             &memories,
+            Some(confirm_tx),
             on_event,
             cancel,
         )
         .await;
 
-        match result {
-            Ok(output) => {
-                for msg in &output.new_messages {
-                    if msg.role == Role::Assistant {
-                        let resp = hermes_core::CompletionResponse {
-                            content: msg.content.clone(),
-                            stop_reason: StopReason::EndTurn,
-                            usage: output.usage,
-                        };
-                        let _ = tx.send(TurnMsg::AssistantFinal(resp));
-                    } else {
-                        let _ = tx.send(TurnMsg::ToolResults(msg.clone()));
-                    }
+        if let Ok(output) = result {
+            for msg in &output.new_messages {
+                if msg.role == Role::Assistant {
+                    let resp = hermes_core::CompletionResponse {
+                        content: msg.content.clone(),
+                        stop_reason: StopReason::EndTurn,
+                        usage: output.usage,
+                    };
+                    let _ = tx.send(TurnMsg::AssistantFinal(resp));
+                } else {
+                    let _ = tx.send(TurnMsg::ToolResults(msg.clone()));
                 }
             }
-            Err(_) => {}
         }
         let _ = tx.send(TurnMsg::Done);
     });
@@ -926,10 +982,7 @@ fn persist_memory(c: &MemoryCandidate) -> Result<std::path::PathBuf> {
     let store = FsMemoryStore::standard().map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut fm = MemoryFrontmatter::new(MemorySource::Reflection, c.confidence, c.tags.clone());
     fm.supersedes = c.supersedes.clone();
-    let scope = match c.scope {
-        MemoryScope::User => MemoryScope::User,
-        MemoryScope::Project => MemoryScope::Project,
-    };
+    let scope = c.scope;
     store.put(scope, fm, &c.fact).map_err(|e| anyhow::anyhow!("{e}"))
 }
 

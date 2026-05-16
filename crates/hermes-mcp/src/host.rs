@@ -50,6 +50,10 @@ impl McpToolHost {
         }
         let mut servers = HashMap::new();
         for (name, spec) in &cfg.servers {
+            if spec.is_disabled() {
+                tracing::info!(server = %name, "skipping disabled MCP server");
+                continue;
+            }
             match Self::connect_one(name.clone(), spec.clone()).await {
                 Ok(s) => {
                     servers.insert(name.clone(), s);
@@ -68,10 +72,10 @@ impl McpToolHost {
 
     async fn connect_one(name: String, spec: ServerSpec) -> Result<McpServer, McpServerError> {
         match spec {
-            ServerSpec::Stdio { command, args, env } => {
-                McpServer::connect_stdio(name, command, args, env).await
-            }
-            ServerSpec::Http { url } => McpServer::connect_http(name, url).await,
+            ServerSpec::Stdio {
+                command, args, env, ..
+            } => McpServer::connect_stdio(name, command, args, env).await,
+            ServerSpec::Http { url, .. } => McpServer::connect_http(name, url).await,
         }
     }
 }

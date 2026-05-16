@@ -23,6 +23,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::chat::send_message,
             commands::chat::cancel_stream,
+            commands::chat::respond_confirm,
             commands::session::list_sessions,
             commands::session::new_session,
             commands::session::load_session,

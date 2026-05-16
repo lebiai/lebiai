@@ -41,6 +41,7 @@ pub fn get_config(state: State<'_, AppState>) -> Result<ConfigView, GuiError> {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct ConfigUpdate {
     pub model: Option<String>,
     pub max_tokens: Option<u32>,

@@ -1,10 +1,19 @@
 //! `hermes ask` — one-shot prompt: send a single user message, print reply.
+//!
+//! Supports MCP tool use: if the LLM requests tool calls, they are executed
+//! automatically (up to `MAX_TOOL_ROUNDS` rounds) before the final text is
+//! printed.
+
+use std::io::Write;
 
 use anyhow::{Context, Result};
-use hermes_core::{CompletionRequest, Message};
+use hermes_core::Message;
 use hermes_llm::Config;
+use hermes_turn::{TurnConfig, TurnEvent};
 
-use super::util::build_active_provider;
+use super::util::{build_active_provider, load_tool_host};
+
+const MAX_TOOL_ROUNDS: usize = 10;
 
 pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
     let cfg = Config::load_default()
@@ -12,26 +21,112 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
     let provider_cfg = cfg.active_provider()?.clone();
     let provider = build_active_provider(&cfg)?;
 
-    let req = CompletionRequest {
+    let workspace_root = cfg.workspace.root.clone();
+    let host = load_tool_host(&workspace_root, None).await?;
+    let tools = host
+        .list_tools()
+        .await
+        .map_err(|e| anyhow::anyhow!("listing tools: {e}"))?;
+
+    let turn_config = TurnConfig {
         model: provider_cfg.model.clone(),
         system,
-        messages: vec![Message::user_text(prompt)],
-        tools: vec![],
         max_tokens: provider_cfg.max_tokens,
-        temperature: None,
-        enable_caching: false,
+        max_tool_rounds: MAX_TOOL_ROUNDS,
+        enable_micro_reflect: false,
+        turns_since_last_reflect: 0,
     };
 
-    let resp = provider
-        .complete(req)
-        .await
-        .map_err(|e| anyhow::anyhow!("provider.complete: {e}"))?;
+    let history = vec![Message::user_text(prompt)];
+    let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    let (confirm_tx, mut confirm_rx) = tokio::sync::mpsc::channel::<hermes_turn::ConfirmRequest>(8);
 
-    println!("{}", resp.text());
+    // Spawn a task that auto-approves tool calls in one-shot mode.
+    let confirm_task = tokio::spawn(async move {
+        while let Some(req) = confirm_rx.recv().await {
+            let _ = req.reply.send(hermes_turn::ConfirmAction::Allow);
+        }
+    });
+
+    let text_started = std::sync::atomic::AtomicBool::new(false);
+    let thinking_started = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let on_event = |event: TurnEvent| {
+        match event {
+            TurnEvent::TextDelta(text) => {
+                if thinking_started.load(Relaxed) {
+                    eprint!("\r\x1b[K");
+                }
+                text_started.store(true, Relaxed);
+                thinking_started.store(false, Relaxed);
+                print!("{text}");
+                std::io::stdout().flush().ok();
+            }
+            TurnEvent::ThinkingDelta(text) => {
+                if !text_started.load(Relaxed) {
+                    let preview: String =
+                        text.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
+                    let preview = preview.replace('\n', " ");
+                    eprint!("\r\x1b[K\x1b[90m  💭 {preview}\x1b[0m");
+                    std::io::stderr().flush().ok();
+                    thinking_started.store(true, Relaxed);
+                }
+            }
+            TurnEvent::ToolUseStart { name, .. } => {
+                if thinking_started.load(Relaxed) {
+                    eprint!("\r\x1b[K");
+                    thinking_started.store(false, Relaxed);
+                }
+                eprintln!("\x1b[33m  🔧 {name}\x1b[0m");
+            }
+            TurnEvent::ToolUseResult { content, is_error, .. } => {
+                if is_error {
+                    eprintln!("\x1b[31m  ✗ {}\x1b[0m", content.lines().next().unwrap_or(""));
+                }
+            }
+            TurnEvent::Usage { .. } | TurnEvent::Done => {}
+            TurnEvent::Error(msg) => {
+                eprintln!("\x1b[31m  error: {msg}\x1b[0m");
+            }
+            _ => {}
+        }
+    };
+
+    let output = hermes_turn::run_turn(
+        provider.as_ref(),
+        host.as_ref(),
+        &tools,
+        &history,
+        &turn_config,
+        &[],
+        &[],
+        Some(confirm_tx),
+        on_event,
+        cancel_rx,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    confirm_task.abort();
+
+    if !text_started.load(Relaxed) {
+        // If no streaming text was printed (e.g. only tool calls), print the
+        // final assistant text from the output messages.
+        for msg in &output.new_messages {
+            if matches!(msg.role, hermes_core::Role::Assistant) {
+                for block in &msg.content {
+                    if let hermes_core::ContentBlock::Text { text } = block {
+                        println!("{text}");
+                    }
+                }
+            }
+        }
+    }
+
     tracing::info!(
-        input_tokens = resp.usage.input_tokens,
-        output_tokens = resp.usage.output_tokens,
-        stop_reason = ?resp.stop_reason,
+        input_tokens = output.usage.input_tokens,
+        output_tokens = output.usage.output_tokens,
         "completion done"
     );
     Ok(())

@@ -44,6 +44,7 @@ pub struct SkillCandidate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryCandidate {
     /// One short statement. Goes into the memory file's body.
+    #[serde(alias = "content")]
     pub fact: String,
     #[serde(default)]
     pub tags: Vec<String>,

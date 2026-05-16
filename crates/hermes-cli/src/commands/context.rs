@@ -1,5 +1,6 @@
 //! Per-turn context assembly: stitch base system prompt + pinned memories
 //! + active memory index + skills index (+ matched-skill bodies) into the
+//!
 //! `system` string sent to the LLM.
 //!
 //! Layout:
@@ -292,9 +293,10 @@ mod tests {
         // A memory marked pinned must appear only in the Pinned section,
         // not duplicated in the Active memory index.
         let p = pinned_memory("mem_p", "pinned body");
+        let p_pinned = p.clone();
         let sources = ContextSources {
             base: None,
-            pinned: &[p.clone()],
+            pinned: std::slice::from_ref(&p_pinned),
             active: &[p],
             all_skills: &[],
             effectiveness: None,

@@ -17,7 +17,7 @@ pub async fn list() -> Result<()> {
             ServerSpec::Stdio { command, args, .. } => {
                 println!("{name}  stdio: {} {}", command, args.join(" "));
             }
-            ServerSpec::Http { url } => {
+            ServerSpec::Http { url, .. } => {
                 println!("{name}  http:  {url}");
             }
         }

@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Entry, Streaming};
+use crate::app::{App, Entry, Mode, Streaming};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let [header, body, footer, input] = Layout::vertical([
@@ -61,12 +61,8 @@ fn render_body(frame: &mut Frame, area: ratatui::prelude::Rect, app: &App) {
                 lines.push(Line::from(""));
             }
             Entry::Assistant(text) => {
-                for (i, segment) in text.split('\n').enumerate() {
-                    if i == 0 {
-                        lines.push(Line::from(segment.to_string()));
-                    } else {
-                        lines.push(Line::from(segment.to_string()));
-                    }
+                for segment in text.split('\n') {
+                    lines.push(Line::from(segment.to_string()));
                 }
                 lines.push(Line::from(""));
             }
@@ -124,6 +120,22 @@ fn render_footer(frame: &mut Frame, area: ratatui::prelude::Rect, app: &App) {
 }
 
 fn render_input(frame: &mut Frame, area: ratatui::prelude::Rect, app: &App) {
+    if app.mode == Mode::Confirm {
+        let summary = app
+            .pending_confirm
+            .as_ref()
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("tool call");
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title(" ⚠ confirm ");
+        let prompt = format!("{summary}  [y/N]");
+        let paragraph = Paragraph::new(prompt).block(block);
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
     let border_style = match app.streaming {
         Streaming::Idle => Style::default().fg(Color::DarkGray),
         _ => Style::default().fg(Color::Yellow),
