@@ -97,6 +97,7 @@ pub async fn send_message(
             max_tool_rounds: 10,
             enable_micro_reflect: true,
             turns_since_last_reflect: 3,
+            permissions: hermes_turn::PermissionChecker::default(),
         };
 
         let evt = on_event.clone();

@@ -26,6 +26,8 @@ pub struct Config {
     pub workspace: WorkspaceConfig,
     #[serde(default)]
     pub context: ContextConfig,
+    #[serde(default)]
+    pub permissions: PermissionsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +106,19 @@ impl Default for ReflectConfig {
 
 fn default_min_turns() -> usize {
     3
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PermissionsConfig {
+    /// Rules that auto-approve matching tool calls without prompting.
+    /// Format: `<tool>` or `<tool>:<glob_pattern>`.
+    /// Example: `bash:git *`, `edit:*.rs`, `read`, `mcp:github__*`.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Rules that auto-deny matching tool calls without prompting.
+    /// Same format as `allow`. Evaluated before `allow`.
+    #[serde(default)]
+    pub deny: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

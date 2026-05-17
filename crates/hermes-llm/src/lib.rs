@@ -10,5 +10,5 @@ pub mod config;
 pub mod openai;
 
 pub use anthropic::AnthropicProvider;
-pub use config::{Config, ProviderConfig, ProviderKind};
+pub use config::{Config, PermissionsConfig, ProviderConfig, ProviderKind};
 pub use openai::OpenAiProvider;

@@ -35,6 +35,7 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
         max_tool_rounds: MAX_TOOL_ROUNDS,
         enable_micro_reflect: false,
         turns_since_last_reflect: 0,
+        permissions: hermes_turn::PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
     };
 
     let history = vec![Message::user_text(prompt)];

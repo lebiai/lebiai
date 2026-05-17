@@ -256,6 +256,7 @@ pub async fn run(
             turns_since_last_reflect,
             &all_skills,
             &active_memories,
+            &cfg.permissions,
         )
         .await
         {
@@ -359,10 +360,12 @@ async fn run_one_turn(
     turns_since_last_reflect: usize,
     skills: &[hermes_skills::LoadedSkill],
     memories: &[hermes_memory::LoadedMemory],
+    permissions_cfg: &hermes_llm::PermissionsConfig,
 ) -> Result<Option<hermes_reflect::ReflectionOutput>> {
-    use hermes_turn::{ConfirmAction, TurnConfig, TurnEvent};
+    use hermes_turn::{ConfirmAction, PermissionChecker, TurnConfig, TurnEvent};
     use std::io::Write as _;
 
+    let permissions = PermissionChecker::new(&permissions_cfg.allow, &permissions_cfg.deny);
     let config = TurnConfig {
         model: model.to_string(),
         system: if turn_system.is_empty() { None } else { Some(turn_system.to_string()) },
@@ -370,6 +373,7 @@ async fn run_one_turn(
         max_tool_rounds: MAX_TOOL_ROUNDS,
         enable_micro_reflect: enable_reflect,
         turns_since_last_reflect,
+        permissions,
     };
 
     let history = session.messages.clone();
@@ -610,7 +614,7 @@ fn friendly_tool_result(name: &str, input: &serde_json::Value, workspace: &std::
 
 /// Build the session system prompt: workspace clause first, then any
 /// user-supplied system prompt.
-fn compose_system_prompt(
+pub(crate) fn compose_system_prompt(
     user_system: Option<String>,
     workspace_root: &std::path::Path,
 ) -> Option<String> {
@@ -1002,7 +1006,7 @@ fn edit_in_editor(initial_content: &str) -> Result<String> {
 }
 
 /// Present micro-reflection candidates inline (non-blocking, quick a/r/s).
-fn present_micro_candidates(
+pub(crate) fn present_micro_candidates(
     output: &hermes_reflect::ReflectionOutput,
     memory_store: &dyn MemoryStore,
     skill_store: &FsSkillStore,

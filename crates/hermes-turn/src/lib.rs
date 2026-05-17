@@ -14,6 +14,12 @@ use hermes_reflect::ReflectionOutput;
 use hermes_skills::LoadedSkill;
 use tokio::sync::{mpsc, oneshot};
 
+pub mod agent;
+pub mod permissions;
+
+pub use agent::{AgentConfig, AgentEvent, AgentOutput, run_agent};
+pub use permissions::{Permission, PermissionChecker};
+
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 10;
 
 /// User's decision on a dangerous tool call.
@@ -78,6 +84,7 @@ pub enum TurnEvent {
     Done,
 }
 
+#[derive(Debug, Clone)]
 pub struct TurnConfig {
     pub model: String,
     pub system: Option<String>,
@@ -85,6 +92,7 @@ pub struct TurnConfig {
     pub max_tool_rounds: usize,
     pub enable_micro_reflect: bool,
     pub turns_since_last_reflect: usize,
+    pub permissions: PermissionChecker,
 }
 
 impl Default for TurnConfig {
@@ -96,6 +104,7 @@ impl Default for TurnConfig {
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
             enable_micro_reflect: true,
             turns_since_last_reflect: 3,
+            permissions: PermissionChecker::default(),
         }
     }
 }
@@ -240,61 +249,77 @@ where
 
         let mut tool_results = Vec::with_capacity(tool_uses.len());
         for (id, name, input) in tool_uses {
-            // Confirmation gate for dangerous tools
-            if is_dangerous_tool(&name) {
-                if let Some(tx) = &confirm_tx {
-                    let (reply_tx, reply_rx) = oneshot::channel();
-                    let summary = tool_call_summary(&name, &input);
-                    on_event(TurnEvent::ToolConfirmPending {
-                        id: id.clone(),
-                        tool_name: name.clone(),
-                        summary: summary.clone(),
+            // Permission gate: deny → allow → prompt (if dangerous)
+            match config.permissions.check(&name, &input) {
+                Permission::Deny => {
+                    tool_results.push(ContentBlock::ToolResult {
+                        tool_use_id: id.clone(),
+                        content: "Tool call denied by permission rule.".into(),
+                        is_error: true,
                     });
-                    let req = ConfirmRequest {
-                        id: id.clone(),
-                        tool_name: name.clone(),
-                        summary,
-                        reply: reply_tx,
-                    };
-                    if tx.send(req).await.is_err() {
-                        // Channel closed — default to deny
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id,
-                            content: "Tool call denied (confirmation channel closed).".into(),
-                            is_error: true,
+                    on_event(TurnEvent::ToolUseResult {
+                        id,
+                        content: "Tool call denied by permission rule.".into(),
+                        is_error: true,
+                    });
+                    continue;
+                }
+                Permission::Allow => { /* skip confirmation, proceed to host.call() */ }
+                Permission::Prompt if is_dangerous_tool(&name) => {
+                    if let Some(tx) = &confirm_tx {
+                        let (reply_tx, reply_rx) = oneshot::channel();
+                        let summary = tool_call_summary(&name, &input);
+                        on_event(TurnEvent::ToolConfirmPending {
+                            id: id.clone(),
+                            tool_name: name.clone(),
+                            summary: summary.clone(),
                         });
-                        continue;
-                    }
-                    let action = tokio::select! {
-                        biased;
-                        _ = &mut cancel => {
-                            on_event(TurnEvent::Done);
-                            let new_messages = messages[turn_start_idx..].to_vec();
-                            return Ok(TurnOutput {
-                                new_messages,
-                                usage: cumulative_usage,
-                                reflection: None,
-                            });
-                        }
-                        r = reply_rx => r,
-                    };
-                    match action {
-                        Ok(ConfirmAction::Allow) => { /* proceed to host.call() below */ }
-                        Ok(ConfirmAction::Deny) | Err(_) => {
+                        let req = ConfirmRequest {
+                            id: id.clone(),
+                            tool_name: name.clone(),
+                            summary,
+                            reply: reply_tx,
+                        };
+                        if tx.send(req).await.is_err() {
                             tool_results.push(ContentBlock::ToolResult {
-                                tool_use_id: id.clone(),
-                                content: "Tool call denied by user.".into(),
-                                is_error: true,
-                            });
-                            on_event(TurnEvent::ToolUseResult {
-                                id,
-                                content: "Tool call denied by user.".into(),
+                                tool_use_id: id,
+                                content: "Tool call denied (confirmation channel closed).".into(),
                                 is_error: true,
                             });
                             continue;
                         }
+                        let action = tokio::select! {
+                            biased;
+                            _ = &mut cancel => {
+                                on_event(TurnEvent::Done);
+                                let new_messages = messages[turn_start_idx..].to_vec();
+                                return Ok(TurnOutput {
+                                    new_messages,
+                                    usage: cumulative_usage,
+                                    reflection: None,
+                                });
+                            }
+                            r = reply_rx => r,
+                        };
+                        match action {
+                            Ok(ConfirmAction::Allow) => { /* proceed to host.call() below */ }
+                            Ok(ConfirmAction::Deny) | Err(_) => {
+                                tool_results.push(ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: "Tool call denied by user.".into(),
+                                    is_error: true,
+                                });
+                                on_event(TurnEvent::ToolUseResult {
+                                    id,
+                                    content: "Tool call denied by user.".into(),
+                                    is_error: true,
+                                });
+                                continue;
+                            }
+                        }
                     }
                 }
+                Permission::Prompt => { /* not dangerous, proceed */ }
             }
 
             let outcome = match host.call(&name, input).await {

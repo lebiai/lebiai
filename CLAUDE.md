@@ -14,10 +14,9 @@ Tech stack:
 
 ```text
 Rust 2021 (rustc 1.91+), Cargo workspace, tokio async runtime.
-Crates: hermes-core / -llm / -mcp / -store / -skills / -memory / -reflect / -cli / -tui / -gui
+Crates: hermes-core / -llm / -mcp / -store / -skills / -memory / -reflect / -cli / -gui
 LLM: Anthropic Messages API (also DeepSeek's anthropic-compat endpoint).
 MCP: rmcp 1.6 (stdio + Streamable HTTP).
-TUI: ratatui 0.30 + crossterm 0.29.
 Storage: plain markdown + YAML frontmatter under ~/.small-rust-hermes/.
 ```
 

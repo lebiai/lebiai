@@ -1,0 +1,278 @@
+//! `hermes run` — autonomous agent: receive a goal, iterate until complete.
+//!
+//! Mirrors the `hermes chat` subsystem wiring: loads skills, memories,
+//! memory-backed tool host, session persistence, workspace system prompt,
+//! context assembly, micro-reflection, and end-of-session reflection.
+
+use std::io::Write;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use hermes_core::{Message, Session, SessionEvent, SessionMeta};
+use hermes_llm::Config;
+use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore};
+use hermes_skills::{FsSkillStore, LoadedSkill, SkillStore};
+use hermes_store::SessionWriter;
+use hermes_turn::{AgentConfig, AgentEvent, TurnConfig, TurnEvent};
+
+use super::context::ContextSources;
+use super::util::{build_active_provider, load_tool_host, session_path_for};
+
+pub async fn run(goal: String, system: Option<String>, max_iterations: usize) -> Result<()> {
+    let cfg = Config::load_default()
+        .context("loading config from ~/.small-rust-hermes/config.toml")?;
+    let provider_cfg = cfg.active_provider()?.clone();
+    let provider = build_active_provider(&cfg)?;
+
+    let workspace_root = cfg.workspace.root.clone();
+
+    // --- memory store (enables memory_search tool) ---
+    let memory_store_arc: Arc<dyn MemoryStore> = Arc::new(
+        FsMemoryStore::standard().map_err(|e| anyhow::anyhow!("memory store: {e}"))?,
+    );
+    let host = load_tool_host(&workspace_root, Some(memory_store_arc.clone())).await?;
+    let tools = host
+        .list_tools()
+        .await
+        .map_err(|e| anyhow::anyhow!("listing tools: {e}"))?;
+
+    // --- workspace clause in system prompt ---
+    let system = super::chat::compose_system_prompt(system, &workspace_root);
+
+    // --- skills & memories snapshot ---
+    let skill_store = FsSkillStore::standard()
+        .map_err(|e| anyhow::anyhow!("skill store: {e}"))?;
+    let all_skills: Vec<LoadedSkill> = skill_store
+        .list()
+        .map_err(|e| anyhow::anyhow!("listing skills: {e}"))?;
+    let active_memories: Vec<LoadedMemory> = memory_store_arc
+        .list_active()
+        .map_err(|e| anyhow::anyhow!("listing memories: {e}"))?;
+    let pinned_memories: Vec<LoadedMemory> = active_memories
+        .iter()
+        .filter(|m| m.frontmatter.pinned)
+        .cloned()
+        .collect();
+    let effectiveness: std::collections::HashMap<String, hermes_skills::SkillEffectiveness> =
+        hermes_skills::load_effectiveness().unwrap_or_default();
+
+    // --- build per-goal system prompt with context sources ---
+    let sources = ContextSources {
+        base: system.as_deref(),
+        pinned: &pinned_memories,
+        active: &active_memories,
+        all_skills: &all_skills,
+        effectiveness: Some(&effectiveness),
+    };
+    let turn_system = sources.build_turn_system(&goal);
+
+    // --- session persistence ---
+    let meta = SessionMeta::new(&provider_cfg.model, provider.name());
+    let session_path = session_path_for(&meta)?;
+    let mut writer = SessionWriter::create(&session_path)
+        .with_context(|| format!("creating session file at {}", session_path.display()))?;
+    writer
+        .append(&SessionEvent::Meta(meta.clone()))
+        .context("writing session meta line")?;
+    let mut session = Session::new(meta);
+
+    // --- turn config (from config.toml, not hardcoded) ---
+    let turn_config = TurnConfig {
+        model: provider_cfg.model.clone(),
+        system: if turn_system.is_empty() {
+            None
+        } else {
+            Some(turn_system)
+        },
+        max_tokens: provider_cfg.max_tokens,
+        max_tool_rounds: 10,
+        enable_micro_reflect: true,
+        turns_since_last_reflect: 100, // start high so first turn can trigger
+        permissions: hermes_turn::PermissionChecker::new(
+            &cfg.permissions.allow,
+            &cfg.permissions.deny,
+        ),
+    };
+
+    let agent_config = AgentConfig {
+        goal: goal.clone(),
+        max_iterations,
+        turn_config,
+        context_model_limit: cfg.context.model_limit,
+        context_headroom: cfg.context.headroom,
+        context_keep_recent_turns: cfg.context.keep_recent_turns,
+    };
+
+    // --- banner ---
+    eprintln!("workspace: {}", workspace_root.display());
+    eprintln!("session:   {}", session_path.display());
+    eprintln!("tools:     {} loaded", tools.len());
+    eprintln!(
+        "memory:    {} active ({} pinned)",
+        active_memories.len(),
+        pinned_memories.len()
+    );
+    eprintln!("skills:    {} loaded", all_skills.len());
+    eprintln!("goal:      {goal}");
+    eprintln!();
+
+    let history: Vec<Message> = Vec::new();
+    let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    let (confirm_tx, mut confirm_rx) =
+        tokio::sync::mpsc::channel::<hermes_turn::ConfirmRequest>(8);
+
+    // --- confirmation task: prompt user for dangerous tools ---
+    let confirm_task = tokio::spawn(async move {
+        while let Some(req) = confirm_rx.recv().await {
+            eprint!(
+                "\x1b[1m\x1b[33m  ⚠ confirm\x1b[0m {}: {}  \x1b[1m[y/N]\x1b[0m ",
+                req.tool_name, req.summary,
+            );
+            std::io::stderr().flush().ok();
+            let mut input = String::new();
+            let action = if std::io::stdin().read_line(&mut input).is_ok()
+                && input.trim().eq_ignore_ascii_case("y")
+            {
+                hermes_turn::ConfirmAction::Allow
+            } else {
+                hermes_turn::ConfirmAction::Deny
+            };
+            let _ = req.reply.send(action);
+        }
+    });
+
+    let on_event = |event: AgentEvent| {
+        match event {
+            AgentEvent::TurnStart { iteration, max } => {
+                eprintln!("\x1b[1m--- Iteration {iteration}/{max} ---\x1b[0m");
+            }
+            AgentEvent::TurnEvent(te) => match te {
+                TurnEvent::TextDelta(text) => {
+                    print!("{text}");
+                    std::io::stdout().flush().ok();
+                }
+                TurnEvent::ThinkingDelta(text) => {
+                    let preview: String =
+                        text.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
+                    let preview = preview.replace('\n', " ");
+                    eprint!("\r\x1b[K\x1b[90m  💭 {preview}\x1b[0m");
+                    std::io::stderr().flush().ok();
+                }
+                TurnEvent::ToolUseStart { name, .. } => {
+                    eprint!("\r\x1b[K");
+                    eprintln!("\x1b[33m  🔧 {name}\x1b[0m");
+                }
+                TurnEvent::ToolUseResult { content, is_error, .. } => {
+                    if is_error {
+                        eprintln!("\x1b[31m  ✗ {}\x1b[0m", content.lines().next().unwrap_or(""));
+                    }
+                }
+                TurnEvent::ToolConfirmPending { tool_name, summary, .. } => {
+                    tracing::debug!(tool_name, summary, "tool confirmation pending");
+                }
+                TurnEvent::Usage { .. } | TurnEvent::Done => {}
+                TurnEvent::MicroReflection(output) => {
+                    eprintln!("\x1b[35m  ✨ reflection: {}\x1b[0m", output.summary);
+                }
+                TurnEvent::Error(msg) => {
+                    eprintln!("\x1b[31m  error: {msg}\x1b[0m");
+                }
+            },
+            AgentEvent::TurnEnd { iteration } => {
+                eprintln!("\n\x1b[2m  iteration {iteration} done\x1b[0m");
+            }
+            AgentEvent::Compacted { removed } => {
+                eprintln!("\x1b[2m  🗜 compacted: removed {removed} messages\x1b[0m");
+            }
+            AgentEvent::GoalComplete { summary } => {
+                eprintln!("\n\x1b[32m✓ Goal complete:\x1b[0m {summary}");
+            }
+            AgentEvent::GoalFailed { reason } => {
+                eprintln!("\n\x1b[31m✗ Goal failed:\x1b[0m {reason}");
+            }
+            AgentEvent::MaxIterationsReached => {
+                eprintln!("\n\x1b[33m⚠ Max iterations ({max_iterations}) reached without completion.\x1b[0m");
+            }
+        }
+    };
+
+    let output = hermes_turn::run_agent(
+        provider.as_ref(),
+        host.as_ref(),
+        &tools,
+        &history,
+        &agent_config,
+        &all_skills,
+        &active_memories,
+        Some(confirm_tx),
+        on_event,
+        cancel_rx,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    confirm_task.abort();
+
+    // --- persist all messages to session JSONL ---
+    for msg in &output.messages {
+        session.messages.push(msg.clone());
+        if let Err(e) = writer.append(&SessionEvent::Message(msg.clone())) {
+            tracing::warn!(error=%e, "persist message");
+        }
+    }
+    session.record_usage(output.total_usage);
+    if let Err(e) = writer.append(&SessionEvent::Usage(output.total_usage)) {
+        tracing::warn!(error=%e, "persist usage");
+    }
+
+    eprintln!();
+    eprintln!("session saved: {}", session_path.display());
+
+    // --- present micro-reflection candidates ---
+    for r in &output.reflections {
+        if r.is_empty() {
+            continue;
+        }
+        eprintln!();
+        eprintln!("\x1b[90m💡 micro-reflection found candidates:\x1b[0m");
+        super::chat::present_micro_candidates(
+            r,
+            &*memory_store_arc,
+            &skill_store,
+            &session,
+            &active_memories,
+        );
+    }
+
+    // --- end-of-session reflection (if micro-reflection never triggered) ---
+    let had_micro = output.reflections.iter().any(|r| !r.is_empty());
+    if !had_micro {
+        let user_turns = session
+            .messages
+            .iter()
+            .filter(|m| {
+                matches!(m.role, hermes_core::Role::User)
+                    && m.content
+                        .iter()
+                        .any(|b| matches!(b, hermes_core::ContentBlock::Text { .. }))
+            })
+            .count();
+        if user_turns >= cfg.reflect.min_turns {
+            eprintln!("(running end-of-session reflection...)");
+            if let Err(e) =
+                super::reflect::run_with_min_turns(provider.as_ref(), &session, 0).await
+            {
+                eprintln!("(reflection failed: {e:#})");
+            }
+        }
+    }
+
+    tracing::info!(
+        iterations = output.iterations,
+        completed = output.completed,
+        input_tokens = output.total_usage.input_tokens,
+        output_tokens = output.total_usage.output_tokens,
+        "agent loop done"
+    );
+    Ok(())
+}

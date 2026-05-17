@@ -26,6 +26,14 @@ enum Command {
         #[arg(long)]
         system: Option<String>,
     },
+    /// Autonomous agent: receive a goal, iterate until complete.
+    Run {
+        goal: String,
+        #[arg(long)]
+        system: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        max_iterations: usize,
+    },
     /// Interactive multi-turn REPL with JSONL session persistence.
     Chat {
         #[arg(long)]
@@ -159,6 +167,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Ask { prompt, system } => commands::ask::run(prompt, system).await,
+        Command::Run {
+            goal,
+            system,
+            max_iterations,
+        } => commands::agent::run(goal, system, max_iterations).await,
         Command::Chat {
             system,
             model,

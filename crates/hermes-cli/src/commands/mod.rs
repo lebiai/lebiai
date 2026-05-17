@@ -1,5 +1,6 @@
 //! Subcommand implementations for `hermes`.
 
+pub mod agent;
 pub mod ask;
 pub mod chat;
 pub mod context;
