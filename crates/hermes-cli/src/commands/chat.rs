@@ -385,27 +385,38 @@ async fn run_one_turn(
 
     // Spawn a task that reads confirmation requests and prompts the user.
     let confirm_task = tokio::spawn(async move {
+        let mut always_allow: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         while let Some(req) = confirm_rx.recv().await {
+            if always_allow.contains(&req.tool_name) {
+                let _ = req.reply.send(ConfirmAction::Allow);
+                continue;
+            }
             eprint!(
-                "\x1b[1m\x1b[33m  ⚠ confirm\x1b[0m {}: {}  \x1b[1m[y/N]\x1b[0m ",
+                "\x1b[1m\x1b[33m  ⚠ confirm\x1b[0m {}: {}  \x1b[1m[y/a/N]\x1b[0m ",
                 req.tool_name, req.summary,
             );
             std::io::stderr().flush().ok();
             let mut input = String::new();
-            let action = if std::io::stdin().read_line(&mut input).is_ok()
-                && input.trim().eq_ignore_ascii_case("y")
-            {
-                ConfirmAction::Allow
+            let action = if std::io::stdin().read_line(&mut input).is_ok() {
+                match input.trim().to_ascii_lowercase().as_str() {
+                    "y" => ConfirmAction::Allow,
+                    "a" => {
+                        always_allow.insert(req.tool_name.clone());
+                        ConfirmAction::AlwaysAllow
+                    }
+                    _ => ConfirmAction::Deny,
+                }
             } else {
                 ConfirmAction::Deny
             };
-            // If the reply channel is closed (turn cancelled), just drop it.
             let _ = req.reply.send(action);
         }
     });
 
     let text_started = std::sync::atomic::AtomicBool::new(false);
     let thinking_started = std::sync::atomic::AtomicBool::new(false);
+    let thinking_buf = std::sync::Mutex::new(String::new());
     use std::sync::atomic::Ordering::Relaxed;
 
     let on_event = |event: TurnEvent| {
@@ -413,16 +424,27 @@ async fn run_one_turn(
             TurnEvent::TextDelta(text) => {
                 if thinking_started.load(Relaxed) {
                     eprint!("\r\x1b[K");
+                    let mut buf = thinking_buf.lock().unwrap();
+                    if !buf.is_empty() {
+                        eprintln!("\x1b[90m  💭 ──────\x1b[0m");
+                        for line in buf.lines() {
+                            eprintln!("\x1b[90m  │ {line}\x1b[0m");
+                        }
+                    }
+                    buf.clear();
+                    thinking_started.store(false, Relaxed);
                 }
                 text_started.store(true, Relaxed);
-                thinking_started.store(false, Relaxed);
                 print!("{text}");
                 std::io::stdout().flush().ok();
             }
             TurnEvent::ThinkingDelta(text) => {
                 if !text_started.load(Relaxed) {
-                    let preview: String = text.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
+                    let mut buf = thinking_buf.lock().unwrap();
+                    buf.push_str(&text);
+                    let preview: String = buf.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
                     let preview = preview.replace('\n', " ");
+                    drop(buf);
                     eprint!("\r\x1b[K\x1b[90m  💭 {preview}\x1b[0m");
                     std::io::stderr().flush().ok();
                     thinking_started.store(true, Relaxed);
@@ -431,6 +453,14 @@ async fn run_one_turn(
             TurnEvent::ToolUseStart { name, .. } => {
                 if thinking_started.load(Relaxed) {
                     eprint!("\r\x1b[K");
+                    let mut buf = thinking_buf.lock().unwrap();
+                    if !buf.is_empty() {
+                        eprintln!("\x1b[90m  💭 ──────\x1b[0m");
+                        for line in buf.lines() {
+                            eprintln!("\x1b[90m  │ {line}\x1b[0m");
+                        }
+                    }
+                    buf.clear();
                     thinking_started.store(false, Relaxed);
                 }
                 eprintln!("\x1b[33m  🔧 {name}\x1b[0m");

@@ -26,6 +26,8 @@ const DEFAULT_MAX_TOOL_ROUNDS: usize = 10;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmAction {
     Allow,
+    /// Allow this and all future calls to the same tool name.
+    AlwaysAllow,
     Deny,
 }
 
@@ -39,10 +41,8 @@ pub struct ConfirmRequest {
 
 /// Returns true if the tool requires user confirmation before execution.
 pub fn is_dangerous_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "bash" | "write" | "edit" | "web_fetch" | "web_search" | "todo_add" | "todo_update"
-    ) || name.contains("__") // MCP tools: server__tool
+    matches!(name, "bash" | "write" | "edit")
+        || name.contains("__") // MCP tools: server__tool
 }
 
 /// Produce a human-readable one-liner summarizing what a tool call will do.
@@ -302,7 +302,9 @@ where
                             r = reply_rx => r,
                         };
                         match action {
-                            Ok(ConfirmAction::Allow) => { /* proceed to host.call() below */ }
+                            Ok(ConfirmAction::Allow | ConfirmAction::AlwaysAllow) => {
+                                /* proceed to host.call() below */
+                            }
                             Ok(ConfirmAction::Deny) | Err(_) => {
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),

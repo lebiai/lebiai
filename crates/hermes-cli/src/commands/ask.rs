@@ -51,6 +51,7 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
 
     let text_started = std::sync::atomic::AtomicBool::new(false);
     let thinking_started = std::sync::atomic::AtomicBool::new(false);
+    let thinking_buf = std::sync::Mutex::new(String::new());
     use std::sync::atomic::Ordering::Relaxed;
 
     let on_event = |event: TurnEvent| {
@@ -58,17 +59,27 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
             TurnEvent::TextDelta(text) => {
                 if thinking_started.load(Relaxed) {
                     eprint!("\r\x1b[K");
+                    let mut buf = thinking_buf.lock().unwrap();
+                    if !buf.is_empty() {
+                        eprintln!("\x1b[90m  💭 ──────\x1b[0m");
+                        for line in buf.lines() {
+                            eprintln!("\x1b[90m  │ {line}\x1b[0m");
+                        }
+                    }
+                    buf.clear();
+                    thinking_started.store(false, Relaxed);
                 }
                 text_started.store(true, Relaxed);
-                thinking_started.store(false, Relaxed);
                 print!("{text}");
                 std::io::stdout().flush().ok();
             }
             TurnEvent::ThinkingDelta(text) => {
                 if !text_started.load(Relaxed) {
-                    let preview: String =
-                        text.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
+                    let mut buf = thinking_buf.lock().unwrap();
+                    buf.push_str(&text);
+                    let preview: String = buf.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
                     let preview = preview.replace('\n', " ");
+                    drop(buf);
                     eprint!("\r\x1b[K\x1b[90m  💭 {preview}\x1b[0m");
                     std::io::stderr().flush().ok();
                     thinking_started.store(true, Relaxed);
@@ -77,6 +88,14 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
             TurnEvent::ToolUseStart { name, .. } => {
                 if thinking_started.load(Relaxed) {
                     eprint!("\r\x1b[K");
+                    let mut buf = thinking_buf.lock().unwrap();
+                    if !buf.is_empty() {
+                        eprintln!("\x1b[90m  💭 ──────\x1b[0m");
+                        for line in buf.lines() {
+                            eprintln!("\x1b[90m  │ {line}\x1b[0m");
+                        }
+                    }
+                    buf.clear();
                     thinking_started.store(false, Relaxed);
                 }
                 eprintln!("\x1b[33m  🔧 {name}\x1b[0m");

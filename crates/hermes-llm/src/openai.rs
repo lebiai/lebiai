@@ -42,7 +42,8 @@ impl OpenAiProvider {
         default_model: impl Into<String>,
     ) -> Result<Self> {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
+            .connect_timeout(Duration::from_secs(30))
+            .read_timeout(Duration::from_secs(300))
             .user_agent(format!("small-rust-hermes/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| Error::Provider(format!("building http client: {e}")))?;

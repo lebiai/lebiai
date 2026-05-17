@@ -123,23 +123,48 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: usize) ->
 
     // --- confirmation task: prompt user for dangerous tools ---
     let confirm_task = tokio::spawn(async move {
+        let mut always_allow: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         while let Some(req) = confirm_rx.recv().await {
+            if always_allow.contains(&req.tool_name) {
+                let _ = req.reply.send(hermes_turn::ConfirmAction::Allow);
+                continue;
+            }
             eprint!(
-                "\x1b[1m\x1b[33m  ⚠ confirm\x1b[0m {}: {}  \x1b[1m[y/N]\x1b[0m ",
+                "\x1b[1m\x1b[33m  ⚠ confirm\x1b[0m {}: {}  \x1b[1m[y/a/N]\x1b[0m ",
                 req.tool_name, req.summary,
             );
             std::io::stderr().flush().ok();
             let mut input = String::new();
-            let action = if std::io::stdin().read_line(&mut input).is_ok()
-                && input.trim().eq_ignore_ascii_case("y")
-            {
-                hermes_turn::ConfirmAction::Allow
+            let action = if std::io::stdin().read_line(&mut input).is_ok() {
+                match input.trim().to_ascii_lowercase().as_str() {
+                    "y" => hermes_turn::ConfirmAction::Allow,
+                    "a" => {
+                        always_allow.insert(req.tool_name.clone());
+                        hermes_turn::ConfirmAction::AlwaysAllow
+                    }
+                    _ => hermes_turn::ConfirmAction::Deny,
+                }
             } else {
                 hermes_turn::ConfirmAction::Deny
             };
             let _ = req.reply.send(action);
         }
     });
+
+    let thinking_buf = std::sync::Mutex::new(String::new());
+
+    let flush_thinking = |buf: &std::sync::Mutex<String>| {
+        let mut b = buf.lock().unwrap();
+        if !b.is_empty() {
+            eprint!("\r\x1b[K");
+            eprintln!("\x1b[90m  💭 ──────\x1b[0m");
+            for line in b.lines() {
+                eprintln!("\x1b[90m  │ {line}\x1b[0m");
+            }
+            b.clear();
+        }
+    };
 
     let on_event = |event: AgentEvent| {
         match event {
@@ -148,17 +173,21 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: usize) ->
             }
             AgentEvent::TurnEvent(te) => match te {
                 TurnEvent::TextDelta(text) => {
+                    flush_thinking(&thinking_buf);
                     print!("{text}");
                     std::io::stdout().flush().ok();
                 }
                 TurnEvent::ThinkingDelta(text) => {
-                    let preview: String =
-                        text.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
+                    let mut buf = thinking_buf.lock().unwrap();
+                    buf.push_str(&text);
+                    let preview: String = buf.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
                     let preview = preview.replace('\n', " ");
+                    drop(buf);
                     eprint!("\r\x1b[K\x1b[90m  💭 {preview}\x1b[0m");
                     std::io::stderr().flush().ok();
                 }
                 TurnEvent::ToolUseStart { name, .. } => {
+                    flush_thinking(&thinking_buf);
                     eprint!("\r\x1b[K");
                     eprintln!("\x1b[33m  🔧 {name}\x1b[0m");
                 }
