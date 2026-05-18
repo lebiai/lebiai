@@ -95,8 +95,6 @@ pub async fn send_message(
             system: if turn_system.is_empty() { None } else { Some(turn_system) },
             max_tokens,
             max_tool_rounds: 10,
-            enable_micro_reflect: true,
-            turns_since_last_reflect: 3,
             permissions: hermes_turn::PermissionChecker::default(),
         };
 
@@ -129,13 +127,6 @@ pub async fn send_message(
                 TurnEvent::Usage { input_tokens, output_tokens } => {
                     let _ = evt.send(ChatStreamEvent::UsageUpdate { input_tokens, output_tokens });
                 }
-                TurnEvent::MicroReflection(output) => {
-                    let _ = evt.send(ChatStreamEvent::MicroReflection {
-                        summary: output.summary,
-                        memory_count: output.memory_candidates.len() as u32,
-                        skill_count: output.skill_candidates.len() as u32,
-                    });
-                }
                 TurnEvent::Error(message) => {
                     let _ = evt.send(ChatStreamEvent::Error { message });
                 }
@@ -161,8 +152,6 @@ pub async fn send_message(
             &tools,
             &history,
             &config,
-            &skills,
-            &active,
             Some(confirm_tx),
             on_turn_event,
             cancel_rx,

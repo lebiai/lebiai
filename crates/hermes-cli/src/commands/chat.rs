@@ -31,7 +31,6 @@ const MAX_TOOL_ROUNDS: usize = 10;
 pub async fn run(
     system: Option<String>,
     model_override: Option<String>,
-    no_reflect: bool,
     resume_path: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let cfg = Config::load_default()
@@ -119,30 +118,11 @@ pub async fn run(
     );
     eprintln!("skills:   {} loaded", all_skills.len());
     eprintln!("commands: /exit /quit /clear /tokens /tools /memory /skills /context /session /remember /forget /reflect /help");
-    if let Some(warn) = super::reflect_stats::low_acceptance_warning(50) {
-        eprintln!("{warn}");
-    }
     eprintln!();
 
-    // Resurface deferred candidates from previous sessions.
-    present_deferred_candidates(&*memory_store_arc, &skill_store, &session);
-
     let mut line_editor = ChatLineEditor::new()?;
-    let mut pending_candidates: Vec<hermes_reflect::ReflectionOutput> = Vec::new();
-    let mut turns_since_last_reflect: usize = 100; // start high so first turn can trigger
-    let mut micro_reflected_this_session = false;
 
     loop {
-        // Before prompting: show any pending micro-reflection candidates.
-        for output in pending_candidates.drain(..) {
-            if output.is_empty() {
-                continue;
-            }
-            eprintln!();
-            eprintln!("\x1b[90m💡 micro-reflection found candidates:\x1b[0m");
-            present_micro_candidates(&output, &*memory_store_arc, &skill_store, &session, &active_memories);
-        }
-
         let input = match line_editor.readline("> ").await {
             Ok(LineOutcome::Line(l)) => l,
             Ok(LineOutcome::Interrupted) => {
@@ -173,8 +153,6 @@ pub async fn run(
                 &*memory_store_arc,
                 &skill_store,
                 provider.as_ref(),
-                &mut turns_since_last_reflect,
-                &mut micro_reflected_this_session,
             ).await {
                 break;
             }
@@ -252,18 +230,11 @@ pub async fn run(
             &workspace_root,
             &mut session,
             &mut writer,
-            !no_reflect,
-            turns_since_last_reflect,
-            &all_skills,
-            &active_memories,
             &cfg.permissions,
         )
         .await
         {
-            Ok(Some(reflection)) if !reflection.is_empty() => {
-                pending_candidates.push(reflection);
-            }
-            Ok(_) => {}
+            Ok(()) => {}
             Err(e) => eprintln!("turn error: {e:#}"),
         }
 
@@ -307,41 +278,11 @@ pub async fn run(
             }
         }
         println!();
-
-        // --- Per-turn micro-reflection is now handled inside run_one_turn ---
-        turns_since_last_reflect += 1;
-        if pending_candidates.iter().any(|o| !o.is_empty()) {
-            turns_since_last_reflect = 0;
-            micro_reflected_this_session = true;
-        }
     }
 
     eprintln!("session saved: {}", session_path.display());
     line_editor.save_history();
 
-    // Fallback: if micro-reflection never triggered this session AND there
-    // are enough turns, run one final full reflection. Otherwise skip —
-    // the user already saw candidates inline.
-    if !no_reflect && !micro_reflected_this_session {
-        let user_turns = session
-            .messages
-            .iter()
-            .filter(|m| matches!(m.role, hermes_core::Role::User)
-                && m.content.iter().any(|b| matches!(b, ContentBlock::Text { .. })))
-            .count();
-        if user_turns >= cfg.reflect.min_turns {
-            eprintln!("(running end-of-session reflection...)");
-            if let Err(e) = super::reflect::run_with_min_turns(
-                provider.as_ref(),
-                &session,
-                0, // already checked min_turns above
-            )
-            .await
-            {
-                eprintln!("(reflection failed: {e:#})");
-            }
-        }
-    }
     Ok(())
 }
 
@@ -356,12 +297,8 @@ async fn run_one_turn(
     _workspace: &std::path::Path,
     session: &mut Session,
     writer: &mut SessionWriter,
-    enable_reflect: bool,
-    turns_since_last_reflect: usize,
-    skills: &[hermes_skills::LoadedSkill],
-    memories: &[hermes_memory::LoadedMemory],
     permissions_cfg: &hermes_llm::PermissionsConfig,
-) -> Result<Option<hermes_reflect::ReflectionOutput>> {
+) -> Result<()> {
     use hermes_turn::{ConfirmAction, PermissionChecker, TurnConfig, TurnEvent};
     use std::io::Write as _;
 
@@ -371,8 +308,6 @@ async fn run_one_turn(
         system: if turn_system.is_empty() { None } else { Some(turn_system.to_string()) },
         max_tokens,
         max_tool_rounds: MAX_TOOL_ROUNDS,
-        enable_micro_reflect: enable_reflect,
-        turns_since_last_reflect,
         permissions,
     };
 
@@ -476,9 +411,6 @@ async fn run_one_turn(
                 tracing::debug!(tool_name, summary, "tool confirmation pending");
             }
             TurnEvent::Usage { .. } => {}
-            TurnEvent::MicroReflection(output) => {
-                eprintln!("\x1b[35m  ✨ reflection: {}\x1b[0m", output.summary);
-            }
             TurnEvent::Error(msg) => {
                 eprintln!("\x1b[31m  error: {msg}\x1b[0m");
             }
@@ -487,7 +419,7 @@ async fn run_one_turn(
     };
 
     let output = hermes_turn::run_turn(
-        provider, host, tools, &history, &config, skills, memories,
+        provider, host, tools, &history, &config,
         Some(confirm_tx), on_event, cancel_rx,
     )
     .await
@@ -509,7 +441,7 @@ async fn run_one_turn(
         tracing::warn!(error=%e, "persist usage");
     }
 
-    Ok(output.reflection)
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -625,6 +557,7 @@ fn friendly_tool_result(name: &str, input: &serde_json::Value, workspace: &std::
             let url = input.get("url").and_then(|u| u.as_str()).unwrap_or("?");
             format!("🌐 fetch {url}")
         }
+        "think" => "💭 thinking…".into(),
         "todo_add" => {
             let title = input.get("title").and_then(|t| t.as_str()).unwrap_or("?");
             format!("📋 + \"{title}\"")
@@ -648,13 +581,23 @@ pub(crate) fn compose_system_prompt(
     user_system: Option<String>,
     workspace_root: &std::path::Path,
 ) -> Option<String> {
+    let now = chrono::Local::now();
     let clause = format!(
-        "## Workspace\n\
+        "## Context\n\
+         Current time: {}\n\n\
+         ## Workspace\n\
          Your working directory is `{}`. All file reads, writes, and \
          commands MUST stay inside this directory. If a task seems to \
          require touching anything outside, stop and ask the user before \
          proceeding. Never modify the user's source code or system files \
-         outside this workspace.",
+         outside this workspace.\n\n\
+         ## Memory\n\
+         You have memory_save, memory_search, and memory_delete tools. \
+         When you discover something worth remembering across conversations \
+         (a useful approach, a user preference, a lesson learned), \
+         proactively save it with memory_save. Don't over-save — only \
+         persist durable, reusable insights.",
+        now.format("%Y-%m-%d %H:%M (%A)"),
         workspace_root.display()
     );
     Some(match user_system {
@@ -675,8 +618,6 @@ async fn handle_command(
     memory_store: &dyn MemoryStore,
     skill_store: &FsSkillStore,
     provider: &dyn LlmProvider,
-    turns_since_last_reflect: &mut usize,
-    micro_reflected_this_session: &mut bool,
 ) -> bool {
     match cmd.trim() {
         "exit" | "quit" => return false,
@@ -810,12 +751,8 @@ async fn handle_command(
                 eprintln!("(nothing to reflect on yet — send a message first)");
             } else {
                 eprintln!("\x1b[90m(reflecting on session so far...)\x1b[0m");
-                match super::reflect::run_with_min_turns(provider, session, 0).await {
-                    Ok(()) => {
-                        *turns_since_last_reflect = 0;
-                        *micro_reflected_this_session = true;
-                    }
-                    Err(e) => eprintln!("\x1b[31m(reflection failed: {e:#})\x1b[0m"),
+                if let Err(e) = super::reflect::run_with_min_turns(provider, session, 0).await {
+                    eprintln!("\x1b[31m(reflection failed: {e:#})\x1b[0m");
                 }
             }
         }
@@ -1035,383 +972,3 @@ fn edit_in_editor(initial_content: &str) -> Result<String> {
     Ok(content)
 }
 
-/// Present micro-reflection candidates inline (non-blocking, quick a/r/s).
-pub(crate) fn present_micro_candidates(
-    output: &hermes_reflect::ReflectionOutput,
-    memory_store: &dyn MemoryStore,
-    skill_store: &FsSkillStore,
-    session: &Session,
-    active_memories: &[LoadedMemory],
-) {
-    use hermes_memory::{MemoryFrontmatter, Scope as MemScope, Source as MemSource};
-    use hermes_skills::{Scope as SkScope, SkillFrontmatter};
-
-    for c in &output.skill_candidates {
-        eprintln!(
-            "  \x1b[33m[skill]\x1b[0m {} — {}",
-            c.name, c.description
-        );
-        eprint!("  accept? [a/r/s] ▸ ");
-        std::io::stderr().flush().ok();
-        let mut input = String::new();
-        if std::io::stdin().read_line(&mut input).is_ok() {
-            match input.trim() {
-                "a" | "y" => {
-                    let mut extra = serde_yaml::Mapping::new();
-                    extra.insert(
-                        serde_yaml::Value::String("source".into()),
-                        serde_yaml::Value::String("micro_reflection".into()),
-                    );
-                    let fm = SkillFrontmatter {
-                        name: c.name.clone(),
-                        description: c.description.clone(),
-                        triggers: c.triggers.clone(),
-                        version: Some("0.1.0".into()),
-                        license: None,
-                        extra,
-                    };
-                    match skill_store.put(SkScope::User, fm, &c.body) {
-                        Ok(p) => eprintln!("  \x1b[32m✓\x1b[0m {}", p.display()),
-                        Err(e) => eprintln!("  \x1b[31m✗\x1b[0m {e}"),
-                    }
-                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                        at: chrono::Utc::now(),
-                        session_id: session.meta.id.clone(),
-                        kind: hermes_reflect::CandidateKind::Skill,
-                        action: hermes_reflect::ActionTaken::Accept,
-                        label: c.name.clone(),
-                    });
-                }
-                "r" | "n" => {
-                    eprintln!("  (rejected)");
-                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                        at: chrono::Utc::now(),
-                        session_id: session.meta.id.clone(),
-                        kind: hermes_reflect::CandidateKind::Skill,
-                        action: hermes_reflect::ActionTaken::Reject,
-                        label: c.name.clone(),
-                    });
-                }
-                _ => {
-                    eprintln!("  (deferred)");
-                    hermes_reflect::deferred_save(
-                        hermes_reflect::DeferredCandidate::Skill(c.clone()),
-                    );
-                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                        at: chrono::Utc::now(),
-                        session_id: session.meta.id.clone(),
-                        kind: hermes_reflect::CandidateKind::Skill,
-                        action: hermes_reflect::ActionTaken::Defer,
-                        label: c.name.clone(),
-                    });
-                }
-            }
-        }
-    }
-
-    for c in &output.memory_candidates {
-        eprintln!(
-            "  \x1b[33m[memory]\x1b[0m {}",
-            c.fact.lines().next().unwrap_or("")
-        );
-        eprint!("  accept? [a/r/s] ▸ ");
-        std::io::stderr().flush().ok();
-        let mut input = String::new();
-        if std::io::stdin().read_line(&mut input).is_ok() {
-            match input.trim() {
-                "a" | "y" => {
-                    let mut fm =
-                        MemoryFrontmatter::new(MemSource::Reflection, c.confidence, c.tags.clone());
-                    fm.supersedes = c.supersedes.clone();
-                    let scope = c.scope;
-                    match memory_store.put(scope, fm.clone(), &c.fact) {
-                        Ok(p) => eprintln!("  \x1b[32m✓\x1b[0m {}", p.display()),
-                        Err(e) => {
-                            // Fallback to user scope
-                            if matches!(scope, MemScope::Project) {
-                                match memory_store.put(MemScope::User, fm, &c.fact) {
-                                    Ok(p) => eprintln!("  \x1b[32m✓\x1b[0m {}", p.display()),
-                                    Err(e2) => eprintln!("  \x1b[31m✗\x1b[0m {e2}"),
-                                }
-                            } else {
-                                eprintln!("  \x1b[31m✗\x1b[0m {e}");
-                            }
-                        }
-                    }
-                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                        at: chrono::Utc::now(),
-                        session_id: session.meta.id.clone(),
-                        kind: hermes_reflect::CandidateKind::Memory,
-                        action: hermes_reflect::ActionTaken::Accept,
-                        label: c.fact.lines().next().unwrap_or("").to_string(),
-                    });
-                }
-                "r" | "n" => {
-                    eprintln!("  (rejected)");
-                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                        at: chrono::Utc::now(),
-                        session_id: session.meta.id.clone(),
-                        kind: hermes_reflect::CandidateKind::Memory,
-                        action: hermes_reflect::ActionTaken::Reject,
-                        label: c.fact.lines().next().unwrap_or("").to_string(),
-                    });
-                }
-                _ => {
-                    eprintln!("  (deferred)");
-                    hermes_reflect::deferred_save(
-                        hermes_reflect::DeferredCandidate::Memory(c.clone()),
-                    );
-                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                        at: chrono::Utc::now(),
-                        session_id: session.meta.id.clone(),
-                        kind: hermes_reflect::CandidateKind::Memory,
-                        action: hermes_reflect::ActionTaken::Defer,
-                        label: c.fact.lines().next().unwrap_or("").to_string(),
-                    });
-                }
-            }
-        }
-    }
-
-    // --- conflicts ---
-    if output.conflicts.is_empty() {
-        return;
-    }
-
-    // Build lookup: memory_id -> LoadedMemory
-    let mem_by_id: std::collections::HashMap<&str, &LoadedMemory> = active_memories
-        .iter()
-        .map(|m| (m.frontmatter.id.as_str(), m))
-        .collect();
-
-    // Track which conflicts were handled via a linked memory candidate
-    let mut handled_conflict_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for mc in &output.memory_candidates {
-        for old_id in &mc.supersedes {
-            handled_conflict_ids.insert(old_id.clone());
-        }
-    }
-
-    // Linked conflicts: a memory candidate supersedes the old memory
-    for c in &output.conflicts {
-        if !handled_conflict_ids.contains(&c.with) {
-            continue;
-        }
-        eprintln!(
-            "  \x1b[33m[conflict]\x1b[0m {} is {}: {}",
-            c.with, c.kind, c.explain
-        );
-        if let Some(old) = mem_by_id.get(c.with.as_str()) {
-            eprintln!("    OLD: {}", old.body.trim());
-        }
-        // Find the linked replacement candidate
-        let replacement = output
-            .memory_candidates
-            .iter()
-            .find(|mc| mc.supersedes.contains(&c.with));
-        if let Some(rep) = replacement {
-            eprintln!("    NEW: {}", rep.fact.trim());
-        }
-        eprint!("  resolve? [n]ew replaces old / [o]ld keep / [k]ip ▸ ");
-        std::io::stderr().flush().ok();
-        let mut input = String::new();
-        if std::io::stdin().read_line(&mut input).is_ok() {
-            match input.trim() {
-                "n" | "new" => {
-                    if let Some(rep) = replacement {
-                        let mut fm = MemoryFrontmatter::new(
-                            MemSource::Reflection,
-                            rep.confidence,
-                            rep.tags.clone(),
-                        );
-                        fm.supersedes = rep.supersedes.clone();
-                        match memory_store.put(rep.scope, fm, &rep.fact) {
-                            Ok(p) => eprintln!("  \x1b[32m✓\x1b[0m new memory written ({})", p.display()),
-                            Err(e) => eprintln!("  \x1b[31m✗\x1b[0m {e}"),
-                        }
-                    }
-                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                        at: chrono::Utc::now(),
-                        session_id: session.meta.id.clone(),
-                        kind: hermes_reflect::CandidateKind::ConflictMemory,
-                        action: hermes_reflect::ActionTaken::Accept,
-                        label: c.explain.clone(),
-                    });
-                }
-                "o" | "old" => {
-                    eprintln!("  (kept old — no changes)");
-                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                        at: chrono::Utc::now(),
-                        session_id: session.meta.id.clone(),
-                        kind: hermes_reflect::CandidateKind::ConflictMemory,
-                        action: hermes_reflect::ActionTaken::Reject,
-                        label: c.explain.clone(),
-                    });
-                }
-                _ => {
-                    eprintln!("  (skipped — will review at session end)");
-                    hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                        at: chrono::Utc::now(),
-                        session_id: session.meta.id.clone(),
-                        kind: hermes_reflect::CandidateKind::ConflictMemory,
-                        action: hermes_reflect::ActionTaken::Defer,
-                        label: c.explain.clone(),
-                    });
-                }
-            }
-        }
-    }
-
-    // Orphan conflicts: no linked memory candidate
-    for c in &output.conflicts {
-        if handled_conflict_ids.contains(&c.with) {
-            continue;
-        }
-        eprintln!(
-            "  \x1b[33m[conflict]\x1b[0m {}: {} — {} (will review at session end)",
-            c.with, c.kind, c.explain
-        );
-        hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-            at: chrono::Utc::now(),
-            session_id: session.meta.id.clone(),
-            kind: hermes_reflect::CandidateKind::OrphanConflict,
-            action: hermes_reflect::ActionTaken::Defer,
-            label: c.explain.clone(),
-        });
-    }
-}
-
-/// Present deferred candidates from previous sessions for re-evaluation.
-fn present_deferred_candidates(
-    memory_store: &dyn MemoryStore,
-    skill_store: &FsSkillStore,
-    session: &Session,
-) {
-    let deferred = match hermes_reflect::deferred_load() {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::debug!(error=%e, "failed to load deferred candidates");
-            return;
-        }
-    };
-    if deferred.is_empty() {
-        return;
-    }
-
-    eprintln!("\x1b[90m📋 deferred candidates from previous sessions:\x1b[0m");
-    let mut remaining = Vec::new();
-
-    for dc in deferred {
-        match dc {
-            hermes_reflect::DeferredCandidate::Skill(c) => {
-                eprintln!(
-                    "  \x1b[33m[skill]\x1b[0m {} — {}",
-                    c.name, c.description
-                );
-                eprint!("  accept? [a/r/s] ▸ ");
-                std::io::stderr().flush().ok();
-                let mut input = String::new();
-                if std::io::stdin().read_line(&mut input).is_ok() {
-                    match input.trim() {
-                        "a" | "y" => {
-                            use hermes_skills::{Scope as SkScope, SkillFrontmatter};
-                            let mut extra = serde_yaml::Mapping::new();
-                            extra.insert(
-                                serde_yaml::Value::String("source".into()),
-                                serde_yaml::Value::String("deferred".into()),
-                            );
-                            let fm = SkillFrontmatter {
-                                name: c.name.clone(),
-                                description: c.description.clone(),
-                                triggers: c.triggers.clone(),
-                                version: Some("0.1.0".into()),
-                                license: None,
-                                extra,
-                            };
-                            match skill_store.put(SkScope::User, fm, &c.body) {
-                                Ok(p) => eprintln!("  \x1b[32m✓\x1b[0m {}", p.display()),
-                                Err(e) => eprintln!("  \x1b[31m✗\x1b[0m {e}"),
-                            }
-                            hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                                at: chrono::Utc::now(),
-                                session_id: session.meta.id.clone(),
-                                kind: hermes_reflect::CandidateKind::Skill,
-                                action: hermes_reflect::ActionTaken::Accept,
-                                label: c.name.clone(),
-                            });
-                        }
-                        "r" | "n" => {
-                            eprintln!("  (rejected)");
-                            hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                                at: chrono::Utc::now(),
-                                session_id: session.meta.id.clone(),
-                                kind: hermes_reflect::CandidateKind::Skill,
-                                action: hermes_reflect::ActionTaken::Reject,
-                                label: c.name.clone(),
-                            });
-                        }
-                        _ => {
-                            eprintln!("  (kept deferred)");
-                            remaining.push(hermes_reflect::DeferredCandidate::Skill(c));
-                        }
-                    }
-                }
-            }
-            hermes_reflect::DeferredCandidate::Memory(c) => {
-                eprintln!(
-                    "  \x1b[33m[memory]\x1b[0m {}",
-                    c.fact.lines().next().unwrap_or("")
-                );
-                eprint!("  accept? [a/r/s] ▸ ");
-                std::io::stderr().flush().ok();
-                let mut input = String::new();
-                if std::io::stdin().read_line(&mut input).is_ok() {
-                    match input.trim() {
-                        "a" | "y" => {
-                            use hermes_memory::{MemoryFrontmatter, Source as MemSource};
-                            let fm = MemoryFrontmatter::new(
-                                MemSource::Reflection,
-                                c.confidence,
-                                c.tags.clone(),
-                            );
-                            let scope = c.scope;
-                            match memory_store.put(scope, fm, &c.fact) {
-                                Ok(p) => eprintln!("  \x1b[32m✓\x1b[0m {}", p.display()),
-                                Err(e) => eprintln!("  \x1b[31m✗\x1b[0m {e}"),
-                            }
-                            hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                                at: chrono::Utc::now(),
-                                session_id: session.meta.id.clone(),
-                                kind: hermes_reflect::CandidateKind::Memory,
-                                action: hermes_reflect::ActionTaken::Accept,
-                                label: c.fact.lines().next().unwrap_or("").to_string(),
-                            });
-                        }
-                        "r" | "n" => {
-                            eprintln!("  (rejected)");
-                            hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                                at: chrono::Utc::now(),
-                                session_id: session.meta.id.clone(),
-                                kind: hermes_reflect::CandidateKind::Memory,
-                                action: hermes_reflect::ActionTaken::Reject,
-                                label: c.fact.lines().next().unwrap_or("").to_string(),
-                            });
-                        }
-                        _ => {
-                            eprintln!("  (kept deferred)");
-                            remaining.push(hermes_reflect::DeferredCandidate::Memory(c));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Rewrite the deferred file with only the ones the user still skipped.
-    if let Err(e) = hermes_reflect::deferred_clear() {
-        tracing::debug!(error=%e, "failed to clear deferred file");
-    }
-    for dc in &remaining {
-        hermes_reflect::deferred_save(dc.clone());
-    }
-}

@@ -8,11 +8,7 @@
 use hermes_core::{
     compaction, LlmProvider, Message, Role, Session, SessionMeta, ToolHost, ToolSpec, Usage,
 };
-use hermes_memory::LoadedMemory;
-use hermes_skills::LoadedSkill;
 use tokio::sync::{mpsc, oneshot};
-
-use hermes_reflect::ReflectionOutput;
 
 use crate::{ConfirmRequest, TurnConfig, TurnEvent, TurnOutput};
 
@@ -87,8 +83,6 @@ pub struct AgentOutput {
     pub iterations: usize,
     /// Whether the goal was completed successfully.
     pub completed: bool,
-    /// Micro-reflection outputs accumulated across each run_turn() call.
-    pub reflections: Vec<ReflectionOutput>,
 }
 
 /// Run the agentic loop: iterate `run_turn()` until the goal is complete or
@@ -104,8 +98,6 @@ pub async fn run_agent<F>(
     tools: &[ToolSpec],
     history: &[Message],
     agent_config: &AgentConfig,
-    skills: &[LoadedSkill],
-    memories: &[LoadedMemory],
     confirm_tx: Option<mpsc::Sender<ConfirmRequest>>,
     on_event: F,
     mut cancel: oneshot::Receiver<()>,
@@ -130,8 +122,6 @@ where
         cache_read_tokens: 0,
         cache_creation_tokens: 0,
     };
-
-    let mut reflections: Vec<ReflectionOutput> = Vec::new();
 
     let max = agent_config.max_iterations;
     let mut iterations = 0;
@@ -163,8 +153,6 @@ where
             tools,
             &messages,
             &turn_config,
-            skills,
-            memories,
             confirm_tx.clone(),
             turn_on_event,
             no_cancel_rx,
@@ -176,9 +164,6 @@ where
         total_usage.output_tokens += output.usage.output_tokens;
         total_usage.cache_read_tokens += output.usage.cache_read_tokens;
         total_usage.cache_creation_tokens += output.usage.cache_creation_tokens;
-        if let Some(r) = output.reflection {
-            reflections.push(r);
-        }
         iterations = i + 1;
 
         on_event(AgentEvent::TurnEnd { iteration: iterations });
@@ -203,7 +188,6 @@ where
                     total_usage,
                     iterations,
                     completed: true,
-                    reflections,
                 });
             }
 
@@ -217,7 +201,6 @@ where
                     total_usage,
                     iterations,
                     completed: false,
-                    reflections,
                 });
             }
         }
@@ -275,6 +258,5 @@ where
         total_usage,
         iterations,
         completed: false,
-        reflections,
     })
 }

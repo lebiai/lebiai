@@ -9,9 +9,6 @@ description = "Shared agent turn execution loop for all Hermes frontends"
 
 [dependencies]
 hermes-core = { workspace = true }
-hermes-reflect = { workspace = true }
-hermes-skills = { workspace = true }
-hermes-memory = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }

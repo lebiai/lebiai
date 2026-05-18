@@ -27,12 +27,6 @@ pub enum ChatStreamEvent {
         output_tokens: u32,
     },
     #[serde(rename_all = "camelCase")]
-    MicroReflection {
-        summary: String,
-        memory_count: u32,
-        skill_count: u32,
-    },
-    #[serde(rename_all = "camelCase")]
     Error { message: String },
     Done,
 }

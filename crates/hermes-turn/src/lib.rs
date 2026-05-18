@@ -1,17 +1,14 @@
 //! Shared agent turn execution loop.
 //!
-//! All frontends (CLI, TUI, GUI) call `run_turn()` and consume the
-//! resulting `TurnEvent` stream. This eliminates duplicated streaming,
-//! tool-execution, and micro-reflection logic.
+//! All frontends (CLI, GUI) call `run_turn()` and consume the
+//! resulting `TurnEvent` stream. This eliminates duplicated streaming
+//! and tool-execution logic.
 
 use futures::StreamExt;
 use hermes_core::{
     CompletionRequest, ContentBlock, LlmProvider, Message, Role, StopReason, StreamEvent,
     ToolCallOutcome, ToolHost, ToolSpec, Usage,
 };
-use hermes_memory::LoadedMemory;
-use hermes_reflect::ReflectionOutput;
-use hermes_skills::LoadedSkill;
 use tokio::sync::{mpsc, oneshot};
 
 pub mod agent;
@@ -41,7 +38,7 @@ pub struct ConfirmRequest {
 
 /// Returns true if the tool requires user confirmation before execution.
 pub fn is_dangerous_tool(name: &str) -> bool {
-    matches!(name, "bash" | "write" | "edit")
+    matches!(name, "bash" | "write" | "edit" | "memory_save" | "memory_delete")
         || name.contains("__") // MCP tools: server__tool
 }
 
@@ -54,6 +51,8 @@ pub fn tool_call_summary(name: &str, input: &serde_json::Value) -> String {
         "web_fetch" => "url",
         "web_search" => "query",
         "memory_search" => "query",
+        "memory_save" => "content",
+        "memory_delete" => "id",
         "todo_add" | "todo_update" => "text",
         _ => "",
     };
@@ -79,7 +78,6 @@ pub enum TurnEvent {
     ToolUseResult { id: String, content: String, is_error: bool },
     ToolConfirmPending { id: String, tool_name: String, summary: String },
     Usage { input_tokens: u32, output_tokens: u32 },
-    MicroReflection(ReflectionOutput),
     Error(String),
     Done,
 }
@@ -90,8 +88,6 @@ pub struct TurnConfig {
     pub system: Option<String>,
     pub max_tokens: u32,
     pub max_tool_rounds: usize,
-    pub enable_micro_reflect: bool,
-    pub turns_since_last_reflect: usize,
     pub permissions: PermissionChecker,
 }
 
@@ -102,8 +98,6 @@ impl Default for TurnConfig {
             system: None,
             max_tokens: 16_384,
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
-            enable_micro_reflect: true,
-            turns_since_last_reflect: 3,
             permissions: PermissionChecker::default(),
         }
     }
@@ -112,7 +106,6 @@ impl Default for TurnConfig {
 pub struct TurnOutput {
     pub new_messages: Vec<Message>,
     pub usage: Usage,
-    pub reflection: Option<ReflectionOutput>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -122,8 +115,6 @@ pub async fn run_turn<F>(
     tools: &[ToolSpec],
     history: &[Message],
     config: &TurnConfig,
-    skills: &[LoadedSkill],
-    memories: &[LoadedMemory],
     confirm_tx: Option<mpsc::Sender<ConfirmRequest>>,
     on_event: F,
     mut cancel: oneshot::Receiver<()>,
@@ -172,7 +163,6 @@ where
                     return Ok(TurnOutput {
                         new_messages,
                         usage: cumulative_usage,
-                        reflection: None,
                     });
                 }
                 ev = stream.next() => {
@@ -296,7 +286,6 @@ where
                                 return Ok(TurnOutput {
                                     new_messages,
                                     usage: cumulative_usage,
-                                    reflection: None,
                                 });
                             }
                             r = reply_rx => r,
@@ -350,35 +339,11 @@ where
         messages.push(result_msg);
     }
 
-    // Micro-reflection: include the user message that triggered this turn
-    // (it's the last message in history, i.e. messages[turn_start_idx - 1])
-    let reflect_start = turn_start_idx.saturating_sub(1);
-    let turn_msgs = &messages[reflect_start..];
-    let reflection = if config.enable_micro_reflect
-        && hermes_reflect::should_micro_reflect(turn_msgs, config.turns_since_last_reflect)
-    {
-        match hermes_reflect::micro_reflect(provider, turn_msgs, skills, memories).await {
-            Ok(output) if !output.is_empty() => {
-                tracing::info!(summary=%output.summary, "micro-reflection produced candidates");
-                on_event(TurnEvent::MicroReflection(output.clone()));
-                Some(output)
-            }
-            Ok(_) => None,
-            Err(e) => {
-                tracing::warn!(error=%e, "micro-reflection failed");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     on_event(TurnEvent::Done);
 
     let new_messages = messages[turn_start_idx..].to_vec();
     Ok(TurnOutput {
         new_messages,
         usage: cumulative_usage,
-        reflection,
     })
 }

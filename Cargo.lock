@@ -2130,9 +2130,6 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "hermes-core",
- "hermes-memory",
- "hermes-reflect",
- "hermes-skills",
  "serde_json",
  "tokio",
  "tracing",

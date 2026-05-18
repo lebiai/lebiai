@@ -40,8 +40,6 @@ enum Command {
         system: Option<String>,
         #[arg(long)]
         model: Option<String>,
-        #[arg(long)]
-        no_reflect: bool,
         /// Resume a previous session by JSONL path.
         #[arg(long, value_name = "PATH", conflicts_with = "resume_last")]
         resume: Option<std::path::PathBuf>,
@@ -175,12 +173,11 @@ async fn main() -> Result<()> {
         Command::Chat {
             system,
             model,
-            no_reflect,
             resume,
             resume_last,
         } => {
             let resume_path = resolve_resume(resume, resume_last)?;
-            commands::chat::run(system, model, no_reflect, resume_path).await
+            commands::chat::run(system, model, resume_path).await
         }
         Command::Mcp(sub) => match sub {
             McpCmd::List => commands::mcp::list().await,

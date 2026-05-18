@@ -33,8 +33,6 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
         system,
         max_tokens: provider_cfg.max_tokens,
         max_tool_rounds: MAX_TOOL_ROUNDS,
-        enable_micro_reflect: false,
-        turns_since_last_reflect: 0,
         permissions: hermes_turn::PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
     };
 
@@ -105,11 +103,10 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
                     eprintln!("\x1b[31m  ✗ {}\x1b[0m", content.lines().next().unwrap_or(""));
                 }
             }
-            TurnEvent::Usage { .. } | TurnEvent::Done => {}
+            TurnEvent::Usage { .. } | TurnEvent::Done | TurnEvent::ToolConfirmPending { .. } => {}
             TurnEvent::Error(msg) => {
                 eprintln!("\x1b[31m  error: {msg}\x1b[0m");
             }
-            _ => {}
         }
     };
 
@@ -119,8 +116,6 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
         &tools,
         &history,
         &turn_config,
-        &[],
-        &[],
         Some(confirm_tx),
         on_event,
         cancel_rx,

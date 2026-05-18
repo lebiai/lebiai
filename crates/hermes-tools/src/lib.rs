@@ -10,6 +10,7 @@ pub mod grep;
 pub mod memory;
 pub mod read;
 pub mod safety;
+pub mod think;
 pub mod todo;
 pub mod web_fetch;
 pub mod web_search;
@@ -45,7 +46,7 @@ impl BuiltinToolHost {
     pub fn handles(&self, name: &str) -> bool {
         BASIC_TOOLS.contains(&name)
             || todo::handles(name)
-            || matches!(name, "web_fetch" | "web_search" | "memory_search")
+            || matches!(name, "think" | "web_fetch" | "web_search" | "memory_search" | "memory_save" | "memory_delete")
     }
 }
 
@@ -61,10 +62,13 @@ impl ToolHost for BuiltinToolHost {
             grep::spec(),
             web_fetch::spec(),
             web_search::spec(),
+            think::spec(),
         ];
         tools.extend(todo::specs());
         if self.memory_store.is_some() {
             tools.push(memory::spec());
+            tools.push(memory::save_spec());
+            tools.push(memory::delete_spec());
         }
         Ok(tools)
     }
@@ -79,11 +83,24 @@ impl ToolHost for BuiltinToolHost {
             "grep" => grep::run(&self.workspace, args).await,
             "web_fetch" => web_fetch::run(&self.workspace, args).await,
             "web_search" => web_search::run(&self.workspace, args).await,
+            "think" => think::run(args).await,
             "memory_search" => {
                 let store = self.memory_store.as_ref().ok_or_else(|| {
                     Error::ToolHost("memory_search: no memory store configured".into())
                 })?;
                 memory::run(store.as_ref(), args).await
+            }
+            "memory_save" => {
+                let store = self.memory_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("memory_save: no memory store configured".into())
+                })?;
+                memory::save_run(store.as_ref(), args).await
+            }
+            "memory_delete" => {
+                let store = self.memory_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("memory_delete: no memory store configured".into())
+                })?;
+                memory::delete_run(store.as_ref(), args).await
             }
             n if todo::handles(n) => todo::run(&self.workspace, n, args).await,
             _ => Err(Error::ToolHost(format!("unknown built-in tool: {name}"))),

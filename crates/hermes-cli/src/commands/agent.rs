@@ -2,7 +2,7 @@
 //!
 //! Mirrors the `hermes chat` subsystem wiring: loads skills, memories,
 //! memory-backed tool host, session persistence, workspace system prompt,
-//! context assembly, micro-reflection, and end-of-session reflection.
+//! context assembly, and end-of-session reflection.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -86,8 +86,6 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: usize) ->
         },
         max_tokens: provider_cfg.max_tokens,
         max_tool_rounds: 10,
-        enable_micro_reflect: true,
-        turns_since_last_reflect: 100, // start high so first turn can trigger
         permissions: hermes_turn::PermissionChecker::new(
             &cfg.permissions.allow,
             &cfg.permissions.deny,
@@ -200,9 +198,6 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: usize) ->
                     tracing::debug!(tool_name, summary, "tool confirmation pending");
                 }
                 TurnEvent::Usage { .. } | TurnEvent::Done => {}
-                TurnEvent::MicroReflection(output) => {
-                    eprintln!("\x1b[35m  ✨ reflection: {}\x1b[0m", output.summary);
-                }
                 TurnEvent::Error(msg) => {
                     eprintln!("\x1b[31m  error: {msg}\x1b[0m");
                 }
@@ -231,8 +226,6 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: usize) ->
         &tools,
         &history,
         &agent_config,
-        &all_skills,
-        &active_memories,
         Some(confirm_tx),
         on_event,
         cancel_rx,
@@ -256,45 +249,6 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: usize) ->
 
     eprintln!();
     eprintln!("session saved: {}", session_path.display());
-
-    // --- present micro-reflection candidates ---
-    for r in &output.reflections {
-        if r.is_empty() {
-            continue;
-        }
-        eprintln!();
-        eprintln!("\x1b[90m💡 micro-reflection found candidates:\x1b[0m");
-        super::chat::present_micro_candidates(
-            r,
-            &*memory_store_arc,
-            &skill_store,
-            &session,
-            &active_memories,
-        );
-    }
-
-    // --- end-of-session reflection (if micro-reflection never triggered) ---
-    let had_micro = output.reflections.iter().any(|r| !r.is_empty());
-    if !had_micro {
-        let user_turns = session
-            .messages
-            .iter()
-            .filter(|m| {
-                matches!(m.role, hermes_core::Role::User)
-                    && m.content
-                        .iter()
-                        .any(|b| matches!(b, hermes_core::ContentBlock::Text { .. }))
-            })
-            .count();
-        if user_turns >= cfg.reflect.min_turns {
-            eprintln!("(running end-of-session reflection...)");
-            if let Err(e) =
-                super::reflect::run_with_min_turns(provider.as_ref(), &session, 0).await
-            {
-                eprintln!("(reflection failed: {e:#})");
-            }
-        }
-    }
 
     tracing::info!(
         iterations = output.iterations,

@@ -62,22 +62,3 @@ pub fn run(last: usize) -> Result<()> {
     }
     Ok(())
 }
-
-/// Lightweight check used by chat startup: is the recent acceptance rate
-/// low enough that we should warn the user once?
-pub fn low_acceptance_warning(last: usize) -> Option<String> {
-    let stats = log_stats(Some(last)).ok()?;
-    if stats.total < 10 {
-        return None;
-    }
-    let rate = stats.acceptance_rate()?;
-    if rate >= LOW_ACCEPTANCE_THRESHOLD {
-        return None;
-    }
-    Some(format!(
-        "⚠ recent reflection acceptance is {:.0}% (last {} candidates). \
-         Consider `hermes reflect-stats` and tune the reflection prompt.",
-        rate * 100.0,
-        stats.total
-    ))
-}
