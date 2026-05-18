@@ -28,6 +28,12 @@ use super::util::{build_active_provider, load_tool_host, session_path_for};
 
 const MAX_TOOL_ROUNDS: usize = 10;
 
+struct SessionStats {
+    turn_count: usize,
+    tool_calls: std::collections::HashMap<String, usize>,
+    per_turn_usage: Vec<(u32, u32)>,
+}
+
 pub async fn run(
     system: Option<String>,
     model_override: Option<String>,
@@ -160,7 +166,7 @@ pub async fn run(
         }
     }
     eprintln!("skills:   {} loaded", all_skills.len());
-    eprintln!("commands: /exit /quit /clear /tokens /tools /memory /skills /context /session /remember /forget /reflect /compile /palace /help");
+    eprintln!("commands: /exit /quit /clear /tokens /stats /tools /memory /skills /context /session /remember /forget /reflect /compile /palace /help");
     eprintln!();
 
     // Auto-compile profile on first session if memories exist but profile.md doesn't.
@@ -179,6 +185,11 @@ pub async fn run(
 
     let mut line_editor = ChatLineEditor::new()?;
     let mut turns_since_last_reflect: usize = 0;
+    let mut stats = SessionStats {
+        turn_count: 0,
+        tool_calls: std::collections::HashMap::new(),
+        per_turn_usage: Vec::new(),
+    };
 
     loop {
         let input = match line_editor.readline("> ").await {
@@ -202,6 +213,35 @@ pub async fn run(
         if let Some(cmd) = trimmed.strip_prefix('/') {
             if cmd.trim() == "reflect" {
                 turns_since_last_reflect = 0;
+            }
+            if cmd.trim() == "stats" {
+                eprintln!("--- session stats ---");
+                eprintln!("turns:     {}", stats.turn_count);
+                eprintln!(
+                    "tokens:    input={} output={} (cumulative)",
+                    session.total_input_tokens, session.total_output_tokens
+                );
+                if let Some(&(last_in, last_out)) = stats.per_turn_usage.last() {
+                    eprintln!("last turn: input={last_in} output={last_out}");
+                }
+                if stats.turn_count > 0 {
+                    let avg_in = session.total_input_tokens / stats.turn_count as u32;
+                    let avg_out = session.total_output_tokens / stats.turn_count as u32;
+                    eprintln!("avg/turn:  input={avg_in} output={avg_out}");
+                }
+                if !stats.tool_calls.is_empty() {
+                    eprintln!("tools used:");
+                    let mut sorted: Vec<_> = stats.tool_calls.iter().collect();
+                    sorted.sort_by(|a, b| b.1.cmp(a.1));
+                    for (name, count) in sorted {
+                        eprintln!("  {name}: {count}x");
+                    }
+                }
+                let cost = (session.total_input_tokens as f64 * 3.0
+                    + session.total_output_tokens as f64 * 15.0)
+                    / 1_000_000.0;
+                eprintln!("cost est:  ~${cost:.4} (Sonnet reference rate)");
+                continue;
             }
             if !handle_command(
                 cmd,
@@ -313,6 +353,9 @@ pub async fn run(
             }
         }
 
+        let pre_input = session.total_input_tokens;
+        let pre_output = session.total_output_tokens;
+
         match run_one_turn(
             provider.as_ref(),
             host.as_ref(),
@@ -327,7 +370,19 @@ pub async fn run(
         )
         .await
         {
-            Ok(()) => {}
+            Ok(()) => {
+                let turn_in = session.total_input_tokens - pre_input;
+                let turn_out = session.total_output_tokens - pre_output;
+                stats.turn_count += 1;
+                stats.per_turn_usage.push((turn_in, turn_out));
+                for msg in &session.messages[turn_msg_index..] {
+                    for block in &msg.content {
+                        if let ContentBlock::ToolUse { name, .. } = block {
+                            *stats.tool_calls.entry(name.clone()).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
             Err(e) => eprintln!("turn error: {e:#}"),
         }
 
@@ -823,14 +878,33 @@ pub(crate) fn compose_system_prompt(
 ) -> Option<String> {
     let now = chrono::Local::now();
     let clause = format!(
-        "## Context\n\
+        "## Role\n\
+         You are an expert software engineer assistant. You think step-by-step, \
+         verify before claiming success, and prefer the smallest correct change. \
+         When uncertain, say so. When a task is risky, warn the user.\n\n\
+         ## Context\n\
          Current time: {}\n\n\
          ## Workspace\n\
          Your working directory is `{}`. All file reads, writes, and \
          commands MUST stay inside this directory. If a task seems to \
          require touching anything outside, stop and ask the user before \
-         proceeding. Never modify the user's source code or system files \
-         outside this workspace.\n\n\
+         proceeding.\n\n\
+         ## Tool Strategy\n\
+         Explore before acting: grep/glob to locate, read to understand, \
+         then edit/write to change. Verify with bash (tests, build).\n\
+         - Use grep to find symbols, glob to find files by pattern.\n\
+         - Use read to inspect specific lines before editing.\n\
+         - Use edit for surgical changes; write only for new files.\n\
+         - Use bash for builds, tests, and shell commands.\n\
+         - Use git for read-only repo inspection (status, diff, log, blame).\n\
+         - Use think to reason through complex multi-step plans.\n\
+         Minimize tool calls: batch related reads, avoid re-reading unchanged files.\n\n\
+         ## Code Analysis Workflow\n\
+         1. grep/glob → locate relevant files and symbols\n\
+         2. read → understand context around the target code\n\
+         3. Trace callers/callees if the change has side effects\n\
+         4. edit → make the minimal change\n\
+         5. bash → run tests or build to verify\n\n\
          ## Memory\n\
          You have a Memory Palace with zone-organized memories. The palace \
          index (zone map) is in your system prompt when available.\n\
@@ -840,7 +914,10 @@ pub(crate) fn compose_system_prompt(
          - Use memory_save (with zone parameter) to persist new learnings\n\
          - Use memory_delete to remove outdated memories\n\
          Don't guess about preferences or conventions — load the relevant \
-         zone first.",
+         zone first.\n\n\
+         ## Output Style\n\
+         Be concise. Show file paths with line numbers when referencing code. \
+         End task responses with: Changed / Verified / Not verified / Risks.",
         now.format("%Y-%m-%d %H:%M (%A)"),
         workspace_root.display()
     );
@@ -1095,6 +1172,7 @@ async fn handle_command(
             eprintln!("  /exit, /quit   — leave the chat");
             eprintln!("  /clear         — drop in-memory history (transcript on disk kept)");
             eprintln!("  /tokens        — cumulative input/output token counts");
+            eprintln!("  /stats         — detailed session stats: turns, tools, cost estimate");
             eprintln!("  /tools         — list tools loaded from MCP servers");
             eprintln!("  /memory        — list active memories with ids");
             eprintln!("  /skills        — list available skills");

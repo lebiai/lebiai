@@ -5,6 +5,7 @@
 
 pub mod bash;
 pub mod edit;
+pub mod git;
 pub mod glob;
 pub mod grep;
 pub mod memory;
@@ -24,7 +25,7 @@ use async_trait::async_trait;
 use hermes_core::{Error, Result, ToolCallOutcome, ToolHost, ToolSpec};
 use hermes_memory::MemoryStore;
 
-const BASIC_TOOLS: &[&str] = &["read", "write", "edit", "bash", "glob", "grep"];
+const BASIC_TOOLS: &[&str] = &["read", "write", "edit", "bash", "glob", "grep", "git"];
 
 pub struct BuiltinToolHost {
     workspace: PathBuf,
@@ -61,6 +62,7 @@ impl ToolHost for BuiltinToolHost {
             bash::spec(),
             glob::spec(),
             grep::spec(),
+            git::spec(),
             web_fetch::spec(),
             web_search::spec(),
             think::spec(),
@@ -85,6 +87,7 @@ impl ToolHost for BuiltinToolHost {
             "bash" => bash::run(&self.workspace, args).await,
             "glob" => glob::run(&self.workspace, args).await,
             "grep" => grep::run(&self.workspace, args).await,
+            "git" => git::run(&self.workspace, args).await,
             "web_fetch" => web_fetch::run(&self.workspace, args).await,
             "web_search" => web_search::run(&self.workspace, args).await,
             "think" => think::run(args).await,

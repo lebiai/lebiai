@@ -48,6 +48,7 @@ pub fn tool_call_summary(name: &str, input: &serde_json::Value) -> String {
     let key_field = match name {
         "bash" => "command",
         "read" | "write" | "edit" => "path",
+        "git" => "operation",
         "web_fetch" => "url",
         "web_search" => "query",
         "memory_search" => "query",
