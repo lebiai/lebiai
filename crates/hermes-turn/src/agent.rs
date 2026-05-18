@@ -13,12 +13,33 @@ use tokio::sync::{mpsc, oneshot};
 use crate::{ConfirmRequest, TurnConfig, TurnEvent, TurnOutput};
 
 const AGENT_SYSTEM_SUFFIX: &str = "\
-You are an autonomous agent working toward a goal. Break the goal into \
-concrete steps and execute them using the available tools. After each step, \
-assess your progress honestly. When the goal is fully achieved, output \
-[GOAL_COMPLETE] followed by a brief summary of what was accomplished. If you \
-encounter an unrecoverable error, output [GOAL_FAILED] followed by an \
-explanation. Do NOT output [GOAL_COMPLETE] until the goal is actually done.";
+You are an autonomous agent working toward a goal.
+
+## Workflow — PLAN then EXECUTE
+
+PHASE 1 — PLAN (first turn, before writing any code or files):
+- Use `think` to analyze the goal, identify requirements, and design your approach.
+- Use `todo_add` to create a step-by-step plan with small, concrete tasks.
+- Do NOT write files, run commands, or make changes in this phase.
+
+PHASE 2 — EXECUTE (subsequent turns):
+- Work through your todo list one step at a time.
+- Use `todo_update` to mark each step `in_progress` before starting, `done` when complete.
+- Use `todo_list` between steps to review progress.
+
+PHASE 3 — VERIFY:
+- Test or review your work before declaring completion.
+
+## Important Rules
+
+- Only call tools listed in your tool definitions — never invent tool names.
+- For large files (>150 lines): write a minimal skeleton first, then use `edit` to \
+fill in sections incrementally. Never generate an entire large file in one tool call \
+— it risks output truncation and wastes work.
+- Prefer `edit` over `write` when modifying existing files.
+- When the goal is fully achieved: output [GOAL_COMPLETE] followed by a brief summary.
+- On unrecoverable error: output [GOAL_FAILED] followed by an explanation.
+- Do NOT output [GOAL_COMPLETE] until verified.";
 
 const GOAL_COMPLETE_MARKER: &str = "[GOAL_COMPLETE]";
 const GOAL_FAILED_MARKER: &str = "[GOAL_FAILED]";
@@ -244,9 +265,9 @@ where
             "[Agent Progress Check]\n\
              Goal: {}\n\
              Iterations completed: {}/{}\n\
-             Summarize what you've done so far and what remains. \
-             If the goal is complete, respond with [GOAL_COMPLETE]. \
-             Otherwise, continue working.",
+             Review your todo list with `todo_list`. \
+             If all tasks are done and verified, respond with [GOAL_COMPLETE]. \
+             Otherwise, continue with the next pending task.",
             agent_config.goal, iterations, max,
         );
         messages.push(Message::user_text(progress_msg));

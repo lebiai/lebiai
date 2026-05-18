@@ -46,14 +46,14 @@ pub fn is_dangerous_tool(name: &str) -> bool {
 pub fn tool_call_summary(name: &str, input: &serde_json::Value) -> String {
     let key_field = match name {
         "bash" => "command",
-        "write" => "file_path",
-        "edit" => "file_path",
+        "read" | "write" | "edit" => "path",
         "web_fetch" => "url",
         "web_search" => "query",
         "memory_search" => "query",
         "memory_save" => "content",
         "memory_delete" => "id",
-        "todo_add" | "todo_update" => "text",
+        "todo_add" => "title",
+        "todo_update" => "status",
         _ => "",
     };
 
@@ -75,6 +75,8 @@ pub enum TurnEvent {
     TextDelta(String),
     ThinkingDelta(String),
     ToolUseStart { id: String, name: String },
+    /// Emitted right before tool execution, when input is fully known.
+    ToolExecStart { id: String, name: String, summary: String },
     ToolUseResult { id: String, content: String, is_error: bool },
     ToolConfirmPending { id: String, tool_name: String, summary: String },
     Usage { input_tokens: u32, output_tokens: u32 },
@@ -216,6 +218,38 @@ where
         };
         messages.push(assistant_msg);
 
+        if !resp.truncated_tool_ids.is_empty() {
+            let mut tool_results = Vec::new();
+            for block in &resp.content {
+                if let ContentBlock::ToolUse { id, name, .. } = block {
+                    if resp.truncated_tool_ids.contains(id) {
+                        let msg = format!(
+                            "Tool call truncated: output exceeded token limit while generating \
+                             arguments for '{}'. Retry with shorter content or break into smaller steps.",
+                            name
+                        );
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: msg.clone(),
+                            is_error: true,
+                        });
+                        on_event(TurnEvent::ToolUseResult {
+                            id: id.clone(),
+                            content: msg,
+                            is_error: true,
+                        });
+                    }
+                }
+            }
+            if !tool_results.is_empty() {
+                messages.push(Message {
+                    role: Role::User,
+                    content: tool_results,
+                });
+                continue;
+            }
+        }
+
         if resp.stop_reason != StopReason::ToolUse {
             break;
         }
@@ -239,6 +273,12 @@ where
 
         let mut tool_results = Vec::with_capacity(tool_uses.len());
         for (id, name, input) in tool_uses {
+            on_event(TurnEvent::ToolExecStart {
+                id: id.clone(),
+                name: name.clone(),
+                summary: tool_call_summary(&name, &input),
+            });
+
             // Permission gate: deny → allow → prompt (if dangerous)
             match config.permissions.check(&name, &input) {
                 Permission::Deny => {

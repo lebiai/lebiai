@@ -41,6 +41,9 @@ pub struct CompletionResponse {
     pub content: Vec<ContentBlock>,
     pub stop_reason: StopReason,
     pub usage: Usage,
+    /// Tool use IDs whose input JSON was truncated/unparseable (e.g. max_tokens hit mid-call).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub truncated_tool_ids: Vec<String>,
 }
 
 impl CompletionResponse {

@@ -508,6 +508,7 @@ fn build_response(
     usage: Usage,
     stop_reason: StopReason,
 ) -> CompletionResponse {
+    let mut truncated_tool_ids = Vec::new();
     let content = blocks
         .into_iter()
         .filter_map(|b| match b {
@@ -527,6 +528,7 @@ fn build_response(
                 } else {
                     serde_json::from_str(&partial_json).unwrap_or_else(|e| {
                         tracing::warn!(error=%e, "failed to parse tool_use partial_json; using empty object");
+                        truncated_tool_ids.push(id.clone());
                         serde_json::json!({})
                     })
                 };
@@ -538,6 +540,7 @@ fn build_response(
         content,
         stop_reason,
         usage,
+        truncated_tool_ids,
     }
 }
 
@@ -614,6 +617,7 @@ impl From<AnthropicResponse> for CompletionResponse {
             content: r.content,
             stop_reason,
             usage,
+            truncated_tool_ids: Vec::new(),
         }
     }
 }

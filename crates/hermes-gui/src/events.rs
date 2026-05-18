@@ -10,6 +10,12 @@ pub enum ChatStreamEvent {
     #[serde(rename_all = "camelCase")]
     ToolUseStart { id: String, name: String },
     #[serde(rename_all = "camelCase")]
+    ToolExecStart {
+        id: String,
+        name: String,
+        summary: String,
+    },
+    #[serde(rename_all = "camelCase")]
     ToolUseResult {
         id: String,
         content: String,

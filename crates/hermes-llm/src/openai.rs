@@ -416,6 +416,7 @@ impl ChatResponse {
             content,
             stop_reason,
             usage,
+            truncated_tool_ids: Vec::new(),
         }
     }
 }
@@ -597,6 +598,7 @@ struct State {
 
 fn finalise(s: &mut StreamState) {
     let mut content: Vec<ContentBlock> = Vec::new();
+    let mut truncated_tool_ids = Vec::new();
     if !s.text_buf.is_empty() {
         content.push(ContentBlock::Text {
             text: std::mem::take(&mut s.text_buf),
@@ -608,6 +610,7 @@ fn finalise(s: &mut StreamState) {
         } else {
             serde_json::from_str(&c.arguments).unwrap_or_else(|e| {
                 tracing::warn!(error=%e, "openai tool_call arguments parse failed; using {{}}");
+                truncated_tool_ids.push(c.id.clone());
                 serde_json::json!({})
             })
         };
@@ -621,6 +624,7 @@ fn finalise(s: &mut StreamState) {
         content,
         stop_reason: s.stop_reason,
         usage: s.usage,
+        truncated_tool_ids,
     })));
 }
 

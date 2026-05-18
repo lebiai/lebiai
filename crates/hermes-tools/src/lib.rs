@@ -128,9 +128,13 @@ impl ToolHost for CompositeToolHost {
         if self.builtin.handles(name) {
             return self.builtin.call(name, args).await;
         }
-        if let Some(mcp) = &self.mcp {
-            return mcp.call(name, args).await;
+        if name.contains("__") {
+            if let Some(mcp) = &self.mcp {
+                return mcp.call(name, args).await;
+            }
         }
-        Err(Error::ToolHost(format!("unknown tool: {name}")))
+        Err(Error::ToolHost(format!(
+            "unknown tool: {name}. Use one of the tools listed in your tool definitions."
+        )))
     }
 }

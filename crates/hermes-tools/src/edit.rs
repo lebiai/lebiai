@@ -19,7 +19,11 @@ struct Args {
 pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "edit".into(),
-        description: "Replace an exact string in a file. old_string must be unique unless replace_all is true.".into(),
+        description: "Replace an exact string in a file. Preferred over `write` for \
+            modifying existing files — it is safer and uses fewer output tokens. \
+            `old_string` must match exactly (including whitespace and indentation) \
+            and must be unique in the file unless `replace_all` is true. \
+            Always `read` the file first to find the precise text to replace.".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {

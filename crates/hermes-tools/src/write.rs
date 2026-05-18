@@ -16,7 +16,11 @@ struct Args {
 pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "write".into(),
-        description: "Create a new file or overwrite an existing file with the given content.".into(),
+        description: "Create a new file or completely overwrite an existing file. \
+            Parent directories are created automatically. WARNING: this replaces \
+            the entire file — use `edit` instead to modify parts of an existing file. \
+            For large content (>150 lines), write a skeleton first, then use `edit` \
+            to fill in sections incrementally.".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
