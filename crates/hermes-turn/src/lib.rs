@@ -25,7 +25,8 @@ pub enum ConfirmAction {
     Allow,
     /// Allow this and all future calls to the same tool name.
     AlwaysAllow,
-    Deny,
+    /// Deny, with an optional reason/suggestion fed back to the agent.
+    Deny { reason: Option<String> },
 }
 
 /// Request sent from the turn loop to the frontend for approval.
@@ -334,15 +335,23 @@ where
                             Ok(ConfirmAction::Allow | ConfirmAction::AlwaysAllow) => {
                                 /* proceed to host.call() below */
                             }
-                            Ok(ConfirmAction::Deny) | Err(_) => {
+                            deny => {
+                                let reason = match deny {
+                                    Ok(ConfirmAction::Deny { reason }) => reason,
+                                    _ => None,
+                                };
+                                let msg = match reason {
+                                    Some(r) => format!("Tool call denied by user. User says: {r}"),
+                                    None => "Tool call denied by user.".into(),
+                                };
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
-                                    content: "Tool call denied by user.".into(),
+                                    content: msg.clone(),
                                     is_error: true,
                                 });
                                 on_event(TurnEvent::ToolUseResult {
                                     id,
-                                    content: "Tool call denied by user.".into(),
+                                    content: msg,
                                     is_error: true,
                                 });
                                 continue;

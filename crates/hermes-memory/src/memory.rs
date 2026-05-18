@@ -57,6 +57,9 @@ pub struct MemoryFrontmatter {
     #[serde(default)]
     pub tags: Vec<String>,
 
+    #[serde(default = "default_zone")]
+    pub zone: String,
+
     /// IDs of older memories this one replaces. Listed by [`list_active`]
     /// causes those ids to be filtered out.
     ///
@@ -69,9 +72,13 @@ pub struct MemoryFrontmatter {
     pub extra: serde_yaml::Mapping,
 }
 
+fn default_zone() -> String {
+    "general".to_string()
+}
+
 impl MemoryFrontmatter {
     /// Build a fresh memory with a UUIDv4-based id and `created = now`.
-    pub fn new(source: Source, confidence: Confidence, tags: Vec<String>) -> Self {
+    pub fn new(source: Source, confidence: Confidence, tags: Vec<String>, zone: String) -> Self {
         Self {
             id: format!("mem_{}", uuid::Uuid::new_v4().simple()),
             created: chrono::Utc::now(),
@@ -79,6 +86,7 @@ impl MemoryFrontmatter {
             confidence,
             pinned: false,
             tags,
+            zone,
             supersedes: Vec::new(),
             extra: serde_yaml::Mapping::new(),
         }

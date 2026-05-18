@@ -15,83 +15,53 @@ use hermes_skills::LoadedSkill;
 use crate::output::ReflectionOutput;
 use crate::runner::ReflectError;
 
-/// Heuristic: should we bother running micro-reflection on this turn?
+const REFLECT_INTERVAL: usize = 3;
+
+/// Should we run micro-reflection on this turn?
+///
+/// Two triggers:
+/// 1. **Explicit intent** — user says something that sounds like a
+///    correction or teaching moment. Bypasses cooldown entirely.
+/// 2. **Periodic** — every `REFLECT_INTERVAL` turns, let the LLM decide
+///    whether the turn was worth remembering. Cheap (~500 tokens) and the
+///    LLM returns empty arrays for trivial turns.
 pub fn should_micro_reflect(
     turn_messages: &[Message],
     turns_since_last_reflect: usize,
 ) -> bool {
-    // Suppress if we just reflected recently.
-    if turns_since_last_reflect < 3 {
-        return false;
+    if has_explicit_intent(turn_messages) {
+        return true;
     }
+    turns_since_last_reflect >= REFLECT_INTERVAL
+}
 
-    let mut tool_call_count = 0;
-    let mut has_write_or_edit = false;
+fn has_explicit_intent(turn_messages: &[Message]) -> bool {
     let mut user_text = String::new();
-    let mut output_chars = 0;
-
     for msg in turn_messages {
+        if msg.role != Role::User {
+            continue;
+        }
         for block in &msg.content {
-            match block {
-                ContentBlock::Text { text } => {
-                    if msg.role == Role::User {
-                        user_text.push_str(text);
-                    } else {
-                        output_chars += text.len();
-                    }
-                }
-                ContentBlock::ToolUse { name, .. } => {
-                    tool_call_count += 1;
-                    if matches!(name.as_str(), "write" | "edit") {
-                        has_write_or_edit = true;
-                    }
-                }
-                ContentBlock::ToolResult { .. } => {}
-                ContentBlock::Thinking { .. } => {}
+            if let ContentBlock::Text { text } = block {
+                user_text.push_str(text);
             }
         }
     }
-
-    let user_lower = user_text.to_lowercase();
-    let has_explicit_intent = user_lower.contains("记住")
-        || user_lower.contains("以后")
-        || user_lower.contains("偏好")
-        || user_lower.contains("总是")
-        || user_lower.contains("remember")
-        || user_lower.contains("always")
-        || user_lower.contains("prefer")
-        || user_lower.contains("不是")
-        || user_lower.contains("不对")
-        || user_lower.contains("错了")
-        || user_lower.contains("don't")
-        || user_lower.contains("wrong")
-        || user_lower.contains("actually")
-        || user_lower.contains("no,");
-
-    tracing::debug!(
-        user_text_len = user_text.len(),
-        output_chars,
-        tool_call_count,
-        has_explicit_intent,
-        turns_since_last_reflect,
-        "should_micro_reflect decision inputs"
-    );
-
-    // Decision matrix:
-    if has_explicit_intent {
-        return true;
-    }
-    if tool_call_count >= 2 {
-        return true;
-    }
-    if has_write_or_edit && output_chars > 300 {
-        return true;
-    }
-    if output_chars > 1500 {
-        return true;
-    }
-
-    false
+    let lower = user_text.to_lowercase();
+    lower.contains("记住")
+        || lower.contains("以后")
+        || lower.contains("偏好")
+        || lower.contains("总是")
+        || lower.contains("remember")
+        || lower.contains("always")
+        || lower.contains("prefer")
+        || lower.contains("不是")
+        || lower.contains("不对")
+        || lower.contains("错了")
+        || lower.contains("don't")
+        || lower.contains("wrong")
+        || lower.contains("actually")
+        || lower.contains("no,")
 }
 
 const MICRO_REFLECT_SYSTEM: &str = r##"You are a micro-reflection module. You just observed ONE turn of conversation (user request + assistant response). Decide if anything from this turn is worth persisting as a memory or skill, and whether any existing memory is now stale.
@@ -231,53 +201,35 @@ mod tests {
     }
 
     #[test]
-    fn should_reflect_explicit_intent_remember() {
+    fn explicit_intent_bypasses_cooldown() {
         let msgs = [user_msg("remember this")];
-        assert!(should_micro_reflect(&msgs, 5));
+        assert!(should_micro_reflect(&msgs, 0));
     }
 
     #[test]
-    fn should_reflect_explicit_intent_chinese_correction() {
+    fn explicit_intent_chinese_correction() {
         let msgs = [user_msg("不对，我不用 VSCode")];
-        assert!(should_micro_reflect(&msgs, 5));
+        assert!(should_micro_reflect(&msgs, 0));
     }
 
     #[test]
-    fn should_reflect_explicit_intent_wrong() {
+    fn explicit_intent_english_correction() {
         let msgs = [user_msg("that's wrong, actually I prefer vim")];
-        assert!(should_micro_reflect(&msgs, 5));
+        assert!(should_micro_reflect(&msgs, 1));
     }
 
     #[test]
-    fn should_not_reflect_too_soon() {
-        let msgs = [user_msg("remember this")];
-        assert!(!should_micro_reflect(&msgs, 1));
-    }
-
-    #[test]
-    fn should_not_reflect_trivial_turn() {
+    fn periodic_triggers_at_interval() {
         let msgs = [user_msg("hello"), assistant_msg("hi there")];
-        assert!(!should_micro_reflect(&msgs, 5));
+        assert!(!should_micro_reflect(&msgs, 2));
+        assert!(should_micro_reflect(&msgs, 3));
+        assert!(should_micro_reflect(&msgs, 10));
     }
 
     #[test]
-    fn should_reflect_many_tool_calls() {
-        let msgs = [Message {
-            role: Role::Assistant,
-            content: vec![
-                ContentBlock::ToolUse {
-                    name: "read".to_string(),
-                    input: serde_json::Value::Null,
-                    id: "1".to_string(),
-                },
-                ContentBlock::ToolUse {
-                    name: "write".to_string(),
-                    input: serde_json::Value::Null,
-                    id: "2".to_string(),
-                },
-            ],
-        }];
-        assert!(should_micro_reflect(&msgs, 5));
+    fn trivial_turn_skipped_within_cooldown() {
+        let msgs = [user_msg("hello"), assistant_msg("hi")];
+        assert!(!should_micro_reflect(&msgs, 0));
     }
 
     #[test]

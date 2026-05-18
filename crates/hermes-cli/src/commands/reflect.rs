@@ -536,6 +536,7 @@ fn persist_skill(store: &FsSkillStore, c: &SkillCandidate) -> Result<PathBuf> {
         triggers: c.triggers.clone(),
         version: Some("0.1.0".into()),
         license: None,
+        always_active: false,
         extra,
     };
     store
@@ -544,7 +545,7 @@ fn persist_skill(store: &FsSkillStore, c: &SkillCandidate) -> Result<PathBuf> {
 }
 
 fn persist_memory(store: &FsMemoryStore, c: &MemoryCandidate) -> Result<PathBuf> {
-    let mut fm = MemoryFrontmatter::new(MemorySource::Reflection, c.confidence, c.tags.clone());
+    let mut fm = MemoryFrontmatter::new(MemorySource::Reflection, c.confidence, c.tags.clone(), "general".to_string());
     fm.supersedes = c.supersedes.clone();
     let scope = c.scope;
     // Fall back to User scope if Project was requested but no project

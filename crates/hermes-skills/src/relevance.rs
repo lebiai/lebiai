@@ -153,6 +153,7 @@ mod tests {
                 triggers: triggers.iter().map(|s| s.to_string()).collect(),
                 version: None,
                 license: None,
+                always_active: false,
                 extra: Mapping::new(),
             },
             body: String::new(),

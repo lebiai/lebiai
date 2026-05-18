@@ -204,7 +204,7 @@ pub async fn respond_confirm(
 ) -> Result<(), GuiError> {
     let action = match action.to_lowercase().as_str() {
         "allow" | "y" => ConfirmAction::Allow,
-        _ => ConfirmAction::Deny,
+        _ => ConfirmAction::Deny { reason: None },
     };
     if let Some(reply) = state.confirm_tokens.lock().await.remove(&id) {
         let _ = reply.send(action);

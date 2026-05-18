@@ -39,6 +39,9 @@ pub enum CandidateKind {
 pub enum ActionTaken {
     /// User accepted the candidate as-is (`a` / `n` keep_new).
     Accept,
+    /// Micro-reflection auto-accepted (eligible: Medium confidence, no
+    /// conflicts, no supersedes).
+    AutoAccept,
     /// User rejected (`r`) or kept the old one (`o`) or skipped (`k`).
     Reject,
     /// `d` defer.
@@ -130,7 +133,7 @@ pub fn stats(last_n: Option<usize>) -> Result<Stats> {
     for e in &all {
         s.total += 1;
         match e.action {
-            ActionTaken::Accept => s.accepted += 1,
+            ActionTaken::Accept | ActionTaken::AutoAccept => s.accepted += 1,
             ActionTaken::Reject => s.rejected += 1,
             ActionTaken::Defer => s.deferred += 1,
             _ => s.other += 1,

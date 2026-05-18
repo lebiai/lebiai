@@ -42,9 +42,17 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: usize) ->
     // --- skills & memories snapshot ---
     let skill_store = FsSkillStore::standard()
         .map_err(|e| anyhow::anyhow!("skill store: {e}"))?;
+
+    // --- Memory Palace: auto-install skill, build index, collect always-active ---
+    super::chat::auto_install_palace_skill(&skill_store);
     let all_skills: Vec<LoadedSkill> = skill_store
         .list()
         .map_err(|e| anyhow::anyhow!("listing skills: {e}"))?;
+    let always_active_refs: Vec<&LoadedSkill> = all_skills
+        .iter()
+        .filter(|s| s.frontmatter.always_active)
+        .collect();
+
     let active_memories: Vec<LoadedMemory> = memory_store_arc
         .list_active()
         .map_err(|e| anyhow::anyhow!("listing memories: {e}"))?;
@@ -56,13 +64,37 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: usize) ->
     let effectiveness: std::collections::HashMap<String, hermes_skills::SkillEffectiveness> =
         hermes_skills::load_effectiveness().unwrap_or_default();
 
+    let mem_effectiveness: std::collections::HashMap<String, hermes_memory::MemoryEffectiveness> =
+        hermes_memory::load_effectiveness().unwrap_or_default();
+
+    let compiled_profile = hermes_memory::load_profile().unwrap_or(None);
+
+    let palace_index: Option<String> = if active_memories.is_empty() {
+        None
+    } else {
+        match hermes_memory::load_palace_index() {
+            Ok(Some(idx)) => Some(idx),
+            _ => {
+                let idx = hermes_memory::build_palace_index_simple(&active_memories);
+                if let Err(e) = hermes_memory::save_palace_index(&idx) {
+                    tracing::warn!(error=%e, "save palace index");
+                }
+                Some(idx)
+            }
+        }
+    };
+
     // --- build per-goal system prompt with context sources ---
     let sources = ContextSources {
         base: system.as_deref(),
+        palace_index: palace_index.as_deref(),
+        compiled_profile: compiled_profile.as_deref(),
+        always_active_skills: &always_active_refs,
         pinned: &pinned_memories,
         active: &active_memories,
         all_skills: &all_skills,
         effectiveness: Some(&effectiveness),
+        memory_effectiveness: Some(&mem_effectiveness),
     };
     let turn_system = sources.build_turn_system(&goal);
 
@@ -123,13 +155,20 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: usize) ->
     let confirm_task = tokio::spawn(async move {
         let mut always_allow: std::collections::HashSet<String> =
             std::collections::HashSet::new();
+        let mut first_prompt = true;
         while let Some(req) = confirm_rx.recv().await {
             if always_allow.contains(&req.tool_name) {
                 let _ = req.reply.send(hermes_turn::ConfirmAction::Allow);
                 continue;
             }
+            if first_prompt {
+                eprintln!(
+                    "\x1b[2m  (y = yes, a = always allow this tool, N = deny, or type a reason to deny with feedback)\x1b[0m"
+                );
+                first_prompt = false;
+            }
             eprint!(
-                "\x1b[1m\x1b[33m  ⚠ confirm\x1b[0m {}: {}  \x1b[1m[y/a/N]\x1b[0m ",
+                "\x1b[1m\x1b[33m  ⚠ confirm\x1b[0m {}: {}  \x1b[1m[y/a/N/...]\x1b[0m ",
                 req.tool_name, req.summary,
             );
             std::io::stderr().flush().ok();
@@ -141,10 +180,13 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: usize) ->
                         always_allow.insert(req.tool_name.clone());
                         hermes_turn::ConfirmAction::AlwaysAllow
                     }
-                    _ => hermes_turn::ConfirmAction::Deny,
+                    "" | "n" => hermes_turn::ConfirmAction::Deny { reason: None },
+                    other => hermes_turn::ConfirmAction::Deny {
+                        reason: Some(other.to_string()),
+                    },
                 }
             } else {
-                hermes_turn::ConfirmAction::Deny
+                hermes_turn::ConfirmAction::Deny { reason: None }
             };
             let _ = req.reply.send(action);
         }

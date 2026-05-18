@@ -2043,6 +2043,7 @@ dependencies = [
  "hermes-core",
  "hermes-store",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "thiserror 1.0.69",
@@ -2108,6 +2109,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "glob",
  "hermes-core",
  "hermes-memory",

@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use hermes_memory::LoadedMemory;
+use hermes_memory::{LoadedMemory, MemoryEffectiveness};
 use hermes_skills::{LoadedSkill, SkillEffectiveness};
 
 const ACTIVE_MEMORY_INDEX_CAP: usize = 50;
@@ -33,10 +33,14 @@ const RELEVANT_MEMORY_CAP: usize = 3;
 
 pub struct ContextSources<'a> {
     pub base: Option<&'a str>,
+    pub palace_index: Option<&'a str>,
+    pub compiled_profile: Option<&'a str>,
+    pub always_active_skills: &'a [&'a LoadedSkill],
     pub pinned: &'a [LoadedMemory],
     pub active: &'a [LoadedMemory],
     pub all_skills: &'a [LoadedSkill],
     pub effectiveness: Option<&'a HashMap<String, SkillEffectiveness>>,
+    pub memory_effectiveness: Option<&'a HashMap<String, MemoryEffectiveness>>,
 }
 
 impl<'a> ContextSources<'a> {
@@ -47,34 +51,50 @@ impl<'a> ContextSources<'a> {
             buf.push_str("\n\n");
         }
 
-        if !self.pinned.is_empty() {
-            buf.push_str("## Pinned memories (always loaded)\n");
-            for m in self.pinned {
-                let body = m.body.trim();
-                buf.push_str(&format!("- [{}] {}\n", m.frontmatter.id, body));
-            }
+        if let Some(index) = self.palace_index {
+            buf.push_str(index.trim());
             buf.push('\n');
+        } else if let Some(profile) = self.compiled_profile {
+            buf.push_str("## User Profile\n\n");
+            buf.push_str(profile.trim());
+            buf.push('\n');
+        } else {
+            if !self.pinned.is_empty() {
+                buf.push_str("## Pinned memories (always loaded)\n");
+                for m in self.pinned {
+                    let body = m.body.trim();
+                    buf.push_str(&format!("- [{}] {}\n", m.frontmatter.id, body));
+                }
+                buf.push('\n');
+            }
+
+            // Episodic = active and not pinned (we already have pinned above).
+            let episodic: Vec<&LoadedMemory> = self
+                .active
+                .iter()
+                .filter(|m| !m.frontmatter.pinned)
+                .collect();
+            if !episodic.is_empty() {
+                buf.push_str("## Active memory index\n");
+                for m in episodic.iter().take(ACTIVE_MEMORY_INDEX_CAP) {
+                    let line = m.body.lines().next().unwrap_or("").trim();
+                    buf.push_str(&format!("- [{}] {}\n", m.frontmatter.id, line));
+                }
+                if episodic.len() > ACTIVE_MEMORY_INDEX_CAP {
+                    buf.push_str(&format!(
+                        "- ... ({} more not shown)\n",
+                        episodic.len() - ACTIVE_MEMORY_INDEX_CAP
+                    ));
+                }
+                buf.push('\n');
+            }
         }
 
-        // Episodic = active and not pinned (we already have pinned above).
-        let episodic: Vec<&LoadedMemory> = self
-            .active
-            .iter()
-            .filter(|m| !m.frontmatter.pinned)
-            .collect();
-        if !episodic.is_empty() {
-            buf.push_str("## Active memory index\n");
-            for m in episodic.iter().take(ACTIVE_MEMORY_INDEX_CAP) {
-                let line = m.body.lines().next().unwrap_or("").trim();
-                buf.push_str(&format!("- [{}] {}\n", m.frontmatter.id, line));
-            }
-            if episodic.len() > ACTIVE_MEMORY_INDEX_CAP {
-                buf.push_str(&format!(
-                    "- ... ({} more not shown)\n",
-                    episodic.len() - ACTIVE_MEMORY_INDEX_CAP
-                ));
-            }
-            buf.push('\n');
+        // Always-active skills injected directly into session prompt.
+        for s in self.always_active_skills {
+            buf.push_str(&format!("### {}\n", s.frontmatter.name));
+            buf.push_str(s.body.trim());
+            buf.push_str("\n\n");
         }
 
         if !self.all_skills.is_empty() {
@@ -102,24 +122,28 @@ impl<'a> ContextSources<'a> {
     pub fn build_turn_system(&self, user_query: &str) -> String {
         let mut buf = self.build_session_system();
 
-        // Inject relevant memory bodies (episodic, not pinned — those are
-        // already in the session-level prompt).
-        let relevant: Vec<&LoadedMemory> = hermes_memory::search_memories(
-            self.active,
-            user_query,
-            RELEVANT_MEMORY_CAP + self.pinned.len(), // over-fetch to allow filtering
-        )
-        .into_iter()
-        .filter(|m| !m.frontmatter.pinned)
-        .take(RELEVANT_MEMORY_CAP)
-        .collect();
-        if !relevant.is_empty() {
-            if !buf.is_empty() {
-                buf.push_str("\n\n");
-            }
-            buf.push_str("## Relevant memories for this turn\n\n");
-            for m in relevant {
-                buf.push_str(&format!("- [{}] {}\n", m.frontmatter.id, m.body.trim()));
+        // When palace index is active, agent uses tools for memory retrieval.
+        // When compiled profile is active, it already contains all memories.
+        // Only inject per-turn memories in the legacy (no palace, no profile) path.
+        if self.palace_index.is_none() && self.compiled_profile.is_none() {
+            let relevant: Vec<&LoadedMemory> = hermes_memory::search_memories_effective(
+                self.active,
+                user_query,
+                RELEVANT_MEMORY_CAP + self.pinned.len(),
+                self.memory_effectiveness,
+            )
+            .into_iter()
+            .filter(|m| !m.frontmatter.pinned)
+            .take(RELEVANT_MEMORY_CAP)
+            .collect();
+            if !relevant.is_empty() {
+                if !buf.is_empty() {
+                    buf.push_str("\n\n");
+                }
+                buf.push_str("## Relevant memories for this turn\n\n");
+                for m in relevant {
+                    buf.push_str(&format!("- [{}] {}\n", m.frontmatter.id, m.body.trim()));
+                }
             }
         }
 
@@ -154,7 +178,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn pinned_memory(id: &str, body: &str) -> LoadedMemory {
-        let mut fm = MemoryFrontmatter::new(Source::User, Confidence::High, vec![]);
+        let mut fm = MemoryFrontmatter::new(Source::User, Confidence::High, vec![], "core".to_string());
         fm.id = id.to_string();
         fm.pinned = true;
         LoadedMemory {
@@ -166,7 +190,7 @@ mod tests {
     }
 
     fn episodic_memory(id: &str, body: &str) -> LoadedMemory {
-        let mut fm = MemoryFrontmatter::new(Source::Reflection, Confidence::Medium, vec![]);
+        let mut fm = MemoryFrontmatter::new(Source::Reflection, Confidence::Medium, vec![], "general".to_string());
         fm.id = id.to_string();
         LoadedMemory {
             frontmatter: fm,
@@ -184,6 +208,7 @@ mod tests {
                 triggers: triggers.iter().map(|s| s.to_string()).collect(),
                 version: None,
                 license: None,
+                always_active: false,
                 extra: Mapping::new(),
             },
             body: body.to_string(),
@@ -196,10 +221,14 @@ mod tests {
     fn empty_inputs_yield_empty_string() {
         let sources = ContextSources {
             base: None,
+            palace_index: None,
+            compiled_profile: None,
+            always_active_skills: &[],
             pinned: &[],
             active: &[],
             all_skills: &[],
             effectiveness: None,
+            memory_effectiveness: None,
         };
         assert_eq!(sources.build_session_system(), "");
     }
@@ -216,10 +245,14 @@ mod tests {
         );
         let sources = ContextSources {
             base: Some("you are a helpful agent."),
+            palace_index: None,
+            compiled_profile: None,
+            always_active_skills: &[],
             pinned: &[pinned],
             active: &[ep],
             all_skills: &[sk],
             effectiveness: None,
+            memory_effectiveness: None,
         };
         let s = sources.build_session_system();
         assert!(s.contains("you are a helpful agent."));
@@ -244,10 +277,14 @@ mod tests {
         );
         let sources = ContextSources {
             base: None,
+            palace_index: None,
+            compiled_profile: None,
+            always_active_skills: &[],
             pinned: &[],
             active: &[],
             all_skills: &[sk],
             effectiveness: None,
+            memory_effectiveness: None,
         };
         let s = sources.build_turn_system("please rewrite the rust unwrap calls");
         assert!(s.contains("Skills triggered for this turn"));
@@ -260,10 +297,14 @@ mod tests {
         let sk = skill("python-x", "py", &["python"], "py body");
         let sources = ContextSources {
             base: None,
+            palace_index: None,
+            compiled_profile: None,
+            always_active_skills: &[],
             pinned: &[],
             active: &[],
             all_skills: &[sk],
             effectiveness: None,
+            memory_effectiveness: None,
         };
         let s = sources.build_turn_system("rust unwrap question");
         assert!(!s.contains("Skills triggered"));
@@ -274,10 +315,14 @@ mod tests {
         let ep = episodic_memory("mem_r", "user prefers anyhow over thiserror for app-layer errors");
         let sources = ContextSources {
             base: None,
+            palace_index: None,
+            compiled_profile: None,
+            always_active_skills: &[],
             pinned: &[],
             active: &[ep],
             all_skills: &[],
             effectiveness: None,
+            memory_effectiveness: None,
         };
         let s = sources.build_turn_system("how should I handle errors in the app layer?");
         assert!(s.contains("Relevant memories for this turn"));
@@ -296,13 +341,121 @@ mod tests {
         let p_pinned = p.clone();
         let sources = ContextSources {
             base: None,
+            palace_index: None,
+            compiled_profile: None,
+            always_active_skills: &[],
             pinned: std::slice::from_ref(&p_pinned),
             active: &[p],
             all_skills: &[],
             effectiveness: None,
+            memory_effectiveness: None,
         };
         let s = sources.build_session_system();
         let occurrences = s.matches("mem_p").count();
         assert_eq!(occurrences, 1, "pinned memory must not duplicate");
+    }
+
+    #[test]
+    fn compiled_profile_replaces_memory_sections() {
+        let pinned = pinned_memory("mem_p", "pinned body");
+        let ep = episodic_memory("mem_e", "episodic body");
+        let profile = "## User\n- architect on Mac\n\n## Habits\n- prefers vim";
+        let sources = ContextSources {
+            base: Some("base prompt"),
+            palace_index: None,
+            compiled_profile: Some(profile),
+            always_active_skills: &[],
+            pinned: &[pinned],
+            active: &[ep],
+            all_skills: &[],
+            effectiveness: None,
+            memory_effectiveness: None,
+        };
+        let s = sources.build_session_system();
+        assert!(s.contains("User Profile"), "profile section should exist");
+        assert!(s.contains("architect on Mac"), "profile content should appear");
+        assert!(!s.contains("Pinned memories"), "pinned section should be skipped");
+        assert!(!s.contains("Active memory index"), "index should be skipped");
+        assert!(!s.contains("mem_p"), "individual memory IDs should not appear");
+
+        let t = sources.build_turn_system("error handling question");
+        assert!(!t.contains("Relevant memories"), "per-turn memories should be skipped");
+    }
+
+    #[test]
+    fn compiled_profile_coexists_with_skills() {
+        let sk = skill(
+            "rust-error",
+            "switch unwrap to anyhow",
+            &["rust", "anyhow", "unwrap"],
+            "step 1: find unwrap\nstep 2: rewrite",
+        );
+        let sources = ContextSources {
+            base: None,
+            palace_index: None,
+            compiled_profile: Some("## Profile\n- architect"),
+            always_active_skills: &[],
+            pinned: &[],
+            active: &[],
+            all_skills: &[sk],
+            effectiveness: None,
+            memory_effectiveness: None,
+        };
+        let s = sources.build_turn_system("rewrite rust unwrap calls");
+        assert!(s.contains("User Profile"), "profile should be present");
+        assert!(s.contains("Skills triggered"), "skills should still trigger");
+        assert!(s.contains("step 1: find unwrap"), "skill body should be injected");
+    }
+
+    #[test]
+    fn palace_index_replaces_all_memory_sections() {
+        let pinned = pinned_memory("mem_p", "pinned body");
+        let ep = episodic_memory("mem_e", "episodic body");
+        let index = "## Memory Palace\n3 memories across 2 zones.\n\n### core (2)\n- architect\n### general (1)\n- misc";
+        let sources = ContextSources {
+            base: Some("base prompt"),
+            palace_index: Some(index),
+            compiled_profile: Some("should be ignored"),
+            always_active_skills: &[],
+            pinned: std::slice::from_ref(&pinned),
+            active: std::slice::from_ref(&ep),
+            all_skills: &[],
+            effectiveness: None,
+            memory_effectiveness: None,
+        };
+        let s = sources.build_session_system();
+        assert!(s.contains("Memory Palace"), "palace index should appear");
+        assert!(s.contains("core (2)"), "zone listing should appear");
+        assert!(!s.contains("User Profile"), "compiled profile should be skipped");
+        assert!(!s.contains("Pinned memories"), "pinned section should be skipped");
+        assert!(!s.contains("Active memory index"), "index section should be skipped");
+
+        let t = sources.build_turn_system("how do I handle errors?");
+        assert!(!t.contains("Relevant memories"), "per-turn memories should be skipped when palace active");
+    }
+
+    #[test]
+    fn always_active_skills_injected() {
+        let sk = skill(
+            "memory-palace",
+            "Protocol for navigating the Memory Palace",
+            &[],
+            "# Memory Palace Protocol\nYour memories are organized into zones.",
+        );
+        let sk_ref = &sk;
+        let sources = ContextSources {
+            base: None,
+            palace_index: Some("## Memory Palace\n1 zone"),
+            compiled_profile: None,
+            always_active_skills: std::slice::from_ref(&sk_ref),
+            pinned: &[],
+            active: &[],
+            all_skills: &[],
+            effectiveness: None,
+            memory_effectiveness: None,
+        };
+        let s = sources.build_session_system();
+        assert!(s.contains("### memory-palace"), "always-active skill header should appear");
+        assert!(s.contains("Memory Palace Protocol"), "always-active skill body should appear");
     }
 }

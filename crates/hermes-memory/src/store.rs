@@ -387,6 +387,7 @@ mod tests {
             Source::User,
             Confidence::Medium,
             tags.into_iter().map(String::from).collect(),
+            "general".to_string(),
         )
     }
 

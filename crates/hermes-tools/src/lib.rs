@@ -8,6 +8,7 @@ pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod memory;
+pub mod palace;
 pub mod read;
 pub mod safety;
 pub mod think;
@@ -46,7 +47,7 @@ impl BuiltinToolHost {
     pub fn handles(&self, name: &str) -> bool {
         BASIC_TOOLS.contains(&name)
             || todo::handles(name)
-            || matches!(name, "think" | "web_fetch" | "web_search" | "memory_search" | "memory_save" | "memory_delete")
+            || matches!(name, "think" | "web_fetch" | "web_search" | "memory_search" | "memory_save" | "memory_delete" | "palace_zones" | "palace_read_zone" | "palace_recall")
     }
 }
 
@@ -69,6 +70,9 @@ impl ToolHost for BuiltinToolHost {
             tools.push(memory::spec());
             tools.push(memory::save_spec());
             tools.push(memory::delete_spec());
+            tools.push(palace::zones_spec());
+            tools.push(palace::read_zone_spec());
+            tools.push(palace::recall_spec());
         }
         Ok(tools)
     }
@@ -101,6 +105,24 @@ impl ToolHost for BuiltinToolHost {
                     Error::ToolHost("memory_delete: no memory store configured".into())
                 })?;
                 memory::delete_run(store.as_ref(), args).await
+            }
+            "palace_zones" => {
+                let store = self.memory_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("palace_zones: no memory store configured".into())
+                })?;
+                palace::zones_run(store.as_ref()).await
+            }
+            "palace_read_zone" => {
+                let store = self.memory_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("palace_read_zone: no memory store configured".into())
+                })?;
+                palace::read_zone_run(store.as_ref(), args).await
+            }
+            "palace_recall" => {
+                let store = self.memory_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("palace_recall: no memory store configured".into())
+                })?;
+                palace::recall_run(store.as_ref(), args).await
             }
             n if todo::handles(n) => todo::run(&self.workspace, n, args).await,
             _ => Err(Error::ToolHost(format!("unknown built-in tool: {name}"))),

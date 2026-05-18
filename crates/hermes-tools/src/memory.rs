@@ -84,6 +84,12 @@ struct SaveArgs {
     content: String,
     #[serde(default)]
     tags: Vec<String>,
+    #[serde(default = "default_zone")]
+    zone: String,
+}
+
+fn default_zone() -> String {
+    "general".to_string()
 }
 
 pub fn save_spec() -> ToolSpec {
@@ -98,7 +104,8 @@ pub fn save_spec() -> ToolSpec {
             "type": "object",
             "properties": {
                 "content": {"type": "string", "description": "The insight or knowledge to remember"},
-                "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for retrieval (e.g. ['weather', 'api'])"}
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for retrieval (e.g. ['weather', 'api'])"},
+                "zone": {"type": "string", "description": "Memory zone: core (identity/preferences), work (current focus), project:<name> (per-project), episode (session summaries), general (default)", "default": "general"}
             },
             "required": ["content"]
         }),
@@ -119,7 +126,7 @@ pub async fn save_run(
         });
     }
 
-    let fm = MemoryFrontmatter::new(Source::User, Confidence::High, a.tags);
+    let fm = MemoryFrontmatter::new(Source::User, Confidence::High, a.tags, a.zone);
     let id = fm.id.clone();
 
     match store.put(Scope::User, fm, &a.content) {

@@ -7,6 +7,7 @@
 //! - **Micro-reflection** (`micro_reflect`) — runs per-turn in the
 //!   background. Cheap, fast, only looks at the latest turn.
 
+pub mod compile;
 pub mod deferred;
 pub mod log;
 pub mod micro;
@@ -14,6 +15,7 @@ pub mod output;
 pub mod prompt;
 pub mod runner;
 
+pub use compile::{compile_palace_index, compile_profile, compile_zone_summary};
 pub use deferred::{DeferredCandidate, save as deferred_save, load as deferred_load, clear as deferred_clear};
 pub use log::{
     append as log_append, default_log_path as log_default_path, read_all as log_read_all,

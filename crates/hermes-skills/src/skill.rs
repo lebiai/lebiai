@@ -33,6 +33,10 @@ pub struct SkillFrontmatter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
 
+    /// If true, the skill body is always injected into the system prompt.
+    #[serde(default)]
+    pub always_active: bool,
+
     /// Catch-all for fields we do not yet model (e.g. `model`, `allowed_tools`).
     /// Preserved on roundtrip.
     #[serde(flatten)]

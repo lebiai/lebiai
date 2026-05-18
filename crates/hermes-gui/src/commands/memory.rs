@@ -50,7 +50,7 @@ pub fn create_memory(
         "Project" => Scope::Project,
         _ => Scope::User,
     };
-    let mut fm = MemoryFrontmatter::new(Source::User, Confidence::High, tags);
+    let mut fm = MemoryFrontmatter::new(Source::User, Confidence::High, tags, "general".to_string());
     fm.pinned = pinned;
     state
         .memory_store

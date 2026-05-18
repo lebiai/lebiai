@@ -122,6 +122,7 @@ pub async fn accept_skill_candidate(
         triggers,
         version: None,
         license: None,
+        always_active: false,
         extra: Default::default(),
     };
     state
@@ -148,7 +149,7 @@ pub async fn accept_memory_candidate(
         "High" => hermes_memory::Confidence::High,
         _ => hermes_memory::Confidence::Medium,
     };
-    let fm = MemoryFrontmatter::new(Source::Reflection, conf, tags);
+    let fm = MemoryFrontmatter::new(Source::Reflection, conf, tags, "general".to_string());
     state
         .memory_store
         .put(s, fm, &fact)

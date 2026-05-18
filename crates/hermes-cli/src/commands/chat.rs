@@ -58,9 +58,6 @@ pub async fn run(
     let skill_store = FsSkillStore::standard()
         .map_err(|e| anyhow::anyhow!("skill store: {e}"))?;
 
-    let all_skills: Vec<LoadedSkill> = skill_store
-        .list()
-        .map_err(|e| anyhow::anyhow!("listing skills: {e}"))?;
     let active_memories: Vec<LoadedMemory> = memory_store_arc
         .list_active()
         .map_err(|e| anyhow::anyhow!("listing memories: {e}"))?;
@@ -73,6 +70,35 @@ pub async fn run(
     // Load skill effectiveness data for deprioritizing low-use skills.
     let effectiveness: std::collections::HashMap<String, hermes_skills::SkillEffectiveness> =
         hermes_skills::load_effectiveness().unwrap_or_default();
+
+    // Load memory effectiveness data for deprioritizing low-reference memories.
+    let mem_effectiveness: std::collections::HashMap<String, hermes_memory::MemoryEffectiveness> =
+        hermes_memory::load_effectiveness().unwrap_or_default();
+
+    // --- Memory Palace: auto-install skill, build index, collect always-active ---
+    auto_install_palace_skill(&skill_store);
+    let all_skills: Vec<LoadedSkill> = skill_store
+        .list()
+        .map_err(|e| anyhow::anyhow!("listing skills: {e}"))?;
+    let always_active_refs: Vec<&LoadedSkill> = all_skills
+        .iter()
+        .filter(|s| s.frontmatter.always_active)
+        .collect();
+
+    let palace_index: Option<String> = if active_memories.is_empty() {
+        None
+    } else {
+        match hermes_memory::load_palace_index() {
+            Ok(Some(idx)) => Some(idx),
+            _ => {
+                let idx = hermes_memory::build_palace_index_simple(&active_memories);
+                if let Err(e) = hermes_memory::save_palace_index(&idx) {
+                    tracing::warn!(error=%e, "save palace index");
+                }
+                Some(idx)
+            }
+        }
+    };
 
     // ---- session: resume or fresh ----
     let (mut session, mut writer, session_path, resumed) = match resume_path {
@@ -111,16 +137,48 @@ pub async fn run(
         }
     );
     eprintln!("tools:    {} loaded", tools.len());
-    eprintln!(
-        "memory:   {} active ({} pinned)",
-        active_memories.len(),
-        pinned_memories.len()
-    );
+    {
+        let zones = hermes_memory::group_by_zone(&active_memories);
+        let zone_info: String = zones
+            .iter()
+            .map(|(z, m)| format!("{}:{}", z, m.len()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if zone_info.is_empty() {
+            eprintln!(
+                "memory:   {} active ({} pinned)",
+                active_memories.len(),
+                pinned_memories.len()
+            );
+        } else {
+            eprintln!(
+                "palace:   {} memories across {} zones [{}]",
+                active_memories.len(),
+                zones.len(),
+                zone_info
+            );
+        }
+    }
     eprintln!("skills:   {} loaded", all_skills.len());
-    eprintln!("commands: /exit /quit /clear /tokens /tools /memory /skills /context /session /remember /forget /reflect /help");
+    eprintln!("commands: /exit /quit /clear /tokens /tools /memory /skills /context /session /remember /forget /reflect /compile /palace /help");
     eprintln!();
 
+    // Auto-compile profile on first session if memories exist but profile.md doesn't.
+    if !active_memories.is_empty()
+        && hermes_memory::load_profile().unwrap_or(None).is_none()
+    {
+        eprintln!("\x1b[90m(compiling memory profile for the first time...)\x1b[0m");
+        match hermes_reflect::compile_profile(provider.as_ref(), &active_memories).await {
+            Ok(profile) => match hermes_memory::save_profile(&profile) {
+                Ok(p) => eprintln!("\x1b[32m✓ profile compiled ({})\x1b[0m", p.display()),
+                Err(e) => eprintln!("\x1b[31m✗ profile save failed: {e}\x1b[0m"),
+            },
+            Err(e) => eprintln!("\x1b[31m✗ profile compile failed: {e}\x1b[0m"),
+        }
+    }
+
     let mut line_editor = ChatLineEditor::new()?;
+    let mut turns_since_last_reflect: usize = 0;
 
     loop {
         let input = match line_editor.readline("> ").await {
@@ -142,6 +200,9 @@ pub async fn run(
         let trimmed = input.as_str();
 
         if let Some(cmd) = trimmed.strip_prefix('/') {
+            if cmd.trim() == "reflect" {
+                turns_since_last_reflect = 0;
+            }
             if !handle_command(
                 cmd,
                 &mut session,
@@ -150,6 +211,8 @@ pub async fn run(
                 &all_skills,
                 &active_memories,
                 system.as_deref(),
+                palace_index.as_deref(),
+                &always_active_refs,
                 &*memory_store_arc,
                 &skill_store,
                 provider.as_ref(),
@@ -159,14 +222,19 @@ pub async fn run(
             continue;
         }
 
-        // Build per-turn system prompt: base + memories + skills index +
+        // Build per-turn system prompt: base + palace/memories + skills index +
         // bodies of skills triggered by *this* user input.
+        let compiled_profile = hermes_memory::load_profile().unwrap_or(None);
         let sources = ContextSources {
             base: system.as_deref(),
+            palace_index: palace_index.as_deref(),
+            compiled_profile: compiled_profile.as_deref(),
+            always_active_skills: &always_active_refs,
             pinned: &pinned_memories,
             active: &active_memories,
             all_skills: &all_skills,
             effectiveness: Some(&effectiveness),
+            memory_effectiveness: Some(&mem_effectiveness),
         };
         let turn_system = sources.build_turn_system(trimmed);
 
@@ -188,7 +256,32 @@ pub async fn run(
             });
         }
 
-        let _turn_msg_index = session.messages.len(); // before pushing user msg
+        // Track which memories were injected for effectiveness stats.
+        // Skip when a compiled profile is active (no per-turn retrieval).
+        let loaded_memory_ids: Vec<String> = if compiled_profile.is_none() {
+            hermes_memory::search_memories_effective(
+                &active_memories,
+                trimmed,
+                3 + pinned_memories.len(),
+                Some(&mem_effectiveness),
+            )
+            .into_iter()
+            .filter(|m| !m.frontmatter.pinned)
+            .take(3)
+            .map(|m| m.frontmatter.id.clone())
+            .collect()
+        } else {
+            Vec::new()
+        };
+        for id in &loaded_memory_ids {
+            hermes_memory::record_memory_stat(hermes_memory::MemoryStatEntry {
+                at: chrono::Utc::now(),
+                memory_id: id.clone(),
+                event: hermes_memory::MemoryEvent::Loaded,
+            });
+        }
+
+        let turn_msg_index = session.messages.len();
         let user_msg = session.push_user(trimmed).clone();
         if let Err(e) = writer.append(&SessionEvent::Message(user_msg)) {
             tracing::warn!(error = %e, "failed to persist user message");
@@ -240,26 +333,24 @@ pub async fn run(
 
         // Record SkillEvent::Used for matched skills whose body content
         // appears in the assistant's latest response.
-        if !matched_skill_names.is_empty() {
-            let assistant_text: String = session
-                .messages
-                .iter()
-                .rev()
-                .take_while(|m| matches!(m.role, Role::Assistant))
-                .flat_map(|m| {
-                    m.content.iter().filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
+        let assistant_text: String = session
+            .messages
+            .iter()
+            .rev()
+            .take_while(|m| matches!(m.role, Role::Assistant))
+            .flat_map(|m| {
+                m.content.iter().filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
                 })
-                .collect::<Vec<&str>>()
-                .into_iter()
-                .rev()
-                .collect::<String>();
+            })
+            .collect::<Vec<&str>>()
+            .into_iter()
+            .rev()
+            .collect::<String>();
+        if !matched_skill_names.is_empty() {
             for name in &matched_skill_names {
                 if let Some(sk) = all_skills.iter().find(|s| &s.frontmatter.name == name) {
-                    // Check if any non-trivial fragment of the skill body appears
-                    // in the assistant's response.
                     let body_fragments = sk.body.split_whitespace().collect::<Vec<_>>();
                     let fragment_len = body_fragments.len().min(5);
                     if fragment_len >= 3 {
@@ -277,6 +368,140 @@ pub async fn run(
                 }
             }
         }
+
+        // Record MemoryEvent::Referenced for loaded memories whose body
+        // fragment appears in the assistant's response.
+        if !loaded_memory_ids.is_empty() {
+            for id in &loaded_memory_ids {
+                if let Some(mem) = active_memories.iter().find(|m| &m.frontmatter.id == id) {
+                    let body_fragments = mem.body.split_whitespace().collect::<Vec<_>>();
+                    let fragment_len = body_fragments.len().min(5);
+                    if fragment_len >= 3 {
+                        let probe: String = body_fragments[..fragment_len].join(" ");
+                        if assistant_text.contains(&probe) {
+                            hermes_memory::record_memory_stat(
+                                hermes_memory::MemoryStatEntry {
+                                    at: chrono::Utc::now(),
+                                    memory_id: id.clone(),
+                                    event: hermes_memory::MemoryEvent::Referenced,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // --- micro-reflection (background) ---
+        let turn_messages: Vec<hermes_core::Message> =
+            session.messages[turn_msg_index..].to_vec();
+        if hermes_reflect::should_micro_reflect(&turn_messages, turns_since_last_reflect) {
+            turns_since_last_reflect = 0;
+            let prov = provider.clone();
+            let ms = memory_store_arc.clone();
+            let skills_snap = all_skills.clone();
+            let mems_snap = active_memories.clone();
+            let auto_accept = cfg.reflect.auto_accept_memories;
+            let session_id = session.meta.id.clone();
+            tokio::spawn(async move {
+                match hermes_reflect::micro_reflect(
+                    prov.as_ref(),
+                    &turn_messages,
+                    &skills_snap,
+                    &mems_snap,
+                )
+                .await
+                {
+                    Ok(output) if !output.is_empty() => {
+                        let conflict_ids: std::collections::HashSet<String> = output
+                            .conflicts
+                            .iter()
+                            .map(|c| c.with.clone())
+                            .collect();
+
+                        let mut any_accepted = false;
+                        for c in &output.memory_candidates {
+                            let eligible = auto_accept
+                                && matches!(c.confidence, hermes_memory::Confidence::Medium)
+                                && c.supersedes.is_empty()
+                                && !c.supersedes.iter().any(|id| conflict_ids.contains(id));
+
+                            if eligible {
+                                let fm = hermes_memory::MemoryFrontmatter::new(
+                                    hermes_memory::Source::Reflection,
+                                    c.confidence,
+                                    c.tags.clone(),
+                                    "general".to_string(),
+                                );
+                                match ms.put(c.scope, fm, &c.fact) {
+                                    Ok(path) => {
+                                        let preview: String = c.fact.chars().take(60).collect();
+                                        eprintln!("  \x1b[32m💾 learned: {preview}\x1b[0m");
+                                        tracing::info!(path=%path.display(), "auto-accepted memory");
+                                        any_accepted = true;
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error=%e, "auto-accept memory failed");
+                                    }
+                                }
+                                hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
+                                    at: chrono::Utc::now(),
+                                    session_id: session_id.clone(),
+                                    kind: hermes_reflect::CandidateKind::Memory,
+                                    action: hermes_reflect::ActionTaken::AutoAccept,
+                                    label: c.fact.lines().next().unwrap_or("").to_string(),
+                                });
+                            } else {
+                                hermes_reflect::deferred_save(
+                                    hermes_reflect::DeferredCandidate::Memory(c.clone()),
+                                );
+                            }
+                        }
+
+                        for c in &output.skill_candidates {
+                            hermes_reflect::deferred_save(
+                                hermes_reflect::DeferredCandidate::Skill(c.clone()),
+                            );
+                        }
+
+                        // Recompile profile and palace index when new memories were auto-accepted.
+                        if any_accepted {
+                            if let Ok(fresh_mems) = ms.list_active() {
+                                match hermes_reflect::compile_profile(
+                                    prov.as_ref(),
+                                    &fresh_mems,
+                                )
+                                .await
+                                {
+                                    Ok(profile) => {
+                                        if let Err(e) = hermes_memory::save_profile(&profile) {
+                                            tracing::warn!(error=%e, "save compiled profile");
+                                        } else {
+                                            eprintln!("  \x1b[90m📋 profile recompiled\x1b[0m");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!(error=%e, "background profile compile failed");
+                                    }
+                                }
+                                let idx = hermes_memory::build_palace_index_simple(&fresh_mems);
+                                if let Err(e) = hermes_memory::save_palace_index(&idx) {
+                                    tracing::warn!(error=%e, "save palace index");
+                                } else {
+                                    eprintln!("  \x1b[90m🏛 palace index updated\x1b[0m");
+                                }
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::debug!(error=%e, "micro-reflection failed");
+                    }
+                }
+            });
+        } else {
+            turns_since_last_reflect += 1;
+        }
+
         println!();
     }
 
@@ -322,13 +547,20 @@ async fn run_one_turn(
     let confirm_task = tokio::spawn(async move {
         let mut always_allow: std::collections::HashSet<String> =
             std::collections::HashSet::new();
+        let mut first_prompt = true;
         while let Some(req) = confirm_rx.recv().await {
             if always_allow.contains(&req.tool_name) {
                 let _ = req.reply.send(ConfirmAction::Allow);
                 continue;
             }
+            if first_prompt {
+                eprintln!(
+                    "\x1b[2m  (y = yes, a = always allow this tool, N = deny, or type a reason to deny with feedback)\x1b[0m"
+                );
+                first_prompt = false;
+            }
             eprint!(
-                "\x1b[1m\x1b[33m  ⚠ confirm\x1b[0m {}: {}  \x1b[1m[y/a/N]\x1b[0m ",
+                "\x1b[1m\x1b[33m  ⚠ confirm\x1b[0m {}: {}  \x1b[1m[y/a/N/...]\x1b[0m ",
                 req.tool_name, req.summary,
             );
             std::io::stderr().flush().ok();
@@ -340,10 +572,13 @@ async fn run_one_turn(
                         always_allow.insert(req.tool_name.clone());
                         ConfirmAction::AlwaysAllow
                     }
-                    _ => ConfirmAction::Deny,
+                    "" | "n" => ConfirmAction::Deny { reason: None },
+                    other => ConfirmAction::Deny {
+                        reason: Some(other.to_string()),
+                    },
                 }
             } else {
-                ConfirmAction::Deny
+                ConfirmAction::Deny { reason: None }
             };
             let _ = req.reply.send(action);
         }
@@ -597,11 +832,15 @@ pub(crate) fn compose_system_prompt(
          proceeding. Never modify the user's source code or system files \
          outside this workspace.\n\n\
          ## Memory\n\
-         You have memory_save, memory_search, and memory_delete tools. \
-         When you discover something worth remembering across conversations \
-         (a useful approach, a user preference, a lesson learned), \
-         proactively save it with memory_save. Don't over-save — only \
-         persist durable, reusable insights.",
+         You have a Memory Palace with zone-organized memories. The palace \
+         index (zone map) is in your system prompt when available.\n\
+         - Use palace_zones to list zones\n\
+         - Use palace_read_zone to load a zone's content\n\
+         - Use palace_recall to search by topic\n\
+         - Use memory_save (with zone parameter) to persist new learnings\n\
+         - Use memory_delete to remove outdated memories\n\
+         Don't guess about preferences or conventions — load the relevant \
+         zone first.",
         now.format("%Y-%m-%d %H:%M (%A)"),
         workspace_root.display()
     );
@@ -620,6 +859,8 @@ async fn handle_command(
     skills: &[LoadedSkill],
     active_memories: &[LoadedMemory],
     base_system: Option<&str>,
+    palace_index: Option<&str>,
+    always_active_skills: &[&LoadedSkill],
     memory_store: &dyn MemoryStore,
     skill_store: &FsSkillStore,
     provider: &dyn LlmProvider,
@@ -681,12 +922,17 @@ async fn handle_command(
                 .filter(|m| m.frontmatter.pinned)
                 .cloned()
                 .collect();
+            let ctx_profile = hermes_memory::load_profile().unwrap_or(None);
             let sources = ContextSources {
                 base: base_system,
+                palace_index,
+                compiled_profile: ctx_profile.as_deref(),
+                always_active_skills,
                 pinned: &pinned,
                 active: active_memories,
                 all_skills: skills,
                 effectiveness: None,
+                memory_effectiveness: None,
             };
             let s = sources.build_session_system();
             if s.is_empty() {
@@ -707,7 +953,7 @@ async fn handle_command(
                 eprintln!("usage: /remember <text>");
             } else {
                 use hermes_memory::{Confidence, MemoryFrontmatter, Scope as MemScope, Source as MemSource};
-                let mut fm = MemoryFrontmatter::new(MemSource::User, Confidence::High, vec![]);
+                let mut fm = MemoryFrontmatter::new(MemSource::User, Confidence::High, vec![], "core".to_string());
                 fm.pinned = true;
                 match memory_store.put(MemScope::User, fm, text) {
                     Ok(p) => eprintln!("\x1b[32m✓\x1b[0m remembered: {} ({})", text.chars().take(60).collect::<String>(), p.display()),
@@ -761,6 +1007,30 @@ async fn handle_command(
                 }
             }
         }
+        "compile" => {
+            if active_memories.is_empty() {
+                eprintln!("(no memories to compile)");
+            } else {
+                eprint!("\x1b[90m(compiling memory profile...)\x1b[0m");
+                std::io::stderr().flush().ok();
+                match hermes_reflect::compile_profile(provider, active_memories).await {
+                    Ok(profile) => match hermes_memory::save_profile(&profile) {
+                        Ok(p) => {
+                            eprint!("\r\x1b[K");
+                            eprintln!("\x1b[32m✓ profile updated ({})\x1b[0m", p.display());
+                        }
+                        Err(e) => {
+                            eprint!("\r\x1b[K");
+                            eprintln!("\x1b[31m✗ save failed: {e}\x1b[0m");
+                        }
+                    },
+                    Err(e) => {
+                        eprint!("\r\x1b[K");
+                        eprintln!("\x1b[31m✗ compile failed: {e}\x1b[0m");
+                    }
+                }
+            }
+        }
         s if s.starts_with("skill add") => {
             let rest = s.strip_prefix("skill add").unwrap().trim();
             handle_skill_add(rest, skill_store);
@@ -783,6 +1053,43 @@ async fn handle_command(
                 }
             }
         }
+        "palace" => {
+            let zones = hermes_memory::group_by_zone(active_memories);
+            eprintln!("Memory Palace: {} memories across {} zones", active_memories.len(), zones.len());
+            for (zone, mems) in &zones {
+                eprintln!("  {zone}: {} memories", mems.len());
+            }
+            if palace_index.is_some() {
+                eprintln!("  index: loaded (in system prompt)");
+            } else {
+                eprintln!("  index: not loaded");
+            }
+        }
+        "palace compile" => {
+            if active_memories.is_empty() {
+                eprintln!("(no memories to compile)");
+            } else {
+                eprint!("\x1b[90m(compiling palace index via LLM...)\x1b[0m");
+                std::io::stderr().flush().ok();
+                match hermes_reflect::compile_palace_index(provider, active_memories).await {
+                    Ok(index) => match hermes_memory::save_palace_index(&index) {
+                        Ok(p) => {
+                            eprint!("\r\x1b[K");
+                            eprintln!("\x1b[32m✓ palace index compiled ({})\x1b[0m", p.display());
+                            eprintln!("(restart chat to use the new index)");
+                        }
+                        Err(e) => {
+                            eprint!("\r\x1b[K");
+                            eprintln!("\x1b[31m✗ save failed: {e}\x1b[0m");
+                        }
+                    },
+                    Err(e) => {
+                        eprint!("\r\x1b[K");
+                        eprintln!("\x1b[31m✗ compile failed: {e}\x1b[0m");
+                    }
+                }
+            }
+        }
         "help" => {
             eprintln!("commands:");
             eprintln!("  /exit, /quit   — leave the chat");
@@ -799,6 +1106,9 @@ async fn handle_command(
             eprintln!("  /remember <text> — save a memory (pinned, high confidence)");
             eprintln!("  /forget <id>   — delete a memory by id prefix (with confirmation)");
             eprintln!("  /reflect       — trigger on-demand reflection");
+            eprintln!("  /compile       — recompile memory profile");
+            eprintln!("  /palace        — show Memory Palace zone counts");
+            eprintln!("  /palace compile — LLM-compile the palace index");
             eprintln!("  /help          — this list");
         }
         other => eprintln!("unknown command: /{other}  (try /help)"),
@@ -881,6 +1191,7 @@ fn handle_skill_add(rest: &str, skill_store: &FsSkillStore) {
         triggers,
         version: Some("0.1.0".into()),
         license: None,
+        always_active: false,
         extra: serde_yaml::Mapping::new(),
     };
     match skill_store.put(SkScope::User, fm, &body) {
@@ -946,6 +1257,51 @@ fn handle_skill_show(name: &str, skill_store: &FsSkillStore) {
         }
         Ok(None) => eprintln!("skill \"{name}\" not found"),
         Err(e) => eprintln!("\x1b[31m✗\x1b[0m {e}"),
+    }
+}
+
+pub(crate) fn auto_install_palace_skill(skill_store: &FsSkillStore) {
+    use hermes_skills::{Scope as SkScope, SkillFrontmatter, SkillStore as _};
+
+    if let Ok(Some(_)) = skill_store.get("memory-palace") {
+        return;
+    }
+    let fm = SkillFrontmatter {
+        name: "memory-palace".to_string(),
+        description: "Protocol for navigating the Memory Palace".to_string(),
+        triggers: vec![],
+        version: Some("0.1.0".into()),
+        license: None,
+        always_active: true,
+        extra: serde_yaml::Mapping::new(),
+    };
+    let body = r#"# Memory Palace Protocol
+
+Your memories are organized into zones. The palace index (zone map) is in your system prompt.
+
+## Zones
+- core — stable user identity, preferences, principles
+- work — current focus, recent activity
+- project:<name> — per-project conventions
+- episode — session summaries
+- general — uncategorized (default)
+
+## Navigation
+1. Check the palace index to see what zones exist
+2. Use palace_read_zone to load a specific zone's content
+3. Use palace_recall to search by topic (optionally scoped to a zone)
+4. Don't guess — load the zone before answering questions about preferences or conventions
+
+## Saving
+When using memory_save, set the zone parameter:
+- User preferences, identity → core
+- Current tasks, recent decisions → work
+- Project-specific → project:<name>
+- Everything else → general
+"#;
+    match skill_store.put(SkScope::User, fm, body) {
+        Ok(p) => tracing::info!(path=%p.display(), "auto-installed memory-palace skill"),
+        Err(e) => tracing::warn!(error=%e, "failed to auto-install memory-palace skill"),
     }
 }
 

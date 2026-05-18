@@ -94,12 +94,20 @@ pub struct ReflectConfig {
     /// silently. The explicit `/reflect` command always runs regardless.
     #[serde(default = "default_min_turns")]
     pub min_turns: usize,
+
+    /// When true, micro-reflection memory candidates with confidence=Medium,
+    /// no conflicts, and no supersedes links are persisted automatically
+    /// without user prompting. Skills and conflict resolutions always
+    /// require manual review.
+    #[serde(default)]
+    pub auto_accept_memories: bool,
 }
 
 impl Default for ReflectConfig {
     fn default() -> Self {
         Self {
             min_turns: default_min_turns(),
+            auto_accept_memories: true,
         }
     }
 }

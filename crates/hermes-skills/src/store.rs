@@ -242,6 +242,7 @@ mod tests {
             triggers: vec!["foo".into(), "bar".into()],
             version: Some("0.1.0".into()),
             license: None,
+            always_active: false,
             extra: Mapping::new(),
         }
     }

@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use crate::memory::LoadedMemory;
+use crate::stats::MemoryEffectiveness;
 
 const MIN_TOKEN_LEN: usize = 2;
 
@@ -72,6 +73,47 @@ pub fn search_memories_scored<'a>(
 
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.into_iter().take(k).map(|(s, m)| (m, s)).collect()
+}
+
+/// Like `search_memories_scored` but multiplies each score by the memory's
+/// effectiveness factor before ranking.
+pub fn search_memories_with_effectiveness<'a>(
+    memories: &'a [LoadedMemory],
+    query: &str,
+    k: usize,
+    effectiveness: Option<&HashMap<String, MemoryEffectiveness>>,
+) -> Vec<(&'a LoadedMemory, f64)> {
+    let raw = search_memories_scored(memories, query, k.max(memories.len()));
+    if effectiveness.is_none() || raw.is_empty() {
+        return raw.into_iter().take(k).collect();
+    }
+    let eff = effectiveness.unwrap();
+    let mut adjusted: Vec<(&LoadedMemory, f64)> = raw
+        .into_iter()
+        .map(|(m, score)| {
+            let factor = eff
+                .get(&m.frontmatter.id)
+                .map(|e| e.factor())
+                .unwrap_or(1.0);
+            (m, score * factor)
+        })
+        .collect();
+    adjusted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    adjusted.into_iter().take(k).collect()
+}
+
+/// Convenience: like `search_memories_with_effectiveness` but returns only
+/// the memories, not scores.
+pub fn search_memories_effective<'a>(
+    memories: &'a [LoadedMemory],
+    query: &str,
+    k: usize,
+    effectiveness: Option<&HashMap<String, MemoryEffectiveness>>,
+) -> Vec<&'a LoadedMemory> {
+    search_memories_with_effectiveness(memories, query, k, effectiveness)
+        .into_iter()
+        .map(|(m, _)| m)
+        .collect()
 }
 
 fn tokenise(s: &str) -> Vec<String> {
@@ -174,7 +216,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn memory(id: &str, body: &str, tags: &[&str]) -> LoadedMemory {
-        let mut fm = MemoryFrontmatter::new(Source::User, Confidence::Medium, tags.iter().copied().map(String::from).collect());
+        let mut fm = MemoryFrontmatter::new(Source::User, Confidence::Medium, tags.iter().copied().map(String::from).collect(), "general".to_string());
         fm.id = id.to_string();
         LoadedMemory {
             frontmatter: fm,
