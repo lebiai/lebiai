@@ -321,7 +321,7 @@ pub async fn run(
             });
         }
 
-        let turn_msg_index = session.messages.len();
+        let mut turn_msg_index = session.messages.len();
         let user_msg = session.push_user(trimmed).clone();
         if let Err(e) = writer.append(&SessionEvent::Message(user_msg)) {
             tracing::warn!(error = %e, "failed to persist user message");
@@ -345,10 +345,13 @@ pub async fn run(
             )
             .await
             {
-                Ok(n) => eprintln!(
-                    "(context compacted: {n} messages → summary + {} recent)",
-                    session.messages.len() - 1
-                ),
+                Ok(n) => {
+                    eprintln!(
+                        "(context compacted: {n} messages → summary + {} recent)",
+                        session.messages.len() - 1
+                    );
+                    turn_msg_index = session.messages.len().saturating_sub(1);
+                }
                 Err(e) => eprintln!("(compaction failed: {e})"),
             }
         }

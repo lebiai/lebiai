@@ -273,7 +273,11 @@ where
             break;
         }
 
-        let mut tool_results = Vec::with_capacity(tool_uses.len());
+        let mut tool_results: Vec<ContentBlock> = Vec::with_capacity(tool_uses.len());
+        let mut safe_calls = Vec::new();
+        let mut confirm_calls = Vec::new();
+
+        // Phase 1: Categorize and handle denied calls
         for (id, name, input) in tool_uses {
             on_event(TurnEvent::ToolExecStart {
                 id: id.clone(),
@@ -281,7 +285,6 @@ where
                 summary: tool_call_summary(&name, &input),
             });
 
-            // Permission gate: deny → allow → prompt (if dangerous)
             match config.permissions.check(&name, &input) {
                 Permission::Deny => {
                     tool_results.push(ContentBlock::ToolResult {
@@ -294,75 +297,122 @@ where
                         content: "Tool call denied by permission rule.".into(),
                         is_error: true,
                     });
-                    continue;
                 }
-                Permission::Allow => { /* skip confirmation, proceed to host.call() */ }
+                Permission::Allow => {
+                    safe_calls.push((id, name, input));
+                }
                 Permission::Prompt if is_dangerous_tool(&name) => {
-                    if let Some(tx) = &confirm_tx {
-                        let (reply_tx, reply_rx) = oneshot::channel();
-                        let summary = tool_call_summary(&name, &input);
-                        on_event(TurnEvent::ToolConfirmPending {
-                            id: id.clone(),
-                            tool_name: name.clone(),
-                            summary: summary.clone(),
-                        });
-                        let req = ConfirmRequest {
-                            id: id.clone(),
-                            tool_name: name.clone(),
-                            summary,
-                            reply: reply_tx,
-                        };
-                        if tx.send(req).await.is_err() {
-                            tool_results.push(ContentBlock::ToolResult {
-                                tool_use_id: id,
-                                content: "Tool call denied (confirmation channel closed).".into(),
-                                is_error: true,
-                            });
-                            continue;
-                        }
-                        let action = tokio::select! {
-                            biased;
-                            _ = &mut cancel => {
-                                on_event(TurnEvent::Done);
-                                let new_messages = messages[turn_start_idx..].to_vec();
-                                return Ok(TurnOutput {
-                                    new_messages,
-                                    usage: cumulative_usage,
-                                });
-                            }
-                            r = reply_rx => r,
-                        };
-                        match action {
-                            Ok(ConfirmAction::Allow | ConfirmAction::AlwaysAllow) => {
-                                /* proceed to host.call() below */
-                            }
-                            deny => {
-                                let reason = match deny {
-                                    Ok(ConfirmAction::Deny { reason }) => reason,
-                                    _ => None,
-                                };
-                                let msg = match reason {
-                                    Some(r) => format!("Tool call denied by user. User says: {r}"),
-                                    None => "Tool call denied by user.".into(),
-                                };
-                                tool_results.push(ContentBlock::ToolResult {
-                                    tool_use_id: id.clone(),
-                                    content: msg.clone(),
-                                    is_error: true,
-                                });
-                                on_event(TurnEvent::ToolUseResult {
-                                    id,
-                                    content: msg,
-                                    is_error: true,
-                                });
-                                continue;
-                            }
-                        }
+                    confirm_calls.push((id, name, input));
+                }
+                Permission::Prompt => {
+                    safe_calls.push((id, name, input));
+                }
+            }
+        }
+
+        // Phase 2: Execute safe tools in parallel
+        if !safe_calls.is_empty() {
+            let futs = safe_calls.into_iter().map(|(id, name, input)| {
+                let on_event = &on_event;
+                async move {
+                    let outcome = match host.call(&name, input).await {
+                        Ok(o) => o,
+                        Err(e) => ToolCallOutcome {
+                            content: format!("tool call failed: {e}"),
+                            is_error: true,
+                        },
+                    };
+                    on_event(TurnEvent::ToolUseResult {
+                        id: id.clone(),
+                        content: outcome.content.clone(),
+                        is_error: outcome.is_error,
+                    });
+                    ContentBlock::ToolResult {
+                        tool_use_id: id,
+                        content: outcome.content,
+                        is_error: outcome.is_error,
                     }
                 }
-                Permission::Prompt => { /* not dangerous, proceed */ }
+            });
+            let parallel = futures::future::join_all(futs);
+            tokio::select! {
+                biased;
+                _ = &mut cancel => {
+                    on_event(TurnEvent::Done);
+                    let new_messages = messages[turn_start_idx..].to_vec();
+                    return Ok(TurnOutput {
+                        new_messages,
+                        usage: cumulative_usage,
+                    });
+                }
+                results = parallel => {
+                    tool_results.extend(results);
+                }
             }
+        }
 
+        // Phase 3: Execute dangerous tools sequentially with confirmation
+        for (id, name, input) in confirm_calls {
+            if let Some(tx) = &confirm_tx {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                let summary = tool_call_summary(&name, &input);
+                on_event(TurnEvent::ToolConfirmPending {
+                    id: id.clone(),
+                    tool_name: name.clone(),
+                    summary: summary.clone(),
+                });
+                let req = ConfirmRequest {
+                    id: id.clone(),
+                    tool_name: name.clone(),
+                    summary,
+                    reply: reply_tx,
+                };
+                if tx.send(req).await.is_err() {
+                    tool_results.push(ContentBlock::ToolResult {
+                        tool_use_id: id,
+                        content: "Tool call denied (confirmation channel closed).".into(),
+                        is_error: true,
+                    });
+                    continue;
+                }
+                let action = tokio::select! {
+                    biased;
+                    _ = &mut cancel => {
+                        on_event(TurnEvent::Done);
+                        let new_messages = messages[turn_start_idx..].to_vec();
+                        return Ok(TurnOutput {
+                            new_messages,
+                            usage: cumulative_usage,
+                        });
+                    }
+                    r = reply_rx => r,
+                };
+                match action {
+                    Ok(ConfirmAction::Allow | ConfirmAction::AlwaysAllow) => {}
+                    deny => {
+                        let reason = match deny {
+                            Ok(ConfirmAction::Deny { reason }) => reason,
+                            _ => None,
+                        };
+                        let msg = match reason {
+                            Some(r) => format!("Tool call denied by user. User says: {r}"),
+                            None => "Tool call denied by user.".into(),
+                        };
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: msg.clone(),
+                            is_error: true,
+                        });
+                        on_event(TurnEvent::ToolUseResult {
+                            id,
+                            content: msg,
+                            is_error: true,
+                        });
+                        continue;
+                    }
+                }
+            }
+            // Approved (or no confirmation channel) — execute
             let outcome = match host.call(&name, input).await {
                 Ok(o) => o,
                 Err(e) => ToolCallOutcome {
