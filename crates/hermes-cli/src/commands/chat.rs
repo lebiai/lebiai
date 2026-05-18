@@ -385,7 +385,7 @@ async fn run_one_turn(
                     thinking_started.store(true, Relaxed);
                 }
             }
-            TurnEvent::ToolUseStart { .. } => {
+            TurnEvent::ToolUseStart { name, .. } => {
                 if thinking_started.load(Relaxed) {
                     eprint!("\r\x1b[K");
                     let mut buf = thinking_buf.lock().unwrap();
@@ -398,8 +398,11 @@ async fn run_one_turn(
                     buf.clear();
                     thinking_started.store(false, Relaxed);
                 }
+                eprint!("\x1b[33m  🔧 {name} …\x1b[0m");
+                std::io::stderr().flush().ok();
             }
             TurnEvent::ToolExecStart { summary, .. } => {
+                eprint!("\r\x1b[K");
                 eprintln!("\x1b[33m  🔧 {summary}\x1b[0m");
             }
             TurnEvent::ToolUseResult { content, is_error, .. } => {

@@ -184,11 +184,13 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: usize) ->
                     eprint!("\r\x1b[K\x1b[90m  💭 {preview}\x1b[0m");
                     std::io::stderr().flush().ok();
                 }
-                TurnEvent::ToolUseStart { .. } => {
+                TurnEvent::ToolUseStart { name, .. } => {
                     flush_thinking(&thinking_buf);
-                    eprint!("\r\x1b[K");
+                    eprint!("\r\x1b[K\x1b[33m  🔧 {name} …\x1b[0m");
+                    std::io::stderr().flush().ok();
                 }
                 TurnEvent::ToolExecStart { summary, .. } => {
+                    eprint!("\r\x1b[K");
                     eprintln!("\x1b[33m  🔧 {summary}\x1b[0m");
                 }
                 TurnEvent::ToolUseResult { content, is_error, .. } => {
