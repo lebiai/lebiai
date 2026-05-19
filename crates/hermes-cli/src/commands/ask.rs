@@ -1,8 +1,8 @@
 //! `hermes ask` — one-shot prompt: send a single user message, print reply.
 //!
 //! Supports MCP tool use: if the LLM requests tool calls, they are executed
-//! automatically (up to `MAX_TOOL_ROUNDS` rounds) before the final text is
-//! printed.
+//! automatically (up to `cfg.limits.max_tool_rounds` rounds) before the final
+//! text is printed.
 
 use std::io::Write;
 
@@ -12,8 +12,6 @@ use hermes_llm::Config;
 use hermes_turn::{TurnConfig, TurnEvent};
 
 use super::util::{build_active_provider, load_tool_host};
-
-const MAX_TOOL_ROUNDS: usize = 10;
 
 pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
     let cfg = Config::load_default()
@@ -32,7 +30,7 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
         model: provider_cfg.model.clone(),
         system,
         max_tokens: provider_cfg.max_tokens,
-        max_tool_rounds: MAX_TOOL_ROUNDS,
+        max_tool_rounds: cfg.limits.max_tool_rounds,
         permissions: hermes_turn::PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
     };
 

@@ -17,6 +17,7 @@ pub fn zones_spec() -> ToolSpec {
             "properties": {},
             "required": []
         }),
+        requires_confirmation: false,
     }
 }
 
@@ -59,6 +60,7 @@ pub fn read_zone_spec() -> ToolSpec {
             },
             "required": ["zone"]
         }),
+        requires_confirmation: false,
     }
 }
 
@@ -146,6 +148,7 @@ pub fn recall_spec() -> ToolSpec {
             },
             "required": ["topic"]
         }),
+        requires_confirmation: false,
     }
 }
 

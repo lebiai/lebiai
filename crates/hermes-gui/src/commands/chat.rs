@@ -25,6 +25,7 @@ pub async fn send_message(
     let pinned = state.pinned_memories.lock().await.clone();
     let active = state.active_memories.lock().await.clone();
     let workspace_root = state.workspace_root();
+    let limits = state.config.limits;
 
     let mut sessions = state.sessions.lock().await;
     let active_session = if let Some(s) = sessions.get_mut(&session_id) {
@@ -62,6 +63,7 @@ pub async fn send_message(
         all_skills: &skills,
         tools: &tools,
         workspace_root: &workspace_root,
+        limits,
     };
     let turn_system = sources.build_turn_system(&content);
 
@@ -94,7 +96,7 @@ pub async fn send_message(
             model,
             system: if turn_system.is_empty() { None } else { Some(turn_system) },
             max_tokens,
-            max_tool_rounds: 10,
+            max_tool_rounds: limits.max_tool_rounds,
             permissions: hermes_turn::PermissionChecker::default(),
         };
 

@@ -23,13 +23,9 @@
 
 use std::collections::HashMap;
 
+use hermes_llm::ContextLimits;
 use hermes_memory::{LoadedMemory, MemoryEffectiveness};
 use hermes_skills::{LoadedSkill, SkillEffectiveness};
-
-const ACTIVE_MEMORY_INDEX_CAP: usize = 50;
-const SKILL_INDEX_CAP: usize = 50;
-const TRIGGERED_SKILL_CAP: usize = 3;
-const RELEVANT_MEMORY_CAP: usize = 3;
 
 pub struct ContextSources<'a> {
     pub base: Option<&'a str>,
@@ -41,6 +37,7 @@ pub struct ContextSources<'a> {
     pub all_skills: &'a [LoadedSkill],
     pub effectiveness: Option<&'a HashMap<String, SkillEffectiveness>>,
     pub memory_effectiveness: Option<&'a HashMap<String, MemoryEffectiveness>>,
+    pub limits: ContextLimits,
 }
 
 impl<'a> ContextSources<'a> {
@@ -76,14 +73,14 @@ impl<'a> ContextSources<'a> {
                 .collect();
             if !episodic.is_empty() {
                 buf.push_str("## Active memory index\n");
-                for m in episodic.iter().take(ACTIVE_MEMORY_INDEX_CAP) {
+                for m in episodic.iter().take(self.limits.active_memory_index_cap) {
                     let line = m.body.lines().next().unwrap_or("").trim();
                     buf.push_str(&format!("- [{}] {}\n", m.frontmatter.id, line));
                 }
-                if episodic.len() > ACTIVE_MEMORY_INDEX_CAP {
+                if episodic.len() > self.limits.active_memory_index_cap {
                     buf.push_str(&format!(
                         "- ... ({} more not shown)\n",
-                        episodic.len() - ACTIVE_MEMORY_INDEX_CAP
+                        episodic.len() - self.limits.active_memory_index_cap
                     ));
                 }
                 buf.push('\n');
@@ -99,16 +96,16 @@ impl<'a> ContextSources<'a> {
 
         if !self.all_skills.is_empty() {
             buf.push_str("## Available skills (use the body only when you decide to)\n");
-            for s in self.all_skills.iter().take(SKILL_INDEX_CAP) {
+            for s in self.all_skills.iter().take(self.limits.skill_index_cap) {
                 buf.push_str(&format!(
                     "- {}: {}\n",
                     s.frontmatter.name, s.frontmatter.description
                 ));
             }
-            if self.all_skills.len() > SKILL_INDEX_CAP {
+            if self.all_skills.len() > self.limits.skill_index_cap {
                 buf.push_str(&format!(
                     "- ... ({} more not shown)\n",
-                    self.all_skills.len() - SKILL_INDEX_CAP
+                    self.all_skills.len() - self.limits.skill_index_cap
                 ));
             }
             buf.push('\n');
@@ -129,12 +126,12 @@ impl<'a> ContextSources<'a> {
             let relevant: Vec<&LoadedMemory> = hermes_memory::search_memories_effective(
                 self.active,
                 user_query,
-                RELEVANT_MEMORY_CAP + self.pinned.len(),
+                self.limits.relevant_memory_cap + self.pinned.len(),
                 self.memory_effectiveness,
             )
             .into_iter()
             .filter(|m| !m.frontmatter.pinned)
-            .take(RELEVANT_MEMORY_CAP)
+            .take(self.limits.relevant_memory_cap)
             .collect();
             if !relevant.is_empty() {
                 if !buf.is_empty() {
@@ -150,7 +147,7 @@ impl<'a> ContextSources<'a> {
         let matched = hermes_skills::match_for_query_with_effectiveness(
             self.all_skills,
             user_query,
-            TRIGGERED_SKILL_CAP,
+            self.limits.triggered_skill_cap,
             self.effectiveness,
         );
         if matched.is_empty() {
@@ -229,6 +226,7 @@ mod tests {
             all_skills: &[],
             effectiveness: None,
             memory_effectiveness: None,
+            limits: ContextLimits::default(),
         };
         assert_eq!(sources.build_session_system(), "");
     }
@@ -253,6 +251,7 @@ mod tests {
             all_skills: &[sk],
             effectiveness: None,
             memory_effectiveness: None,
+            limits: ContextLimits::default(),
         };
         let s = sources.build_session_system();
         assert!(s.contains("you are a helpful agent."));
@@ -285,6 +284,7 @@ mod tests {
             all_skills: &[sk],
             effectiveness: None,
             memory_effectiveness: None,
+            limits: ContextLimits::default(),
         };
         let s = sources.build_turn_system("please rewrite the rust unwrap calls");
         assert!(s.contains("Skills triggered for this turn"));
@@ -305,6 +305,7 @@ mod tests {
             all_skills: &[sk],
             effectiveness: None,
             memory_effectiveness: None,
+            limits: ContextLimits::default(),
         };
         let s = sources.build_turn_system("rust unwrap question");
         assert!(!s.contains("Skills triggered"));
@@ -323,6 +324,7 @@ mod tests {
             all_skills: &[],
             effectiveness: None,
             memory_effectiveness: None,
+            limits: ContextLimits::default(),
         };
         let s = sources.build_turn_system("how should I handle errors in the app layer?");
         assert!(s.contains("Relevant memories for this turn"));
@@ -349,6 +351,7 @@ mod tests {
             all_skills: &[],
             effectiveness: None,
             memory_effectiveness: None,
+            limits: ContextLimits::default(),
         };
         let s = sources.build_session_system();
         let occurrences = s.matches("mem_p").count();
@@ -370,6 +373,7 @@ mod tests {
             all_skills: &[],
             effectiveness: None,
             memory_effectiveness: None,
+            limits: ContextLimits::default(),
         };
         let s = sources.build_session_system();
         assert!(s.contains("User Profile"), "profile section should exist");
@@ -400,6 +404,7 @@ mod tests {
             all_skills: &[sk],
             effectiveness: None,
             memory_effectiveness: None,
+            limits: ContextLimits::default(),
         };
         let s = sources.build_turn_system("rewrite rust unwrap calls");
         assert!(s.contains("User Profile"), "profile should be present");
@@ -422,6 +427,7 @@ mod tests {
             all_skills: &[],
             effectiveness: None,
             memory_effectiveness: None,
+            limits: ContextLimits::default(),
         };
         let s = sources.build_session_system();
         assert!(s.contains("Memory Palace"), "palace index should appear");
@@ -453,6 +459,7 @@ mod tests {
             all_skills: &[],
             effectiveness: None,
             memory_effectiveness: None,
+            limits: ContextLimits::default(),
         };
         let s = sources.build_session_system();
         assert!(s.contains("### memory-palace"), "always-active skill header should appear");

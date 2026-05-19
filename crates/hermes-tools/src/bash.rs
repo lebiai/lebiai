@@ -30,6 +30,7 @@ pub fn spec() -> ToolSpec {
             },
             "required": ["command"]
         }),
+        requires_confirmation: true,
     }
 }
 

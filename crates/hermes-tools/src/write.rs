@@ -29,6 +29,7 @@ pub fn spec() -> ToolSpec {
             },
             "required": ["path", "content"]
         }),
+        requires_confirmation: true,
     }
 }
 

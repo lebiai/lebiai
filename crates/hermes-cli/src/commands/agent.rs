@@ -18,11 +18,12 @@ use hermes_turn::{AgentConfig, AgentEvent, TurnConfig, TurnEvent};
 use super::context::ContextSources;
 use super::util::{build_active_provider, load_tool_host, session_path_for};
 
-pub async fn run(goal: String, system: Option<String>, max_iterations: usize) -> Result<()> {
+pub async fn run(goal: String, system: Option<String>, max_iterations: Option<usize>) -> Result<()> {
     let cfg = Config::load_default()
         .context("loading config from ~/.small-rust-hermes/config.toml")?;
     let provider_cfg = cfg.active_provider()?.clone();
     let provider = build_active_provider(&cfg)?;
+    let max_iterations = max_iterations.unwrap_or(cfg.limits.agent_max_iterations);
 
     let workspace_root = cfg.workspace.root.clone();
 
@@ -95,6 +96,7 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: usize) ->
         all_skills: &all_skills,
         effectiveness: Some(&effectiveness),
         memory_effectiveness: Some(&mem_effectiveness),
+        limits: cfg.limits,
     };
     let turn_system = sources.build_turn_system(&goal);
 
@@ -117,7 +119,7 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: usize) ->
             Some(turn_system)
         },
         max_tokens: provider_cfg.max_tokens,
-        max_tool_rounds: 10,
+        max_tool_rounds: cfg.limits.max_tool_rounds,
         permissions: hermes_turn::PermissionChecker::new(
             &cfg.permissions.allow,
             &cfg.permissions.deny,

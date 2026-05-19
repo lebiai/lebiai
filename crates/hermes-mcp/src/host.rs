@@ -94,6 +94,7 @@ impl ToolHost for McpToolHost {
                         .unwrap_or("")
                         .to_string(),
                     input_schema: schema_to_value(&tool.input_schema),
+                    requires_confirmation: true,
                 });
             }
         }

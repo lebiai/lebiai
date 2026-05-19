@@ -27,7 +27,77 @@ pub struct Config {
     #[serde(default)]
     pub context: ContextConfig,
     #[serde(default)]
+    pub limits: ContextLimits,
+    #[serde(default)]
     pub permissions: PermissionsConfig,
+}
+
+/// Numeric caps applied to per-turn context assembly and tool-loop bounds.
+/// All values are read once at startup; in-flight values are not hot-reloaded.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ContextLimits {
+    /// Maximum tool-use rounds the chat / ask REPL will run within a single
+    /// user turn before forcing a textual answer (safety bound on runaway
+    /// agentic loops).
+    #[serde(default = "default_max_tool_rounds")]
+    pub max_tool_rounds: usize,
+
+    /// Default `--max-iterations` for the autonomous `run` (agent) command;
+    /// the CLI flag overrides this on a per-invocation basis.
+    #[serde(default = "default_agent_max_iterations")]
+    pub agent_max_iterations: usize,
+
+    /// Max number of episodic memories listed in the session-level
+    /// "Active memory index" section.
+    #[serde(default = "default_active_memory_index_cap")]
+    pub active_memory_index_cap: usize,
+
+    /// Max number of skills listed in the session-level
+    /// "Available skills" index.
+    #[serde(default = "default_skill_index_cap")]
+    pub skill_index_cap: usize,
+
+    /// Max number of episodic memory bodies injected per turn in the
+    /// "Relevant memories for this turn" section.
+    #[serde(default = "default_relevant_memory_cap")]
+    pub relevant_memory_cap: usize,
+
+    /// Max number of skill bodies expanded per turn in the
+    /// "Skills triggered for this turn" section.
+    #[serde(default = "default_triggered_skill_cap")]
+    pub triggered_skill_cap: usize,
+}
+
+impl Default for ContextLimits {
+    fn default() -> Self {
+        Self {
+            max_tool_rounds: default_max_tool_rounds(),
+            agent_max_iterations: default_agent_max_iterations(),
+            active_memory_index_cap: default_active_memory_index_cap(),
+            skill_index_cap: default_skill_index_cap(),
+            relevant_memory_cap: default_relevant_memory_cap(),
+            triggered_skill_cap: default_triggered_skill_cap(),
+        }
+    }
+}
+
+fn default_max_tool_rounds() -> usize {
+    10
+}
+fn default_agent_max_iterations() -> usize {
+    50
+}
+fn default_active_memory_index_cap() -> usize {
+    50
+}
+fn default_skill_index_cap() -> usize {
+    50
+}
+fn default_relevant_memory_cap() -> usize {
+    3
+}
+fn default_triggered_skill_cap() -> usize {
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

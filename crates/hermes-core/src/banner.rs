@@ -19,6 +19,10 @@ pub const LOGO_PLAIN: &str = "\
                     ⚡ Self-Evolving Agent ⚡";
 
 pub fn print_banner() {
-    eprintln!("{LOGO}");
+    if crate::style::ansi_enabled() {
+        eprintln!("{LOGO}");
+    } else {
+        eprintln!("{LOGO_PLAIN}");
+    }
 }
 

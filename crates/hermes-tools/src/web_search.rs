@@ -33,6 +33,7 @@ pub fn spec() -> ToolSpec {
             },
             "required": ["query"]
         }),
+        requires_confirmation: false,
     }
 }
 

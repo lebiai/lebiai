@@ -32,6 +32,7 @@ pub fn spec() -> ToolSpec {
             },
             "required": ["path"]
         }),
+        requires_confirmation: false,
     }
 }
 

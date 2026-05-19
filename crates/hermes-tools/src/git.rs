@@ -44,6 +44,7 @@ pub fn spec() -> ToolSpec {
             },
             "required": ["operation"]
         }),
+        requires_confirmation: false,
     }
 }
 

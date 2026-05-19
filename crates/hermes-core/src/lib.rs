@@ -11,6 +11,7 @@ pub mod error;
 pub mod message;
 pub mod provider;
 pub mod session;
+pub mod style;
 pub mod tool_host;
 
 pub use error::{Error, Result};

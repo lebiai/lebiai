@@ -29,6 +29,7 @@ pub fn spec() -> ToolSpec {
             },
             "required": ["pattern"]
         }),
+        requires_confirmation: false,
     }
 }
 

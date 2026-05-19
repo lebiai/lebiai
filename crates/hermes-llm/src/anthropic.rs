@@ -17,6 +17,39 @@ use serde::{Deserialize, Serialize};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// Maximum HTTP retry attempts for transient failures (5xx / 429 / network).
+/// Total attempts = 1 + RETRY_ATTEMPTS.
+const RETRY_ATTEMPTS: usize = 3;
+
+/// Returns true for transient HTTP statuses that warrant a retry.
+fn is_retriable_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+/// Backoff for attempt `n` (0-based): 500ms, 1500ms, 4500ms — plus small jitter.
+fn backoff_delay(attempt: usize) -> Duration {
+    let base_ms = 500_u64 * 3u64.pow(attempt as u32);
+    // jitter: 0..=base_ms/4, derived deterministically from current nanos.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let jitter = nanos % (base_ms / 4).max(1);
+    Duration::from_millis(base_ms + jitter)
+}
+
+/// Parse Retry-After header if present. Returns seconds.
+fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
+    resp.headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
+}
+
 /// Concrete Anthropic-protocol provider. Cheap to clone.
 #[derive(Clone)]
 pub struct AnthropicProvider {
@@ -79,23 +112,7 @@ impl LlmProvider for AnthropicProvider {
         let url = format!("{}/v1/messages", self.inner.base_url);
         tracing::debug!(url = %url, model = %body.model, "anthropic request");
 
-        let resp = self
-            .inner
-            .client
-            .post(&url)
-            .header("x-api-key", &self.inner.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Provider(format!("http send: {e}")))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Provider(format!("HTTP {status}: {text}")));
-        }
+        let resp = self.send_with_retry(&url, &body, false).await?;
 
         let parsed: AnthropicResponse = resp
             .json()
@@ -140,26 +157,81 @@ impl LlmProvider for AnthropicProvider {
         let url = format!("{}/v1/messages", self.inner.base_url);
         tracing::debug!(url = %url, model = %body.model, "anthropic stream request");
 
-        let resp = self
-            .inner
-            .client
-            .post(&url)
-            .header("x-api-key", &self.inner.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .header("accept", "text/event-stream")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Provider(format!("http send: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Provider(format!("HTTP {status}: {text}")));
-        }
+        let resp = self.send_with_retry(&url, &body, true).await?;
 
         Ok(Box::pin(parse_sse_stream(resp.bytes_stream().boxed())))
+    }
+}
+
+impl AnthropicProvider {
+    /// POST `body` to `url`, retrying on transient errors. `streaming=true`
+    /// adds the `accept: text/event-stream` header. Returns the successful
+    /// response — caller is responsible for decoding it.
+    async fn send_with_retry(
+        &self,
+        url: &str,
+        body: &AnthropicRequest,
+        streaming: bool,
+    ) -> Result<reqwest::Response> {
+        let mut last_err: Option<String> = None;
+        for attempt in 0..=RETRY_ATTEMPTS {
+            if attempt > 0 {
+                tracing::debug!(attempt, "anthropic retry");
+            }
+            let mut req = self
+                .inner
+                .client
+                .post(url)
+                .header("x-api-key", &self.inner.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("content-type", "application/json");
+            if streaming {
+                req = req.header("accept", "text/event-stream");
+            }
+            let send_res = req.json(body).send().await;
+
+            match send_res {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        return Ok(resp);
+                    }
+                    if is_retriable_status(status) && attempt < RETRY_ATTEMPTS {
+                        let delay = parse_retry_after(&resp).unwrap_or_else(|| backoff_delay(attempt));
+                        let text = resp.text().await.unwrap_or_default();
+                        tracing::warn!(
+                            attempt,
+                            status = %status,
+                            delay_ms = delay.as_millis(),
+                            "anthropic transient error, retrying"
+                        );
+                        last_err = Some(format!("HTTP {status}: {text}"));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    let text = resp.text().await.unwrap_or_default();
+                    return Err(Error::Provider(format!("HTTP {status}: {text}")));
+                }
+                Err(e) => {
+                    if attempt < RETRY_ATTEMPTS {
+                        let delay = backoff_delay(attempt);
+                        tracing::warn!(
+                            attempt,
+                            error = %e,
+                            delay_ms = delay.as_millis(),
+                            "anthropic network error, retrying"
+                        );
+                        last_err = Some(format!("http send: {e}"));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(Error::Provider(format!("http send: {e}")));
+                }
+            }
+        }
+        Err(Error::Provider(
+            last_err.unwrap_or_else(|| "exhausted retries".to_string()),
+        ))
     }
 }
 
@@ -619,5 +691,31 @@ impl From<AnthropicResponse> for CompletionResponse {
             usage,
             truncated_tool_ids: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_grows_exponentially() {
+        let d0 = backoff_delay(0).as_millis();
+        let d1 = backoff_delay(1).as_millis();
+        let d2 = backoff_delay(2).as_millis();
+        assert!((500..=625).contains(&d0), "attempt 0: {d0}ms");
+        assert!((1500..=1875).contains(&d1), "attempt 1: {d1}ms");
+        assert!((4500..=5625).contains(&d2), "attempt 2: {d2}ms");
+    }
+
+    #[test]
+    fn retriable_classification() {
+        assert!(is_retriable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retriable_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(is_retriable_status(reqwest::StatusCode::BAD_GATEWAY));
+        assert!(is_retriable_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(!is_retriable_status(reqwest::StatusCode::BAD_REQUEST));
+        assert!(!is_retriable_status(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(!is_retriable_status(reqwest::StatusCode::NOT_FOUND));
     }
 }

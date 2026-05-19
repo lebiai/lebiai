@@ -34,6 +34,12 @@ pub struct ToolSpec {
     pub description: String,
     /// JSON Schema describing the tool's input.
     pub input_schema: serde_json::Value,
+    /// If true, the turn loop must prompt the user before executing this
+    /// tool (subject to the active `PermissionChecker`). Builtin tools
+    /// declare their own value; MCP-provided tools default to true since
+    /// they typically perform external side-effects.
+    #[serde(default)]
+    pub requires_confirmation: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

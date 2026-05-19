@@ -34,6 +34,7 @@ pub fn spec() -> ToolSpec {
             },
             "required": ["path", "old_string", "new_string"]
         }),
+        requires_confirmation: true,
     }
 }
 

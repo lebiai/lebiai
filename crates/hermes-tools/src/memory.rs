@@ -29,6 +29,7 @@ pub fn spec() -> ToolSpec {
             },
             "required": ["query"]
         }),
+        requires_confirmation: false,
     }
 }
 
@@ -109,6 +110,7 @@ pub fn save_spec() -> ToolSpec {
             },
             "required": ["content"]
         }),
+        requires_confirmation: true,
     }
 }
 
@@ -161,6 +163,7 @@ pub fn delete_spec() -> ToolSpec {
             },
             "required": ["id"]
         }),
+        requires_confirmation: true,
     }
 }
 

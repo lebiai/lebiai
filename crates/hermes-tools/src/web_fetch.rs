@@ -34,6 +34,7 @@ pub fn spec() -> ToolSpec {
             },
             "required": ["url"]
         }),
+        requires_confirmation: false,
     }
 }
 

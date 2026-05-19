@@ -20,6 +20,7 @@ pub fn spec() -> ToolSpec {
             },
             "required": ["thought"]
         }),
+        requires_confirmation: false,
     }
 }
 

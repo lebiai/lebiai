@@ -37,10 +37,16 @@ pub struct ConfirmRequest {
     pub reply: oneshot::Sender<ConfirmAction>,
 }
 
-/// Returns true if the tool requires user confirmation before execution.
-pub fn is_dangerous_tool(name: &str) -> bool {
-    matches!(name, "bash" | "write" | "edit" | "memory_save" | "memory_delete")
-        || name.contains("__") // MCP tools: server__tool
+/// Returns true if the tool with the given `name` requires user
+/// confirmation before execution. Looks up the `requires_confirmation`
+/// flag in the provided `tools` slice; unknown tool names default to
+/// `true` (fail-safe — better to over-prompt than skip a side-effect).
+pub fn is_dangerous_tool(name: &str, tools: &[ToolSpec]) -> bool {
+    tools
+        .iter()
+        .find(|t| t.name == name)
+        .map(|t| t.requires_confirmation)
+        .unwrap_or(true)
 }
 
 /// Produce a human-readable one-liner summarizing what a tool call will do.
@@ -301,7 +307,7 @@ where
                 Permission::Allow => {
                     safe_calls.push((id, name, input));
                 }
-                Permission::Prompt if is_dangerous_tool(&name) => {
+                Permission::Prompt if is_dangerous_tool(&name, tools) => {
                     confirm_calls.push((id, name, input));
                 }
                 Permission::Prompt => {

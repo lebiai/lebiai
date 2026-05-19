@@ -54,6 +54,7 @@ pub fn specs() -> Vec<ToolSpec> {
                 },
                 "required": ["title"]
             }),
+            requires_confirmation: false,
         },
         ToolSpec {
             name: "todo_update".into(),
@@ -66,6 +67,7 @@ pub fn specs() -> Vec<ToolSpec> {
                 },
                 "required": ["id", "status"]
             }),
+            requires_confirmation: false,
         },
         ToolSpec {
             name: "todo_list".into(),
@@ -74,6 +76,7 @@ pub fn specs() -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {}
             }),
+            requires_confirmation: false,
         },
     ]
 }

@@ -1,10 +1,7 @@
 use hermes_core::ToolSpec;
+use hermes_llm::ContextLimits;
 use hermes_memory::LoadedMemory;
 use hermes_skills::LoadedSkill;
-
-const ACTIVE_MEMORY_INDEX_CAP: usize = 50;
-const SKILL_INDEX_CAP: usize = 50;
-const TRIGGERED_SKILL_CAP: usize = 3;
 
 #[allow(dead_code)]
 pub struct ContextSources<'a> {
@@ -14,6 +11,7 @@ pub struct ContextSources<'a> {
     pub all_skills: &'a [LoadedSkill],
     pub tools: &'a [ToolSpec],
     pub workspace_root: &'a str,
+    pub limits: ContextLimits,
 }
 
 impl<'a> ContextSources<'a> {
@@ -51,21 +49,21 @@ impl<'a> ContextSources<'a> {
             .collect();
         if !episodic.is_empty() {
             buf.push_str("## Active memory index\n");
-            for m in episodic.iter().take(ACTIVE_MEMORY_INDEX_CAP) {
+            for m in episodic.iter().take(self.limits.active_memory_index_cap) {
                 let line = m.body.lines().next().unwrap_or("").trim();
                 buf.push_str(&format!("- [{}] {}\n", m.frontmatter.id, line));
             }
-            if episodic.len() > ACTIVE_MEMORY_INDEX_CAP {
+            if episodic.len() > self.limits.active_memory_index_cap {
                 buf.push_str(&format!(
                     "- ... ({} more not shown)\n",
-                    episodic.len() - ACTIVE_MEMORY_INDEX_CAP
+                    episodic.len() - self.limits.active_memory_index_cap
                 ));
             }
             buf.push('\n');
         }
         if !self.all_skills.is_empty() {
             buf.push_str("## Available skills\n");
-            for s in self.all_skills.iter().take(SKILL_INDEX_CAP) {
+            for s in self.all_skills.iter().take(self.limits.skill_index_cap) {
                 buf.push_str(&format!(
                     "- {}: {}\n",
                     s.frontmatter.name, s.frontmatter.description
@@ -73,8 +71,11 @@ impl<'a> ContextSources<'a> {
             }
             buf.push('\n');
         }
-        let matched =
-            hermes_skills::match_for_query(self.all_skills, user_query, TRIGGERED_SKILL_CAP);
+        let matched = hermes_skills::match_for_query(
+            self.all_skills,
+            user_query,
+            self.limits.triggered_skill_cap,
+        );
         if !matched.is_empty() {
             if !buf.is_empty() {
                 buf.push_str("\n\n");
