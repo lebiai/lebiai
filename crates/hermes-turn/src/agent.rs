@@ -65,7 +65,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             goal: String::new(),
-            max_iterations: 20,
+            max_iterations: 50,
             turn_config: TurnConfig::default(),
             context_model_limit: 128_000,
             context_headroom: 0.18,

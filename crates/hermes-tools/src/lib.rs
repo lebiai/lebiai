@@ -8,6 +8,7 @@ pub mod edit;
 pub mod git;
 pub mod glob;
 pub mod grep;
+pub mod http_defaults;
 pub mod memory;
 pub mod palace;
 pub mod read;

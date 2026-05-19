@@ -1,6 +1,6 @@
 # Hermes
 
-A self-evolving AI agent in ~3000 lines of Rust.
+A self-evolving AI agent built in Rust.
 
 Hermes learns from every conversation — distilling reusable skills, accumulating memories, and resolving conflicts — so it gets better the more you use it.
 
@@ -17,15 +17,17 @@ Hermes learns from every conversation — distilling reusable skills, accumulati
 
 ```bash
 # Clone and build
-git clone https://github.com/anthropics/small-rust-hermes.git
+git clone https://github.com/coder-brzhang/small-rust-hermes.git
 cd small-rust-hermes
 cargo build --release
 
 # Configure (requires an API key)
 mkdir -p ~/.small-rust-hermes
 cat > ~/.small-rust-hermes/config.toml << 'EOF'
-[provider]
-name = "anthropic"
+default_provider = "anthropic"
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
 api_key = "sk-ant-..."
 model = "claude-sonnet-4-20250514"
 EOF
@@ -44,8 +46,8 @@ hermes ask "explain this error: cannot borrow as mutable"
 # Interactive chat (with reflection at session end)
 hermes chat
 
-# Chat without reflection
-hermes chat --no-reflect
+# Autonomous agent: iterate until goal is complete
+hermes run "add unit tests for the auth module"
 
 # Resume last session
 hermes chat --resume-last
@@ -109,16 +111,17 @@ Configure MCP servers in `~/.small-rust-hermes/mcp.json`:
 ## Architecture
 
 ```
-hermes-core        Core abstractions: Session, LlmProvider, ToolHost
+hermes-core        Core abstractions: Session, LlmProvider, ToolHost, context compaction
 hermes-llm         Anthropic + OpenAI-compatible provider implementations
+hermes-turn        Turn execution engine: tool loop, parallel execution, permissions
+hermes-tools       Built-in tools: read/write/edit/bash/grep/glob/git/think/todo/palace
 hermes-mcp         MCP client (rmcp): stdio and Streamable HTTP transports
 hermes-store       JSONL session persistence, frontmatter parsing
-hermes-skills      Skill loading, storage, relevance matching
-hermes-memory      Memory loading, storage, conflict detection
-hermes-reflect     Full + micro reflection pipeline
+hermes-skills      Skill loading, storage, relevance matching (BM25 + triggers)
+hermes-memory      Memory palace: zone-based storage, supersedes chain, effectiveness tracking
+hermes-reflect     Full + micro reflection pipeline, profile compilation
 hermes-cli         CLI entry point and subcommands
-hermes-tui         Terminal UI (ratatui)
-hermes-gui         GUI (experimental)
+hermes-gui         Desktop GUI (Tauri)
 ```
 
 ### How Reflection Works
@@ -148,10 +151,10 @@ During a session, **micro-reflection** runs asynchronously after qualifying turn
 ~/.small-rust-hermes/
 ├── config.toml          # API keys, provider config (mode 600)
 ├── mcp.json             # MCP server definitions
-├── skills/              # Learned skills (SKILL.md files)
-├── memories/            # Accumulated memories (Markdown + YAML)
+├── skills/              # Learned skills (Markdown + YAML frontmatter)
+├── memories/            # Accumulated memories (Markdown + YAML frontmatter)
 ├── sessions/            # JSONL transcripts
-└── reflect.log          # Reflection acceptance/rejection log
+└── reflect-log.jsonl    # Reflection acceptance/rejection audit log
 ```
 
 ## Development

@@ -1,9 +1,11 @@
-//! `web_search` — search the web via Bing HTML (no API key needed).
+//! `web_search` — search the web via Brave Search HTML (no API key needed).
 
 use std::path::Path;
 
 use hermes_core::{Result, ToolCallOutcome, ToolSpec};
 use serde::Deserialize;
+
+use crate::http_defaults::HTTP_CLIENT;
 
 #[derive(Deserialize)]
 struct Args {
@@ -19,7 +21,10 @@ fn default_limit() -> usize {
 pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "web_search".into(),
-        description: "Search the web for current information. Returns titles, URLs, and snippets.".into(),
+        description: "Search the web for current information. Returns titles, URLs, and snippets. \
+            Always search first before fetching — the snippet alone is often enough. \
+            Do not construct deep-link URLs yourself; use the URLs returned by this tool."
+            .into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -36,12 +41,11 @@ pub async fn run(_workspace: &Path, args: serde_json::Value) -> Result<ToolCallO
         .map_err(|e| hermes_core::Error::ToolHost(format!("web_search: bad args: {e}")))?;
 
     let url = format!(
-        "https://www.bing.com/search?q={}",
+        "https://search.brave.com/search?q={}",
         urlencoding::encode(&a.query)
     );
-    let resp = reqwest::Client::new()
+    let resp = HTTP_CLIENT
         .get(&url)
-        .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
         .send()
         .await
         .map_err(|e| hermes_core::Error::ToolHost(format!("web_search fetch: {e}")))?;
@@ -58,11 +62,14 @@ pub async fn run(_workspace: &Path, args: serde_json::Value) -> Result<ToolCallO
         .await
         .map_err(|e| hermes_core::Error::ToolHost(format!("web_search body: {e}")))?;
 
-    let results = parse_bing_html(&body, a.limit);
+    let results = parse_brave_html(&body, a.limit);
     if results.is_empty() {
         return Ok(ToolCallOutcome {
-            content: format!("no results for: {}", a.query),
-            is_error: false,
+            content: format!(
+                "No results for: \"{}\". Try rephrasing the query or using different keywords.",
+                a.query
+            ),
+            is_error: true,
         });
     }
     let out = results
@@ -89,63 +96,86 @@ struct SearchResult {
     snippet: String,
 }
 
-fn parse_bing_html(html: &str, limit: usize) -> Vec<SearchResult> {
+/// Parse Brave Search HTML results.
+///
+/// Brave wraps each organic result in a block marked with `data-type="web"`.
+/// Within each block:
+/// - URL: first `<a href="https://...">` element
+/// - Title: `<div class="title ...">...</div>`
+/// - Snippet: `<div class="generic-snippet ...">...</div>`
+fn parse_brave_html(html: &str, limit: usize) -> Vec<SearchResult> {
     let mut results = Vec::new();
-    for chunk in html.split("<li class=\"b_algo\">") {
+    // Split on data-type="web" to isolate each result block
+    let blocks: Vec<&str> = html.split("data-type=\"web\"").collect();
+
+    for chunk in blocks.iter().skip(1) {
         if results.len() >= limit {
             break;
         }
-        // Extract title + URL from <h2><a href="URL">TITLE</a></h2>
-        let title_url = extract_text_between(chunk, "<h2", "</h2>");
-        let (title, url) = match title_url {
-            Some(tu) => {
-                let href = extract_href(&tu).unwrap_or_default();
-                let title = strip_html_tags(
-                    extract_text_between(&tu, ">", "</a>").as_deref().unwrap_or("untitled"),
-                );
-                (title, href)
-            }
+
+        let url = match extract_first_https_href(chunk) {
+            Some(u) => u,
             None => continue,
         };
-        if url.is_empty() || url.starts_with('#') || url.starts_with("javascript:") {
+
+        let title = extract_div_text(chunk, "title").unwrap_or_default();
+        let snippet = extract_div_text(chunk, "generic-snippet").unwrap_or_default();
+
+        if title.is_empty() && snippet.is_empty() {
             continue;
         }
-        // Extract snippet from <p class="b_lineclamp2">...</p> or <div class="b_caption"><p>...</p>
-        let snippet = extract_snippet(chunk);
-        results.push(SearchResult { title, url, snippet });
+
+        results.push(SearchResult {
+            title,
+            url,
+            snippet,
+        });
     }
     results
 }
 
-fn extract_snippet(chunk: &str) -> String {
-    // Try <p class="b_lineclamp2"> first (most common)
-    if let Some(s) = extract_text_between(chunk, "b_lineclamp2\"", "</p>") {
-        return strip_html_tags(&s);
-    }
-    // Fallback: <div class="b_caption"><p>...</p>
-    if let Some(cap) = extract_text_between(chunk, "b_caption", "</div>") {
-        if let Some(s) = extract_text_between(&cap, "<p>", "</p>") {
-            return strip_html_tags(&s);
-        }
-    }
-    String::new()
+/// Extract the first `href="https://..."` from a chunk.
+fn extract_first_https_href(chunk: &str) -> Option<String> {
+    let marker = "href=\"https://";
+    let pos = chunk.find(marker)?;
+    let start = pos + 6; // skip `href="`
+    let rest = &chunk[start..];
+    let end = rest.find('"')?;
+    let raw = &rest[..end];
+    Some(decode_html_entities(raw))
 }
 
-fn extract_href(s: &str) -> Option<String> {
-    let i = s.find("href=\"")? + 6;
-    let rest = &s[i..];
-    let j = rest.find('"')?;
-    Some(rest[..j].to_string())
+/// Extract text content from a `<div class="PREFIX ...">...</div>`.
+fn extract_div_text(chunk: &str, class_prefix: &str) -> Option<String> {
+    let pat = format!("class=\"{class_prefix}");
+    let pos = chunk.find(&pat)?;
+    let after = &chunk[pos..];
+    // Find closing > of the opening tag
+    let gt = after.find('>')?;
+    let rest = &after[gt + 1..];
+    // Find closing </div>
+    let end = rest.find("</div>")?;
+    let inner = &rest[..end];
+    let text = strip_html_tags(inner);
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
-fn extract_text_between(s: &str, start: &str, end: &str) -> Option<String> {
-    let i = s.find(start)? + start.len();
-    let rest = &s[i..];
-    let j = rest.find(end)?;
-    Some(rest[..j].to_string())
+fn decode_html_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&#x27;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
 }
 
 fn strip_html_tags(s: &str) -> String {
+    // Strip real HTML tags first, then decode entities (so &lt; doesn't get
+    // misinterpreted as an HTML tag).
     let mut out = String::new();
     let mut in_tag = false;
     for c in s.chars() {
@@ -157,7 +187,8 @@ fn strip_html_tags(s: &str) -> String {
             out.push(c);
         }
     }
-    out.trim().to_string()
+    let decoded = decode_html_entities(&out);
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -165,20 +196,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_bing_results() {
-        let html = r#"<li class="b_algo"><h2><a href="https://rust-lang.org/">Rust</a></h2><div class="b_caption"><p class="b_lineclamp2">A systems programming language.</p></div></li><li class="b_algo"><h2><a href="https://example.com/">Example</a></h2></li>"#;
-        let results = parse_bing_html(html, 5);
+    fn parse_brave_results_basic() {
+        let html = r#"<div data-type="web"><a href="https://www.reuters.com/technology/" target="_self"><div class="title search-snippet-title">Tech News | Reuters</div></a><div class="generic-snippet svelte-abc">Latest technology news from Reuters.</div></div><div data-type="web"><a href="https://apnews.com/technology" target="_self"><div class="title search-snippet-title">Technology | AP News</div></a><div class="generic-snippet svelte-abc">AP tech coverage.</div></div>"#;
+        let results = parse_brave_html(html, 5);
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].title, "Rust");
-        assert_eq!(results[0].url, "https://rust-lang.org/");
-        assert_eq!(results[0].snippet, "A systems programming language.");
-        assert_eq!(results[1].title, "Example");
-        assert_eq!(results[1].url, "https://example.com/");
+        assert_eq!(results[0].title, "Tech News | Reuters");
+        assert_eq!(results[0].url, "https://www.reuters.com/technology/");
+        assert_eq!(
+            results[0].snippet,
+            "Latest technology news from Reuters."
+        );
+        assert_eq!(results[1].title, "Technology | AP News");
+        assert_eq!(results[1].url, "https://apnews.com/technology");
     }
 
     #[test]
     fn empty_html() {
-        let results = parse_bing_html("no results here", 5);
+        let results = parse_brave_html("no results here", 5);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn respects_limit() {
+        let block = r#"<div data-type="web"><a href="https://example.com/" target="_self"><div class="title t">Example</div></a><div class="generic-snippet s">Desc.</div></div>"#;
+        let html = block.repeat(10);
+        let results = parse_brave_html(&html, 3);
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn html_entities_decoded() {
+        let html = r#"<div data-type="web"><a href="https://example.com/a?b=1&amp;c=2" target="_self"><div class="title t">Tom &amp; Jerry</div></a><div class="generic-snippet s">A &lt;classic&gt; show.</div></div>"#;
+        let results = parse_brave_html(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].url, "https://example.com/a?b=1&c=2");
+        assert_eq!(results[0].title, "Tom & Jerry");
+        assert_eq!(results[0].snippet, "A <classic> show.");
     }
 }

@@ -31,7 +31,7 @@ enum Command {
         goal: String,
         #[arg(long)]
         system: Option<String>,
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 50)]
         max_iterations: usize,
     },
     /// Interactive multi-turn REPL with JSONL session persistence.

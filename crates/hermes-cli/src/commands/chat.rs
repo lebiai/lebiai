@@ -920,7 +920,16 @@ pub(crate) fn compose_system_prompt(
          zone first.\n\n\
          ## Output Style\n\
          Be concise. Show file paths with line numbers when referencing code. \
-         End task responses with: Changed / Verified / Not verified / Risks.",
+         End task responses with: Changed / Verified / Not verified / Risks.\n\n\
+         ## Web\n\
+         When answering time-sensitive questions, use web_search first.\n\
+         - Prefer snippets from search results — only web_fetch if you need the full page.\n\
+         - Only fetch URLs that appeared in search results or that the user gave you. \
+         Never guess or construct URLs.\n\
+         - If web_fetch returns 403/404 or very little text, switch to a different source. \
+         Do not retry the same site.\n\
+         - For weather, news, or real-time data: search first, use the snippet, \
+         move on.",
         now.format("%Y-%m-%d %H:%M (%A)"),
         workspace_root.display()
     );
