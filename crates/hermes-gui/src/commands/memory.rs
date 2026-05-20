@@ -15,6 +15,7 @@ pub struct MemoryItem {
     pub pinned: bool,
     pub confidence: String,
     pub tags: Vec<String>,
+    pub zone: String,
     pub created_at: String,
     pub source: String,
 }
@@ -27,6 +28,7 @@ fn to_item(m: &hermes_memory::LoadedMemory) -> MemoryItem {
         pinned: m.frontmatter.pinned,
         confidence: format!("{:?}", m.frontmatter.confidence),
         tags: m.frontmatter.tags.clone(),
+        zone: m.frontmatter.zone.clone(),
         created_at: m.frontmatter.created.to_rfc3339(),
         source: format!("{:?}", m.frontmatter.source),
     }
@@ -44,13 +46,18 @@ pub fn create_memory(
     body: String,
     tags: Vec<String>,
     scope: String,
+    zone: Option<String>,
     pinned: bool,
 ) -> Result<MemoryItem, GuiError> {
     let s = match scope.as_str() {
         "Project" => Scope::Project,
         _ => Scope::User,
     };
-    let mut fm = MemoryFrontmatter::new(Source::User, Confidence::High, tags, "general".to_string());
+    let zone = zone
+        .map(|z| z.trim().to_string())
+        .filter(|z| !z.is_empty())
+        .unwrap_or_else(|| "general".to_string());
+    let mut fm = MemoryFrontmatter::new(Source::User, Confidence::High, tags, zone);
     fm.pinned = pinned;
     state
         .memory_store
@@ -64,6 +71,7 @@ pub fn create_memory(
         pinned: fm.pinned,
         confidence: format!("{:?}", fm.confidence),
         tags: fm.tags.clone(),
+        zone: fm.zone.clone(),
         created_at: fm.created.to_rfc3339(),
         source: "User".into(),
     };

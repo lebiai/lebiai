@@ -3,10 +3,19 @@ export type ChatStreamEvent =
   | { event: "thinkingDelta"; data: { text: string } }
   | { event: "toolUseStart"; data: { id: string; name: string } }
   | { event: "toolUseResult"; data: { id: string; content: string; isError: boolean } }
+  | { event: "confirmRequired"; data: { id: string; toolName: string; summary: string } }
   | { event: "usageUpdate"; data: { inputTokens: number; outputTokens: number } }
   | { event: "microReflection"; data: { summary: string; memoryCount: number; skillCount: number } }
   | { event: "error"; data: { message: string } }
   | { event: "done" };
+
+export interface PendingConfirm {
+  id: string;
+  toolName: string;
+  summary: string;
+}
+
+export type ConfirmAction = "allow" | "alwaysAllow" | "deny";
 
 export interface SessionSummary {
   id: string;

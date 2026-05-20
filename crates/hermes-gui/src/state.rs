@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -15,6 +15,10 @@ use tokio::sync::Mutex;
 pub type Sessions = Arc<Mutex<HashMap<String, ActiveSession>>>;
 pub type CancelTokens = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>;
 pub type ConfirmTokens = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<hermes_turn::ConfirmAction>>>>;
+/// Session-scoped allowlist populated when the user clicks "Always Allow" on
+/// a tool confirmation. Lives only for the lifetime of the GUI process; to
+/// persist allow rules, the user edits `config.toml` directly.
+pub type AlwaysAllowedTools = Arc<Mutex<HashSet<String>>>;
 
 #[allow(dead_code)]
 pub struct AppState {
@@ -26,6 +30,7 @@ pub struct AppState {
     pub sessions: Sessions,
     pub cancel_tokens: CancelTokens,
     pub confirm_tokens: ConfirmTokens,
+    pub always_allowed_tools: AlwaysAllowedTools,
     pub tools: Mutex<Vec<ToolSpec>>,
     pub skills: Mutex<Vec<LoadedSkill>>,
     pub pinned_memories: Mutex<Vec<LoadedMemory>>,
@@ -72,6 +77,7 @@ impl AppState {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             cancel_tokens: Arc::new(Mutex::new(HashMap::new())),
             confirm_tokens: Arc::new(Mutex::new(HashMap::new())),
+            always_allowed_tools: Arc::new(Mutex::new(HashSet::new())),
             tools: Mutex::new(tools),
             skills: Mutex::new(skills),
             pinned_memories: Mutex::new(pinned),

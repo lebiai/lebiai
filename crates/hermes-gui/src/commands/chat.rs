@@ -27,6 +27,14 @@ pub async fn send_message(
     let workspace_root = state.workspace_root();
     let limits = state.config.limits;
 
+    // Build the per-turn permission checker by merging the persistent
+    // `[permissions]` config with the session-scoped "Always Allow" list
+    // that grows as the user approves dangerous tools in the UI.
+    let mut allow_rules: Vec<String> = state.config.permissions.allow.clone();
+    allow_rules.extend(state.always_allowed_tools.lock().await.iter().cloned());
+    let permissions =
+        hermes_turn::PermissionChecker::new(&allow_rules, &state.config.permissions.deny);
+
     let mut sessions = state.sessions.lock().await;
     let active_session = if let Some(s) = sessions.get_mut(&session_id) {
         s
@@ -97,7 +105,7 @@ pub async fn send_message(
             system: if turn_system.is_empty() { None } else { Some(turn_system) },
             max_tokens,
             max_tool_rounds: limits.max_tool_rounds,
-            permissions: hermes_turn::PermissionChecker::default(),
+            permissions,
         };
 
         let evt = on_event.clone();
@@ -203,13 +211,27 @@ pub async fn respond_confirm(
     state: State<'_, AppState>,
     id: String,
     action: String,
+    tool_name: Option<String>,
+    reason: Option<String>,
 ) -> Result<(), GuiError> {
-    let action = match action.to_lowercase().as_str() {
+    let parsed = match action.to_lowercase().as_str() {
         "allow" | "y" => ConfirmAction::Allow,
-        _ => ConfirmAction::Deny { reason: None },
+        "alwaysallow" | "always_allow" => {
+            if let Some(name) = &tool_name {
+                state
+                    .always_allowed_tools
+                    .lock()
+                    .await
+                    .insert(name.clone());
+            }
+            ConfirmAction::AlwaysAllow
+        }
+        _ => ConfirmAction::Deny {
+            reason: reason.filter(|s| !s.trim().is_empty()),
+        },
     };
     if let Some(reply) = state.confirm_tokens.lock().await.remove(&id) {
-        let _ = reply.send(action);
+        let _ = reply.send(parsed);
     }
     Ok(())
 }

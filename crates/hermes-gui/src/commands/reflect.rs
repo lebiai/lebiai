@@ -1,7 +1,7 @@
 use serde::Serialize;
 use tauri::State;
 
-use hermes_memory::{MemoryFrontmatter, MemoryStore, Source};
+use hermes_memory::{Confidence, FsMemoryStore, MemoryFrontmatter, MemoryStore, Scope, Source};
 use hermes_skills::{SkillFrontmatter, SkillStore};
 
 use crate::error::GuiError;
@@ -139,20 +139,111 @@ pub async fn accept_memory_candidate(
     tags: Vec<String>,
     scope: String,
     confidence: String,
+    supersedes: Vec<String>,
 ) -> Result<(), GuiError> {
-    let s = match scope.as_str() {
-        "Project" => hermes_memory::Scope::Project,
-        _ => hermes_memory::Scope::User,
-    };
-    let conf = match confidence.as_str() {
-        "Low" => hermes_memory::Confidence::Low,
-        "High" => hermes_memory::Confidence::High,
-        _ => hermes_memory::Confidence::Medium,
-    };
-    let fm = MemoryFrontmatter::new(Source::Reflection, conf, tags, "general".to_string());
-    state
-        .memory_store
-        .put(s, fm, &fact)
-        .map_err(|e| GuiError::Internal(e.to_string()))?;
+    let s = parse_scope(&scope);
+    let conf = parse_confidence(&confidence);
+    let mut fm = MemoryFrontmatter::new(Source::Reflection, conf, tags, "general".to_string());
+    fm.supersedes = supersedes;
+    put_memory_with_fallback(&state.memory_store, s, fm, &fact)?;
     Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_conflict(
+    state: State<'_, AppState>,
+    fact: String,
+    tags: Vec<String>,
+    scope: String,
+    confidence: String,
+    supersedes: Vec<String>,
+    old_id: String,
+    action: String,
+    merged_body: Option<String>,
+) -> Result<(), GuiError> {
+    let s = parse_scope(&scope);
+    let conf = parse_confidence(&confidence);
+
+    match action.as_str() {
+        "keep_new" => {
+            let mut sup = supersedes;
+            if !sup.iter().any(|id| id == &old_id) {
+                sup.push(old_id);
+            }
+            let mut fm =
+                MemoryFrontmatter::new(Source::Reflection, conf, tags, "general".to_string());
+            fm.supersedes = sup;
+            put_memory_with_fallback(&state.memory_store, s, fm, &fact)?;
+        }
+        "merge" => {
+            let body = merged_body
+                .map(|b| b.trim().to_string())
+                .filter(|b| !b.is_empty())
+                .ok_or_else(|| GuiError::Internal("merge requires a non-empty body".into()))?;
+            let mut sup = supersedes;
+            if !sup.iter().any(|id| id == &old_id) {
+                sup.push(old_id);
+            }
+            let mut fm =
+                MemoryFrontmatter::new(Source::Reflection, conf, tags, "general".to_string());
+            fm.supersedes = sup;
+            put_memory_with_fallback(&state.memory_store, s, fm, &body)?;
+        }
+        "scope_split" => {
+            let opposite = match s {
+                Scope::User => Scope::Project,
+                Scope::Project => Scope::User,
+            };
+            let mut sup = supersedes;
+            sup.retain(|id| id != &old_id);
+            let mut fm =
+                MemoryFrontmatter::new(Source::Reflection, conf, tags, "general".to_string());
+            fm.supersedes = sup;
+            put_memory_with_fallback(&state.memory_store, opposite, fm, &fact)?;
+        }
+        "keep_old" | "skip" => {
+            // No write — user chose to keep the existing memory or drop the candidate.
+        }
+        other => {
+            return Err(GuiError::Internal(format!(
+                "unknown conflict action: {other}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn parse_scope(scope: &str) -> Scope {
+    match scope {
+        "Project" => Scope::Project,
+        _ => Scope::User,
+    }
+}
+
+fn parse_confidence(confidence: &str) -> Confidence {
+    match confidence {
+        "Low" => Confidence::Low,
+        "High" => Confidence::High,
+        _ => Confidence::Medium,
+    }
+}
+
+fn put_memory_with_fallback(
+    store: &FsMemoryStore,
+    scope: Scope,
+    fm: MemoryFrontmatter,
+    body: &str,
+) -> Result<(), GuiError> {
+    match store.put(scope, fm.clone(), body) {
+        Ok(_) => Ok(()),
+        Err(e) if matches!(scope, Scope::Project) => {
+            tracing::warn!(error=%e, "project scope unavailable, falling back to user");
+            store
+                .put(Scope::User, fm, body)
+                .map(|_| ())
+                .map_err(|e| GuiError::Internal(e.to_string()))
+        }
+        Err(e) => Err(GuiError::Internal(e.to_string())),
+    }
 }

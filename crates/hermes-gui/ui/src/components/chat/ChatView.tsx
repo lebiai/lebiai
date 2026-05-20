@@ -3,6 +3,7 @@ import { useChatStore } from "../../store/chatStore";
 import { MessageBubble } from "./MessageBubble";
 import { InputArea } from "./InputArea";
 import { StreamingBubble } from "./StreamingBubble";
+import { ConfirmModal } from "./ConfirmModal";
 import { Sparkles, X } from "lucide-react";
 
 export function ChatView() {
@@ -71,6 +72,7 @@ export function ChatView() {
       )}
 
       <InputArea />
+      <ConfirmModal />
     </div>
   );
 }

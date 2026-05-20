@@ -1,7 +1,7 @@
 use serde::Serialize;
 use tauri::State;
 
-use hermes_skills::SkillStore;
+use hermes_skills::{SkillFrontmatter, SkillStore};
 
 use crate::error::GuiError;
 use crate::state::AppState;
@@ -26,6 +26,13 @@ fn to_item(s: &hermes_skills::LoadedSkill) -> SkillItem {
     }
 }
 
+fn parse_scope(scope: &str) -> hermes_skills::Scope {
+    match scope {
+        "Project" => hermes_skills::Scope::Project,
+        _ => hermes_skills::Scope::User,
+    }
+}
+
 #[tauri::command]
 pub fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillItem>, GuiError> {
     let skills = state.skill_store.list().map_err(|e| GuiError::Internal(e.to_string()))?;
@@ -42,17 +49,38 @@ pub fn get_skill(state: State<'_, AppState>, name: String) -> Result<Option<Skil
 }
 
 #[tauri::command]
+pub fn save_skill(
+    state: State<'_, AppState>,
+    name: String,
+    description: String,
+    triggers: Vec<String>,
+    body: String,
+    scope: String,
+) -> Result<(), GuiError> {
+    let fm = SkillFrontmatter {
+        name,
+        description,
+        triggers,
+        version: None,
+        license: None,
+        always_active: false,
+        extra: Default::default(),
+    };
+    state
+        .skill_store
+        .put(parse_scope(&scope), fm, &body)
+        .map_err(|e| GuiError::Internal(e.to_string()))?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn delete_skill(
     state: State<'_, AppState>,
     name: String,
     scope: String,
 ) -> Result<bool, GuiError> {
-    let s = match scope.as_str() {
-        "Project" => hermes_skills::Scope::Project,
-        _ => hermes_skills::Scope::User,
-    };
     state
         .skill_store
-        .delete(s, &name)
+        .delete(parse_scope(&scope), &name)
         .map_err(|e| GuiError::Internal(e.to_string()))
 }

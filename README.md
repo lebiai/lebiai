@@ -12,6 +12,7 @@ Hermes learns from every conversation — distilling reusable skills, accumulati
 - **Multi-provider** — Anthropic Claude, DeepSeek, any OpenAI-compatible API
 - **Plain-file storage** — Memories and skills are Markdown + YAML frontmatter, human-readable and git-friendly
 - **Single binary** — No database, no message queue, no Docker
+- **CLI and desktop GUI** — Same engine, same files; pick the surface that fits the task
 
 ## Quick Start
 
@@ -107,6 +108,52 @@ Configure MCP servers in `~/.small-rust-hermes/mcp.json`:
   }
 }
 ```
+
+## Desktop GUI
+
+The GUI is a Tauri 2 desktop app that talks to the exact same engine, config file, skills, memories, and sessions as the CLI. Anything you create in the GUI shows up under `~/.small-rust-hermes/` on disk, and vice versa.
+
+What the GUI gives you that the CLI doesn't:
+
+- **Tool confirmation modal** — when the model wants to run a tool that requires prompting, you get Allow / Always-allow (session) / Deny with an optional reason
+- **Memory sidebar with zones** — left-side zone navigator (All / Pinned / one row per zone), search, and an inline create form with scope + zone + pinned
+- **Skill CRUD** — create / edit / delete skills inline, no need to drop into `$EDITOR`
+- **Editable settings** — model, max-tokens, base URL, API key (write-only), reflect min-turns, auto-accept, context limit, and permission allow/deny rules; writes round-trip via `toml_edit` so comments and unknown keys in `config.toml` survive
+- **Reflection conflict UI** — for each conflict candidate: Keep new / Keep old / Merge (inline textarea) / Scope split / Skip; mirrors the CLI's `apply_conflict_action`
+
+### Run in dev
+
+Two processes — vite on `5173`, then the Tauri shell that loads it:
+
+```bash
+# Terminal 1 — frontend dev server (hot reload)
+cd crates/hermes-gui/ui
+npm install      # first time only
+npm run dev
+
+# Terminal 2 — Tauri window
+cargo run -p hermes-gui
+```
+
+### Build a release bundle
+
+```bash
+cd crates/hermes-gui/ui && npm run build && cd -
+cargo build -p hermes-gui --release
+# binary: target/release/hermes-gui
+```
+
+### Package a macOS DMG
+
+```bash
+# one-time: cargo install tauri-cli --version "^2.0" --locked
+scripts/build-dmg.sh
+# output: target/release/bundle/dmg/Hermes_<version>_<arch>.dmg
+```
+
+Set `TAURI_TARGET=universal-apple-darwin` to build a universal (Intel + Apple Silicon) DMG. The resulting DMG is unsigned — for distribution add codesigning + notarization separately.
+
+Config is shared with the CLI (`~/.small-rust-hermes/config.toml`, mode 600). The GUI writes the file atomically and preserves its mode. Changes take effect on next launch — there is no hot reload yet.
 
 ## Architecture
 

@@ -107,8 +107,9 @@ pub async fn list_sessions() -> Result<Vec<SessionSummary>, GuiError> {
                     })
                 })
                 .unwrap_or_else(|| "New Chat".into());
-            let title = if title.len() > 60 {
-                format!("{}...", &title[..57])
+            let title = if title.chars().count() > 60 {
+                let head: String = title.chars().take(57).collect();
+                format!("{}...", head)
             } else {
                 title
             };

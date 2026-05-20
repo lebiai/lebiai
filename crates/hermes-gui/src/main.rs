@@ -34,6 +34,7 @@ fn main() {
             commands::memory::toggle_pin_memory,
             commands::skills::list_skills,
             commands::skills::get_skill,
+            commands::skills::save_skill,
             commands::skills::delete_skill,
             commands::mcp::list_mcp_tools,
             commands::mcp::list_mcp_servers,
@@ -42,6 +43,7 @@ fn main() {
             commands::reflect::run_reflection,
             commands::reflect::accept_skill_candidate,
             commands::reflect::accept_memory_candidate,
+            commands::reflect::handle_conflict,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

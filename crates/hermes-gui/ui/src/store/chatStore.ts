@@ -2,9 +2,11 @@ import { create } from "zustand";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
   ChatStreamEvent,
+  ConfirmAction,
   ContentBlock,
   LoadedSessionData,
   MessageData,
+  PendingConfirm,
   SessionSummary,
 } from "../types";
 
@@ -26,6 +28,7 @@ interface ChatState {
   inputTokens: number;
   outputTokens: number;
   lastReflection: { summary: string; memoryCount: number; skillCount: number } | null;
+  pendingConfirm: PendingConfirm | null;
 
   fetchSessions: () => Promise<void>;
   newSession: () => Promise<void>;
@@ -34,6 +37,7 @@ interface ChatState {
   sendMessage: (content: string) => Promise<void>;
   cancelStream: () => void;
   clearReflection: () => void;
+  respondConfirm: (action: ConfirmAction, reason?: string) => Promise<void>;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -47,6 +51,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   inputTokens: 0,
   outputTokens: 0,
   lastReflection: null,
+  pendingConfirm: null,
 
   fetchSessions: async () => {
     const sessions = await invoke<SessionSummary[]>("list_sessions");
@@ -95,13 +100,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
       role: "user",
       content: [{ type: "text", text: content }],
     };
-    set((s) => ({
-      messages: [...s.messages, userMsg],
-      isStreaming: true,
-      streamingText: "",
-      streamingThinking: "",
-      activeToolCalls: [],
-    }));
+    set((s) => {
+      const isFirstTurn = s.messages.length === 0;
+      const chars = Array.from(content);
+      const derivedTitle =
+        chars.length > 60 ? chars.slice(0, 57).join("") + "..." : content;
+      return {
+        messages: [...s.messages, userMsg],
+        isStreaming: true,
+        streamingText: "",
+        streamingThinking: "",
+        activeToolCalls: [],
+        sessions: isFirstTurn
+          ? s.sessions.map((sess) =>
+              sess.id === activeSessionId && sess.title === "New Chat"
+                ? { ...sess, title: derivedTitle }
+                : sess
+            )
+          : s.sessions,
+      };
+    });
 
     const onEvent = new Channel<ChatStreamEvent>();
     onEvent.onmessage = (event) => {
@@ -134,6 +152,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 : tc
             ),
           }));
+          break;
+        case "confirmRequired":
+          set({
+            pendingConfirm: {
+              id: event.data.id,
+              toolName: event.data.toolName,
+              summary: event.data.summary,
+            },
+          });
           break;
         case "usageUpdate":
           set((s) => ({
@@ -184,6 +211,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             streamingText: "",
             streamingThinking: "",
             activeToolCalls: [],
+            pendingConfirm: null,
           }));
           break;
         }
@@ -202,7 +230,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (activeSessionId) {
       invoke("cancel_stream", { sessionId: activeSessionId });
     }
+    set({ pendingConfirm: null });
   },
 
   clearReflection: () => set({ lastReflection: null }),
+
+  respondConfirm: async (action, reason) => {
+    const pending = get().pendingConfirm;
+    if (!pending) return;
+    set({ pendingConfirm: null });
+    await invoke("respond_confirm", {
+      id: pending.id,
+      action,
+      toolName: pending.toolName,
+      reason: reason && reason.trim() ? reason : null,
+    });
+  },
 }));
