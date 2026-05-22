@@ -2,6 +2,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Loader2, CheckCircle2, XCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
+import { useUiStore } from "../../store/uiStore";
 
 interface ToolCall {
   id: string;
@@ -16,7 +17,7 @@ interface Props {
   toolCalls: ToolCall[];
 }
 
-function ToolCallCard({ tc }: { tc: ToolCall }) {
+function ToolCallCard({ tc, runningLabel }: { tc: ToolCall; runningLabel: string }) {
   const [expanded, setExpanded] = useState(false);
   const isRunning = tc.result === undefined;
 
@@ -35,7 +36,7 @@ function ToolCallCard({ tc }: { tc: ToolCall }) {
         )}
         <span className="font-medium font-mono">{tc.name}</span>
         {isRunning && (
-          <span className="text-gray-400 ml-auto">running...</span>
+          <span className="text-gray-400 ml-auto">{runningLabel}</span>
         )}
         {!isRunning && tc.result && (
           expanded
@@ -55,6 +56,7 @@ function ToolCallCard({ tc }: { tc: ToolCall }) {
 }
 
 export function StreamingBubble({ text, thinking, toolCalls }: Props) {
+  const t = useUiStore((s) => s.t);
   return (
     <div className="flex justify-start">
       <div className="max-w-[80%] space-y-2">
@@ -62,7 +64,7 @@ export function StreamingBubble({ text, thinking, toolCalls }: Props) {
           <div className="text-xs text-gray-400 border border-gray-200 dark:border-gray-700 rounded-lg p-2">
             <div className="flex items-center gap-1.5 mb-1">
               <Loader2 size={12} className="animate-spin" />
-              <span className="font-medium">Thinking</span>
+              <span className="font-medium">{t("message.thinking")}</span>
             </div>
             <pre className="whitespace-pre-wrap font-mono text-gray-500 max-h-32 overflow-y-auto">
               {thinking.length > 500 ? "..." + thinking.slice(-500) : thinking}
@@ -71,7 +73,7 @@ export function StreamingBubble({ text, thinking, toolCalls }: Props) {
         )}
 
         {toolCalls.map((tc) => (
-          <ToolCallCard key={tc.id} tc={tc} />
+          <ToolCallCard key={tc.id} tc={tc} runningLabel={t("message.toolRunning")} />
         ))}
 
         {text && (

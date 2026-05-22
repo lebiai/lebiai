@@ -1,5 +1,8 @@
 target
 .claude
+.DS_Store
+*.dmg
+*.app
 article.md
 article2.md
 article3.md

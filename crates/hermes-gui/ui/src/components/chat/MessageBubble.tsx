@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useUiStore } from "../../store/uiStore";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CheckCircle2, XCircle, ChevronDown, ChevronRight, Brain } from "lucide-react";
@@ -10,6 +11,7 @@ interface Props {
 
 export function MessageBubble({ message }: Props) {
   const isUser = message.role === "user";
+  const t = useUiStore((s) => s.t);
 
   const textContent = message.content
     .filter((b) => b.type === "text")
@@ -37,7 +39,7 @@ export function MessageBubble({ message }: Props) {
   return (
     <div className="flex justify-start">
       <div className="max-w-[80%] space-y-2">
-        {thinkingContent && <ThinkingBlock content={thinkingContent} />}
+        {thinkingContent && <ThinkingBlock content={thinkingContent} label={t("message.thinking")} />}
 
         {toolUses.map((tool) => {
           if (tool.type !== "toolUse") return null;
@@ -50,6 +52,8 @@ export function MessageBubble({ message }: Props) {
               name={tool.name}
               result={result?.type === "toolResult" ? result.content : undefined}
               isError={result?.type === "toolResult" ? result.isError : false}
+              doneLabel={t("message.toolDone")}
+              failedLabel={t("message.toolFailed")}
             />
           );
         })}
@@ -64,7 +68,7 @@ export function MessageBubble({ message }: Props) {
   );
 }
 
-function ThinkingBlock({ content }: { content: string }) {
+function ThinkingBlock({ content, label }: { content: string; label: string }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -74,7 +78,7 @@ function ThinkingBlock({ content }: { content: string }) {
         className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
       >
         <Brain size={14} className="text-purple-400 shrink-0" />
-        <span className="font-medium text-gray-500">Thinking</span>
+        <span className="font-medium text-gray-500">{label}</span>
         {expanded
           ? <ChevronDown size={12} className="ml-auto text-gray-400" />
           : <ChevronRight size={12} className="ml-auto text-gray-400" />
@@ -91,7 +95,7 @@ function ThinkingBlock({ content }: { content: string }) {
   );
 }
 
-function ToolCallBlock({ name, result, isError }: { name: string; result?: string; isError: boolean }) {
+function ToolCallBlock({ name, result, isError, doneLabel, failedLabel }: { name: string; result?: string; isError: boolean; doneLabel: string; failedLabel: string }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -107,7 +111,7 @@ function ToolCallBlock({ name, result, isError }: { name: string; result?: strin
         )}
         <span className="font-medium font-mono">{name}</span>
         <span className={`text-xs ${isError ? "text-red-400" : "text-green-400"}`}>
-          {isError ? "failed" : "done"}
+          {isError ? failedLabel : doneLabel}
         </span>
         {result && (
           expanded

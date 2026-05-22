@@ -23,6 +23,7 @@ pub struct ConfigView {
     pub permissions_allow: Vec<String>,
     pub permissions_deny: Vec<String>,
     pub workspace_root: String,
+    pub ui_language: String,
 }
 
 fn mask_key(key: &str) -> String {
@@ -49,6 +50,7 @@ pub fn get_config(state: State<'_, AppState>) -> Result<ConfigView, GuiError> {
         permissions_allow: cfg.permissions.allow.clone(),
         permissions_deny: cfg.permissions.deny.clone(),
         workspace_root: cfg.workspace.root.to_string_lossy().into_owned(),
+        ui_language: cfg.ui.language.clone(),
     })
 }
 
@@ -66,6 +68,7 @@ pub struct ConfigUpdate {
     pub context_model_limit: Option<usize>,
     pub permissions_allow: Option<Vec<String>>,
     pub permissions_deny: Option<Vec<String>>,
+    pub ui_language: Option<String>,
 }
 
 #[tauri::command]
@@ -120,6 +123,16 @@ pub fn update_config(
     if let Some(deny) = update.permissions_deny {
         let perms = ensure_table(doc.as_table_mut(), "permissions");
         perms["deny"] = value(toml_edit::Array::from_iter(deny));
+    }
+    if let Some(language) = update.ui_language {
+        let lang = language.trim();
+        if lang != "en-US" && lang != "zh-CN" {
+            return Err(GuiError::Config(format!(
+                "unsupported UI language: {lang}. Expected en-US or zh-CN"
+            )));
+        }
+        let ui = ensure_table(doc.as_table_mut(), "ui");
+        ui["language"] = value(lang);
     }
 
     write_atomically_600(&path, doc.to_string().as_bytes())?;

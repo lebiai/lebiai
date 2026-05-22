@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Server, Wrench } from "lucide-react";
+import { useUiStore } from "../../store/uiStore";
 
 interface McpServerInfo {
   name: string;
@@ -14,6 +15,7 @@ interface McpToolItem {
 }
 
 export function McpPanel() {
+  const t = useUiStore((state) => state.t);
   const [servers, setServers] = useState<McpServerInfo[]>([]);
   const [tools, setTools] = useState<McpToolItem[]>([]);
   const [tab, setTab] = useState<"servers" | "tools">("servers");
@@ -36,7 +38,7 @@ export function McpPanel() {
                 : "hover:bg-gray-100 dark:hover:bg-gray-700/50"
             }`}
           >
-            Servers ({servers.length})
+            {t("mcp.servers")} ({servers.length})
           </button>
           <button
             onClick={() => setTab("tools")}
@@ -46,7 +48,7 @@ export function McpPanel() {
                 : "hover:bg-gray-100 dark:hover:bg-gray-700/50"
             }`}
           >
-            Tools ({tools.length})
+            {t("mcp.tools")} ({tools.length})
           </button>
         </div>
       </header>
@@ -56,7 +58,7 @@ export function McpPanel() {
           <>
             {servers.length === 0 && (
               <p className="text-sm text-gray-500 text-center mt-8">
-                No MCP servers configured. Edit ~/.small-rust-hermes/mcp.json to add servers.
+                {t("mcp.noServers")}
               </p>
             )}
             {servers.map((srv) => (
@@ -80,7 +82,7 @@ export function McpPanel() {
         {tab === "tools" && (
           <>
             {tools.length === 0 && (
-              <p className="text-sm text-gray-500 text-center mt-8">No tools available.</p>
+              <p className="text-sm text-gray-500 text-center mt-8">{t("mcp.noTools")}</p>
             )}
             {tools.map((tool) => (
               <div

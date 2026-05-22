@@ -5,10 +5,12 @@ import { InputArea } from "./InputArea";
 import { StreamingBubble } from "./StreamingBubble";
 import { ConfirmModal } from "./ConfirmModal";
 import { Sparkles, X } from "lucide-react";
+import { useUiStore } from "../../store/uiStore";
 
 export function ChatView() {
   const { activeSessionId, messages, isStreaming, streamingText, streamingThinking, activeToolCalls, inputTokens, outputTokens, lastReflection, clearReflection, newSession } =
     useChatStore();
+  const t = useUiStore((s) => s.t);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -18,12 +20,12 @@ export function ChatView() {
   if (!activeSessionId) {
     return (
       <div className="flex flex-col h-full items-center justify-center text-gray-400">
-        <p className="text-lg mb-4">Select a session or start a new chat</p>
+        <p className="text-lg mb-4">{t("chat.empty")}</p>
         <button
           onClick={newSession}
           className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm"
         >
-          New Chat
+          {t("chat.new")}
         </button>
       </div>
     );
@@ -32,9 +34,13 @@ export function ChatView() {
   return (
     <div className="flex flex-col h-full">
       <header className="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-700 text-xs text-gray-500">
-        <span>Hermes</span>
+        <span>{t("chat.header")}</span>
         <span>
-          {inputTokens > 0 && `${inputTokens.toLocaleString()} in / ${outputTokens.toLocaleString()} out`}
+          {inputTokens > 0 &&
+            t("chat.usage", {
+              input: inputTokens.toLocaleString(),
+              output: outputTokens.toLocaleString(),
+            })}
         </span>
       </header>
 
@@ -61,7 +67,10 @@ export function ChatView() {
             {lastReflection.summary}
             {(lastReflection.memoryCount > 0 || lastReflection.skillCount > 0) && (
               <span className="text-xs text-purple-500 ml-2">
-                ({lastReflection.memoryCount} memory, {lastReflection.skillCount} skill candidates)
+                {t("chat.reflectionCounts", {
+                  memory: lastReflection.memoryCount,
+                  skill: lastReflection.skillCount,
+                })}
               </span>
             )}
           </span>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Pin, PinOff, Trash2, Plus, Search } from "lucide-react";
+import { useUiStore } from "../../store/uiStore";
 
 interface MemoryItem {
   id: string;
@@ -18,6 +19,7 @@ const ALL = "__all__";
 const PINNED = "__pinned__";
 
 export function MemoryPanel() {
+  const t = useUiStore((state) => state.t);
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [activeZone, setActiveZone] = useState<string>(ALL);
   const [query, setQuery] = useState("");
@@ -93,17 +95,19 @@ export function MemoryPanel() {
       {/* Zone sidebar */}
       <aside className="w-56 border-r border-gray-200 dark:border-gray-700 flex flex-col">
         <header className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">Zones</h2>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
+            {t("memory.zones")}
+          </h2>
         </header>
         <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
           <ZoneRow
-            label="All"
+            label={t("memory.all")}
             count={memories.length}
             active={activeZone === ALL}
             onClick={() => setActiveZone(ALL)}
           />
           <ZoneRow
-            label="Pinned"
+            label={t("memory.pinned")}
             count={pinnedCount}
             active={activeZone === PINNED}
             onClick={() => setActiveZone(PINNED)}
@@ -111,7 +115,7 @@ export function MemoryPanel() {
           />
           <div className="my-1.5 border-t border-gray-200 dark:border-gray-700" />
           {zones.length === 0 && (
-            <p className="text-xs text-gray-400 px-3 py-2">No zones yet.</p>
+            <p className="text-xs text-gray-400 px-3 py-2">{t("memory.noZones")}</p>
           )}
           {zones.map(([zone, count]) => (
             <ZoneRow
@@ -131,9 +135,9 @@ export function MemoryPanel() {
           <div className="flex items-center gap-2 min-w-0">
             <h2 className="text-lg font-semibold truncate">
               {activeZone === ALL
-                ? "Memories"
+                ? t("memory.title")
                 : activeZone === PINNED
-                ? "Pinned"
+                ? t("memory.pinned")
                 : activeZone}
             </h2>
             <span className="text-xs text-gray-400">{filtered.length}</span>
@@ -144,7 +148,7 @@ export function MemoryPanel() {
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search..."
+                placeholder={t("memory.search")}
                 className="pl-7 pr-2 py-1.5 text-xs rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 w-40"
               />
             </div>
@@ -153,7 +157,7 @@ export function MemoryPanel() {
               className="flex items-center gap-1 px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors"
             >
               <Plus size={14} />
-              New
+              {t("memory.new")}
             </button>
           </div>
         </header>
@@ -163,7 +167,7 @@ export function MemoryPanel() {
             <textarea
               value={newBody}
               onChange={(e) => setNewBody(e.target.value)}
-              placeholder="Memory content..."
+              placeholder={t("memory.contentPlaceholder")}
               className="w-full px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 resize-none"
               rows={3}
             />
@@ -171,13 +175,13 @@ export function MemoryPanel() {
               <input
                 value={newTags}
                 onChange={(e) => setNewTags(e.target.value)}
-                placeholder="Tags (comma-separated)"
+                placeholder={t("memory.tagsPlaceholder")}
                 className="px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
               />
               <input
                 value={newZone}
                 onChange={(e) => setNewZone(e.target.value)}
-                placeholder="Zone (default: general)"
+                placeholder={t("memory.zonePlaceholder")}
                 className="px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
               />
             </div>
@@ -187,8 +191,8 @@ export function MemoryPanel() {
                 onChange={(e) => setNewScope(e.target.value)}
                 className="px-2.5 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
               >
-                <option value="User">User</option>
-                <option value="Project">Project</option>
+                <option value="User">{t("scope.user")}</option>
+                <option value="Project">{t("scope.project")}</option>
               </select>
               <label className="flex items-center gap-2 text-sm">
                 <input
@@ -196,21 +200,21 @@ export function MemoryPanel() {
                   checked={newPinned}
                   onChange={(e) => setNewPinned(e.target.checked)}
                 />
-                Pinned
+                {t("memory.pinned")}
               </label>
               <div className="flex-1" />
               <button
                 onClick={() => setShowCreate(false)}
                 className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
               >
-                Cancel
+                {t("memory.cancel")}
               </button>
               <button
                 onClick={handleCreate}
                 disabled={!newBody.trim()}
                 className="px-3 py-1.5 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
               >
-                Save
+                {t("memory.save")}
               </button>
             </div>
           </div>
@@ -220,8 +224,8 @@ export function MemoryPanel() {
           {filtered.length === 0 && (
             <p className="text-sm text-gray-500 text-center mt-8">
               {memories.length === 0
-                ? "No memories yet."
-                : "No memories match this filter."}
+                ? t("memory.empty")
+                : t("memory.noMatch")}
             </p>
           )}
           {filtered.map((mem) => (
@@ -235,13 +239,14 @@ export function MemoryPanel() {
                   <button
                     onClick={() => handleTogglePin(mem.id)}
                     className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                    title={mem.pinned ? "Unpin" : "Pin"}
+                    title={mem.pinned ? t("memory.unpin") : t("memory.pin")}
                   >
                     {mem.pinned ? <PinOff size={14} /> : <Pin size={14} />}
                   </button>
                   <button
                     onClick={() => handleDelete(mem.id, mem.scope)}
                     className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-red-500"
+                    title={t("memory.delete")}
                   >
                     <Trash2 size={14} />
                   </button>
@@ -250,11 +255,11 @@ export function MemoryPanel() {
               <div className="flex items-center gap-2 flex-wrap">
                 {mem.pinned && (
                   <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300">
-                    pinned
+                    {t("memory.pinnedBadge")}
                   </span>
                 )}
-                <span className="text-xs text-gray-400">{mem.scope}</span>
-                <span className="text-xs text-gray-400">{mem.confidence}</span>
+                <span className="text-xs text-gray-400">{displayScope(mem.scope, t)}</span>
+                <span className="text-xs text-gray-400">{displayConfidence(mem.confidence, t)}</span>
                 <span className="text-xs px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300">
                   {mem.zone}
                 </span>
@@ -295,4 +300,16 @@ function ZoneRow({ label, count, active, onClick, highlight }: ZoneRowProps) {
       <span className="text-[11px] text-gray-400 ml-2">{count}</span>
     </div>
   );
+}
+
+function displayScope(scope: string, t: ReturnType<typeof useUiStore.getState>["t"]) {
+  return scope === "Project" ? t("scope.project") : t("scope.user");
+}
+
+function displayConfidence(confidence: string, t: ReturnType<typeof useUiStore.getState>["t"]) {
+  const normalized = confidence.toLowerCase();
+  if (normalized === "high") return t("confidence.high");
+  if (normalized === "medium") return t("confidence.medium");
+  if (normalized === "low") return t("confidence.low");
+  return confidence;
 }
