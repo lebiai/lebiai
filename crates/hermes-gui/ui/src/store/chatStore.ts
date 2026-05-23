@@ -9,6 +9,7 @@ import type {
   PendingConfirm,
   SessionSummary,
 } from "../types";
+import { useUiStore } from "./uiStore";
 
 interface ToolCall {
   id: string;
@@ -170,7 +171,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           break;
         case "error":
           set((s) => ({
-            streamingText: s.streamingText + `\n\n**Error:** ${event.data.message}`,
+            streamingText:
+              s.streamingText +
+              `\n\n**${useUiStore.getState().t("chat.errorPrefix")}:** ${event.data.message}`,
           }));
           break;
         case "microReflection":

@@ -30,6 +30,8 @@ pub struct Config {
     pub limits: ContextLimits,
     #[serde(default)]
     pub permissions: PermissionsConfig,
+    #[serde(default)]
+    pub ui: UiConfig,
 }
 
 /// Numeric caps applied to per-turn context assembly and tool-loop bounds.
@@ -186,6 +188,25 @@ fn default_min_turns() -> usize {
     3
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiConfig {
+    /// UI display language. Supported values: "en-US" and "zh-CN".
+    #[serde(default = "default_ui_language")]
+    pub language: String,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            language: default_ui_language(),
+        }
+    }
+}
+
+fn default_ui_language() -> String {
+    "en-US".to_string()
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PermissionsConfig {
     /// Rules that auto-approve matching tool calls without prompting.
@@ -232,6 +253,14 @@ impl Config {
         Self::load_from(&path)
     }
 
+    pub fn load_default_or_create() -> Result<Self> {
+        let path = Self::default_path()?;
+        if !path.exists() {
+            Self::write_default_config(&path)?;
+        }
+        Self::load_from(&path)
+    }
+
     pub fn load_from(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading config at {}", path.display()))?;
@@ -240,18 +269,74 @@ impl Config {
         Ok(cfg)
     }
 
+    pub fn default_config_toml() -> &'static str {
+        r#"default_provider = "anthropic"
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+api_key = ""
+model = "claude-sonnet-4-20250514"
+max_tokens = 16384
+
+[providers.openai]
+base_url = "https://api.openai.com"
+api_key = ""
+model = "gpt-4o-mini"
+max_tokens = 16384
+
+[reflect]
+min_turns = 3
+auto_accept_memories = true
+
+[context]
+model_limit = 128000
+headroom = 0.18
+keep_recent_turns = 4
+
+[limits]
+max_tool_rounds = 10
+agent_max_iterations = 50
+active_memory_index_cap = 50
+skill_index_cap = 50
+relevant_memory_cap = 3
+triggered_skill_cap = 3
+
+[permissions]
+allow = []
+deny = []
+
+[ui]
+language = "en-US"
+"#
+    }
+
+    fn write_default_config(path: &Path) -> Result<()> {
+        let dir = path
+            .parent()
+            .ok_or_else(|| anyhow!("config path has no parent: {}", path.display()))?;
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating config dir {}", dir.display()))?;
+        std::fs::write(path, Self::default_config_toml())
+            .with_context(|| format!("writing default config at {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("chmod 600 {}", path.display()))?;
+        }
+        Ok(())
+    }
+
     pub fn active_provider(&self) -> Result<&ProviderConfig> {
         match self.default_provider.as_str() {
-            "anthropic" => self
-                .providers
-                .anthropic
-                .as_ref()
-                .ok_or_else(|| anyhow!("default_provider=anthropic but [providers.anthropic] missing")),
-            "openai" => self
-                .providers
-                .openai
-                .as_ref()
-                .ok_or_else(|| anyhow!("default_provider=openai but [providers.openai] missing")),
+            "anthropic" => self.providers.anthropic.as_ref().ok_or_else(|| {
+                anyhow!("default_provider=anthropic but [providers.anthropic] missing")
+            }),
+            "openai" => {
+                self.providers.openai.as_ref().ok_or_else(|| {
+                    anyhow!("default_provider=openai but [providers.openai] missing")
+                })
+            }
             other => Err(anyhow!("unknown default_provider {other:?}")),
         }
     }
@@ -299,5 +384,45 @@ impl ProviderConfig {
     pub fn supports_caching(&self) -> bool {
         let host = self.base_url.to_ascii_lowercase();
         !host.contains("deepseek.com")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn default_config_template_loads() {
+        let cfg: Config = toml::from_str(Config::default_config_toml()).unwrap();
+
+        assert_eq!(cfg.default_provider, "anthropic");
+        assert!(cfg.active_provider().is_ok());
+        assert_eq!(cfg.reflect.min_turns, 3);
+        assert_eq!(cfg.context.model_limit, 128_000);
+        assert_eq!(cfg.ui.language, "en-US");
+    }
+
+    #[test]
+    fn write_default_config_creates_parent_and_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "small-rust-hermes-config-test-{}",
+            std::process::id()
+        ));
+        let path = dir.join("nested").join("config.toml");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        Config::write_default_config(&path).unwrap();
+        let cfg = Config::load_from(&path).unwrap();
+
+        assert_eq!(cfg.default_provider, "anthropic");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

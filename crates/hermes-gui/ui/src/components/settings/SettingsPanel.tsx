@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Save, RefreshCw, Plus, X } from "lucide-react";
+import { useUiStore } from "../../store/uiStore";
+import type { Language } from "../../i18n";
 
 interface ConfigView {
   defaultProvider: string;
@@ -14,6 +16,7 @@ interface ConfigView {
   permissionsAllow: string[];
   permissionsDeny: string[];
   workspaceRoot: string;
+  uiLanguage: Language;
 }
 
 interface Form {
@@ -26,6 +29,7 @@ interface Form {
   contextModelLimit: string;
   permissionsAllow: string[];
   permissionsDeny: string[];
+  uiLanguage: Language;
 }
 
 function toForm(c: ConfigView): Form {
@@ -39,6 +43,7 @@ function toForm(c: ConfigView): Form {
     contextModelLimit: String(c.contextModelLimit),
     permissionsAllow: [...c.permissionsAllow],
     permissionsDeny: [...c.permissionsDeny],
+    uiLanguage: c.uiLanguage === "zh-CN" ? "zh-CN" : "en-US",
   };
 }
 
@@ -48,12 +53,15 @@ export function SettingsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const t = useUiStore((s) => s.t);
+  const setLanguage = useUiStore((s) => s.setLanguage);
 
   const load = async () => {
     try {
       const c = await invoke<ConfigView>("get_config");
       setConfig(c);
       setForm(toForm(c));
+      setLanguage(c.uiLanguage);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -77,13 +85,13 @@ export function SettingsPanel() {
       const minTurns = Number(form.reflectMinTurns);
       const ctxLimit = Number(form.contextModelLimit);
       if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
-        throw new Error("Max tokens must be a positive number.");
+        throw new Error(t("settings.error.maxTokens"));
       }
       if (!Number.isFinite(minTurns) || minTurns < 0) {
-        throw new Error("Reflect min turns must be ≥ 0.");
+        throw new Error(t("settings.error.minTurns"));
       }
       if (!Number.isFinite(ctxLimit) || ctxLimit <= 0) {
-        throw new Error("Context model limit must be a positive number.");
+        throw new Error(t("settings.error.contextLimit"));
       }
       await invoke("update_config", {
         update: {
@@ -96,9 +104,11 @@ export function SettingsPanel() {
           contextModelLimit: ctxLimit,
           permissionsAllow: form.permissionsAllow,
           permissionsDeny: form.permissionsDeny,
+          uiLanguage: form.uiLanguage,
         },
       });
       setSavedAt(Date.now());
+      setLanguage(form.uiLanguage);
       update("apiKey", "");
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
@@ -117,7 +127,7 @@ export function SettingsPanel() {
   if (!config || !form) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <p className="text-sm text-gray-500">Loading...</p>
+        <p className="text-sm text-gray-500">{t("settings.loading")}</p>
       </div>
     );
   }
@@ -126,15 +136,15 @@ export function SettingsPanel() {
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-2xl mx-auto p-6 space-y-6">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Settings</h2>
+          <h2 className="text-lg font-semibold">{t("settings.title")}</h2>
           <div className="flex items-center gap-2">
             <button
               onClick={load}
               className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800"
-              title="Reload from disk"
+              title={t("settings.reloadTitle")}
             >
               <RefreshCw size={12} />
-              Reload
+              {t("settings.reload")}
             </button>
             <button
               onClick={save}
@@ -142,7 +152,7 @@ export function SettingsPanel() {
               className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
             >
               <Save size={12} />
-              {saving ? "Saving..." : "Save"}
+              {saving ? t("settings.saving") : t("settings.save")}
             </button>
           </div>
         </div>
@@ -154,33 +164,51 @@ export function SettingsPanel() {
         )}
         {savedAt && !error && (
           <p className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2">
-            Saved to ~/.small-rust-hermes/config.toml. Restart the app for changes to take effect.
+            {t("settings.saved")}
           </p>
         )}
 
         <section className="space-y-3">
           <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Provider — {config.defaultProvider}
+            {t("settings.interface")}
           </h3>
           <div className="grid grid-cols-2 gap-4">
-            <TextField label="Model" value={form.model} onChange={(v) => update("model", v)} />
+            <SelectField
+              label={t("settings.language")}
+              value={form.uiLanguage}
+              onChange={(v) => update("uiLanguage", v as Language)}
+              options={[
+                { value: "en-US", label: "English" },
+                { value: "zh-CN", label: "简体中文" },
+              ]}
+            />
+          </div>
+          <p className="text-xs text-gray-400">{t("settings.languageHint")}</p>
+        </section>
+
+        <section className="space-y-3">
+          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+            {t("settings.provider")} — {config.defaultProvider}
+          </h3>
+          <div className="grid grid-cols-2 gap-4">
+            <TextField label={t("settings.model")} value={form.model} onChange={(v) => update("model", v)} />
             <TextField
-              label="Max Tokens"
+              label={t("settings.maxTokens")}
               value={form.maxTokens}
               onChange={(v) => update("maxTokens", v)}
               type="number"
             />
             <TextField
-              label="Base URL"
+              label={t("settings.baseUrl")}
               value={form.baseUrl}
               onChange={(v) => update("baseUrl", v)}
               className="col-span-2"
             />
             <TextField
-              label="API Key"
+              label={t("settings.apiKey")}
               value={form.apiKey}
               onChange={(v) => update("apiKey", v)}
-              placeholder={`current: ${config.apiKeyMasked} — leave blank to keep`}
+              placeholder={t("settings.apiKeyPlaceholder", { key: config.apiKeyMasked })}
               type="password"
               className="col-span-2"
             />
@@ -188,10 +216,10 @@ export function SettingsPanel() {
         </section>
 
         <section className="space-y-3">
-          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">Reflection</h3>
+          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t("settings.reflection")}</h3>
           <div className="grid grid-cols-2 gap-4">
             <TextField
-              label="Min Turns"
+              label={t("settings.minTurns")}
               value={form.reflectMinTurns}
               onChange={(v) => update("reflectMinTurns", v)}
               type="number"
@@ -203,17 +231,17 @@ export function SettingsPanel() {
                   checked={form.reflectAutoAcceptMemories}
                   onChange={(e) => update("reflectAutoAcceptMemories", e.target.checked)}
                 />
-                Auto-accept low-risk memories
+                {t("settings.autoAcceptMemories")}
               </label>
             </div>
           </div>
         </section>
 
         <section className="space-y-3">
-          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">Context</h3>
+          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t("settings.context")}</h3>
           <div className="grid grid-cols-2 gap-4">
             <TextField
-              label="Model Limit (tokens)"
+              label={t("settings.modelLimit")}
               value={form.contextModelLimit}
               onChange={(v) => update("contextModelLimit", v)}
               type="number"
@@ -223,22 +251,17 @@ export function SettingsPanel() {
 
         <section className="space-y-3">
           <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            Tool Permissions
+            {t("settings.toolPermissions")}
           </h3>
-          <p className="text-xs text-gray-400">
-            Format: <code className="font-mono">tool</code> or{" "}
-            <code className="font-mono">tool:glob</code>. Examples:{" "}
-            <code className="font-mono">read</code>,{" "}
-            <code className="font-mono">bash:git *</code>.
-          </p>
+          <p className="text-xs text-gray-400">{t("settings.permissionHelp")}</p>
           <RuleList
-            label="Allow"
+            label={t("settings.allow")}
             tone="green"
             rules={form.permissionsAllow}
             onChange={(rules) => update("permissionsAllow", rules)}
           />
           <RuleList
-            label="Deny"
+            label={t("settings.deny")}
             tone="red"
             rules={form.permissionsDeny}
             onChange={(rules) => update("permissionsDeny", rules)}
@@ -246,12 +269,9 @@ export function SettingsPanel() {
         </section>
 
         <section className="space-y-2">
-          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">Workspace</h3>
-          <ReadOnlyField label="Root" value={config.workspaceRoot} />
-          <p className="text-[11px] text-gray-400">
-            Workspace root is set at startup and can't be changed here. Edit{" "}
-            <code className="font-mono">[workspace] root</code> in config.toml and restart.
-          </p>
+          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t("settings.workspace")}</h3>
+          <ReadOnlyField label={t("settings.root")} value={config.workspaceRoot} />
+          <p className="text-[11px] text-gray-400">{t("settings.workspaceHelp")}</p>
         </section>
       </div>
     </div>
@@ -282,6 +302,32 @@ function TextField({ label, value, onChange, placeholder, type = "text", classNa
   );
 }
 
+interface SelectFieldProps {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+}
+
+function SelectField({ label, value, onChange, options }: SelectFieldProps) {
+  return (
+    <div>
+      <label className="block text-xs text-gray-500 mb-1">{label}</label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 function ReadOnlyField({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -302,6 +348,7 @@ interface RuleListProps {
 
 function RuleList({ label, tone, rules, onChange }: RuleListProps) {
   const [draft, setDraft] = useState("");
+  const t = useUiStore((s) => s.t);
   const colors =
     tone === "green"
       ? "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300"
@@ -335,7 +382,7 @@ function RuleList({ label, tone, rules, onChange }: RuleListProps) {
                 <button
                   onClick={() => remove(r)}
                   className="opacity-60 hover:opacity-100"
-                  title="Remove"
+                  title={t("settings.remove")}
                 >
                   <X size={10} />
                 </button>
@@ -348,7 +395,7 @@ function RuleList({ label, tone, rules, onChange }: RuleListProps) {
             type="text"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
+            onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
               if (e.key === "Enter") {
                 e.preventDefault();
                 add();
@@ -363,7 +410,7 @@ function RuleList({ label, tone, rules, onChange }: RuleListProps) {
             className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
           >
             <Plus size={11} />
-            Add
+            {t("settings.add")}
           </button>
         </div>
       </div>

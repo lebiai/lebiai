@@ -5,8 +5,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use hermes_core::{LlmProvider, Session, SessionMeta, ToolHost, ToolSpec};
 use hermes_llm::Config;
-use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore};
 use hermes_mcp::{McpConfig, McpToolHost, ServerSpec};
+use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore};
 use hermes_skills::{FsSkillStore, LoadedSkill, SkillStore};
 use hermes_store::SessionWriter;
 use hermes_tools::{BuiltinToolHost, CompositeToolHost};
@@ -14,7 +14,8 @@ use tokio::sync::Mutex;
 
 pub type Sessions = Arc<Mutex<HashMap<String, ActiveSession>>>;
 pub type CancelTokens = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>;
-pub type ConfirmTokens = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<hermes_turn::ConfirmAction>>>>;
+pub type ConfirmTokens =
+    Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<hermes_turn::ConfirmAction>>>>;
 /// Session-scoped allowlist populated when the user clicks "Always Allow" on
 /// a tool confirmation. Lives only for the lifetime of the GUI process; to
 /// persist allow rules, the user edits `config.toml` directly.
@@ -46,8 +47,10 @@ pub struct ActiveSession {
 
 impl AppState {
     pub async fn init() -> Result<Self> {
-        let config = Config::load_default().context("loading config.toml")?;
-        let provider = config.build_active_provider().context("building provider")?;
+        let config = Config::load_default_or_create().context("loading config.toml")?;
+        let provider = config
+            .build_active_provider()
+            .context("building provider")?;
 
         let home = dirs::home_dir().context("resolving $HOME")?;
         let base = home.join(".small-rust-hermes");
@@ -100,11 +103,7 @@ impl AppState {
     }
 
     pub fn workspace_root(&self) -> String {
-        self.config
-            .workspace
-            .root
-            .to_string_lossy()
-            .into_owned()
+        self.config.workspace.root.to_string_lossy().into_owned()
     }
 }
 

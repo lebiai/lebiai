@@ -8,13 +8,19 @@ import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { ReflectPanel } from "./components/reflect/ReflectPanel";
 import { useChatStore } from "./store/chatStore";
 import { useNavStore } from "./store/navStore";
+import { useUiStore } from "./store/uiStore";
+import { invoke } from "@tauri-apps/api/core";
 
 export default function App() {
   const { fetchSessions } = useChatStore();
   const { activePanel } = useNavStore();
+  const setLanguage = useUiStore((s) => s.setLanguage);
 
   useEffect(() => {
     fetchSessions();
+    invoke<{ uiLanguage: string }>("get_config")
+      .then((config) => setLanguage(config.uiLanguage))
+      .catch(() => setLanguage("en-US"));
   }, []);
 
   const renderPanel = () => {

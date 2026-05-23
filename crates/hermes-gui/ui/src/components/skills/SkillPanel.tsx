@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Trash2, Plus, Pencil, Save, X } from "lucide-react";
+import { useUiStore } from "../../store/uiStore";
 
 interface SkillItem {
   name: string;
@@ -39,6 +40,7 @@ function toDraft(s: SkillItem): DraftSkill {
 }
 
 export function SkillPanel() {
+  const t = useUiStore((state) => state.t);
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [selected, setSelected] = useState<SkillItem | null>(null);
   const [mode, setMode] = useState<Mode>("view");
@@ -87,7 +89,7 @@ export function SkillPanel() {
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
     if (!draft.name.trim()) {
-      setError("Name is required.");
+      setError(t("skills.nameRequired"));
       return;
     }
     setBusy(true);
@@ -123,18 +125,18 @@ export function SkillPanel() {
     <div className="flex-1 flex h-full">
       <div className="w-64 border-r border-gray-200 dark:border-gray-700 flex flex-col">
         <header className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-lg font-semibold">Skills</h2>
+          <h2 className="text-lg font-semibold">{t("skills.title")}</h2>
           <button
             onClick={startCreate}
             className="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
-            title="New skill"
+            title={t("skills.newTitle")}
           >
             <Plus size={16} />
           </button>
         </header>
         <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
           {skills.length === 0 && (
-            <p className="text-sm text-gray-500 text-center mt-8">No skills.</p>
+            <p className="text-sm text-gray-500 text-center mt-8">{t("skills.empty")}</p>
           )}
           {skills.map((skill) => (
             <div
@@ -147,13 +149,16 @@ export function SkillPanel() {
               onClick={() => select(skill)}
             >
               <span className="truncate flex-1 font-mono">{skill.name}</span>
-              <span className="text-[10px] uppercase text-gray-400">{skill.scope[0]}</span>
+              <span className="text-[10px] uppercase text-gray-400">
+                {displayScope(skill.scope, t).slice(0, 1)}
+              </span>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   handleDelete(skill.name, skill.scope);
                 }}
                 className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-500"
+                title={t("skills.delete")}
               >
                 <Trash2 size={12} />
               </button>
@@ -175,11 +180,11 @@ export function SkillPanel() {
                 className="shrink-0 inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800"
               >
                 <Pencil size={12} />
-                Edit
+                {t("skills.edit")}
               </button>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs text-gray-400">{selected.scope}</span>
+              <span className="text-xs text-gray-400">{displayScope(selected.scope, t)}</span>
               {selected.triggers.map((t) => (
                 <span
                   key={t}
@@ -197,7 +202,7 @@ export function SkillPanel() {
 
         {mode === "view" && !selected && (
           <p className="text-sm text-gray-500 text-center mt-8">
-            Select a skill to view its details, or click + to create a new one.
+            {t("skills.selectHint")}
           </p>
         )}
 
@@ -228,6 +233,7 @@ interface SkillEditorProps {
 }
 
 function SkillEditor({ draft, onChange, mode, busy, error, onSave, onCancel }: SkillEditorProps) {
+  const t = useUiStore((state) => state.t);
   const set = <K extends keyof DraftSkill>(k: K, v: DraftSkill[K]) =>
     onChange({ ...draft, [k]: v });
 
@@ -235,7 +241,7 @@ function SkillEditor({ draft, onChange, mode, busy, error, onSave, onCancel }: S
     <div className="space-y-4 max-w-2xl">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">
-          {mode === "create" ? "New skill" : "Edit skill"}
+          {mode === "create" ? t("skills.editorNew") : t("skills.editorEdit")}
         </h3>
         <div className="flex gap-2">
           <button
@@ -244,7 +250,7 @@ function SkillEditor({ draft, onChange, mode, busy, error, onSave, onCancel }: S
             className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800"
           >
             <X size={12} />
-            Cancel
+            {t("skills.cancel")}
           </button>
           <button
             onClick={onSave}
@@ -252,7 +258,7 @@ function SkillEditor({ draft, onChange, mode, busy, error, onSave, onCancel }: S
             className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
           >
             <Save size={12} />
-            {busy ? "Saving..." : "Save"}
+            {busy ? t("skills.saving") : t("skills.save")}
           </button>
         </div>
       </div>
@@ -264,59 +270,67 @@ function SkillEditor({ draft, onChange, mode, busy, error, onSave, onCancel }: S
       )}
 
       <div className="space-y-1">
-        <label className="block text-xs uppercase tracking-wide text-gray-500">Name</label>
+        <label className="block text-xs uppercase tracking-wide text-gray-500">
+          {t("skills.name")}
+        </label>
         <input
           type="text"
           value={draft.name}
           onChange={(e) => set("name", e.target.value)}
           disabled={mode === "edit"}
-          placeholder="e.g. python-test-fixtures"
+          placeholder={t("skills.namePlaceholder")}
           className="w-full font-mono rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
         />
         <p className="text-[11px] text-gray-400">
-          Lowercase, ASCII alphanumeric, dash and underscore. Cannot be renamed after creation.
+          {t("skills.nameHint")}
         </p>
       </div>
 
       <div className="space-y-1">
-        <label className="block text-xs uppercase tracking-wide text-gray-500">Description</label>
+        <label className="block text-xs uppercase tracking-wide text-gray-500">
+          {t("skills.description")}
+        </label>
         <input
           type="text"
           value={draft.description}
           onChange={(e) => set("description", e.target.value)}
-          placeholder="Short one-liner shown in the picker"
+          placeholder={t("skills.descriptionPlaceholder")}
           className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>
 
       <div className="space-y-1">
         <label className="block text-xs uppercase tracking-wide text-gray-500">
-          Triggers (comma-separated)
+          {t("skills.triggers")}
         </label>
         <input
           type="text"
           value={draft.triggers}
           onChange={(e) => set("triggers", e.target.value)}
-          placeholder="pytest, fixture, mock"
+          placeholder={t("skills.triggersPlaceholder")}
           className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>
 
       <div className="space-y-1">
-        <label className="block text-xs uppercase tracking-wide text-gray-500">Scope</label>
+        <label className="block text-xs uppercase tracking-wide text-gray-500">
+          {t("skills.scope")}
+        </label>
         <select
           value={draft.scope}
           onChange={(e) => set("scope", e.target.value)}
           disabled={mode === "edit"}
           className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
         >
-          <option value="User">User (~/.small-rust-hermes/skills)</option>
-          <option value="Project">Project (./.small-rust-hermes/skills)</option>
+          <option value="User">{t("skills.userScopeOption")}</option>
+          <option value="Project">{t("skills.projectScopeOption")}</option>
         </select>
       </div>
 
       <div className="space-y-1">
-        <label className="block text-xs uppercase tracking-wide text-gray-500">Body (Markdown)</label>
+        <label className="block text-xs uppercase tracking-wide text-gray-500">
+          {t("skills.body")}
+        </label>
         <textarea
           value={draft.body}
           onChange={(e) => set("body", e.target.value)}
@@ -326,4 +340,8 @@ function SkillEditor({ draft, onChange, mode, busy, error, onSave, onCancel }: S
       </div>
     </div>
   );
+}
+
+function displayScope(scope: string, t: ReturnType<typeof useUiStore.getState>["t"]) {
+  return scope === "Project" ? t("scope.project") : t("scope.user");
 }

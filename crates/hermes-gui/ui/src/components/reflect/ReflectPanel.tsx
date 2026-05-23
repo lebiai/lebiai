@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../../store/chatStore";
+import { useUiStore } from "../../store/uiStore";
 import { Sparkles, Check, X, Merge, SkipForward, ArrowRightLeft } from "lucide-react";
 
 interface SkillCandidateView {
@@ -39,13 +40,14 @@ type ConflictAction = "keep_new" | "keep_old" | "merge" | "scope_split" | "skip"
 
 export function ReflectPanel() {
   const { activeSessionId } = useChatStore();
+  const t = useUiStore((state) => state.t);
   const [result, setResult] = useState<ReflectionResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleRun = async () => {
     if (!activeSessionId) {
-      setError("No active session to reflect on.");
+      setError(t("reflect.noActiveSession"));
       return;
     }
     setLoading(true);
@@ -148,14 +150,14 @@ export function ReflectPanel() {
   return (
     <div className="flex-1 flex flex-col h-full">
       <header className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-        <h2 className="text-lg font-semibold">Reflection</h2>
+        <h2 className="text-lg font-semibold">{t("reflect.title")}</h2>
         <button
           onClick={handleRun}
           disabled={loading || !activeSessionId}
           className="flex items-center gap-1 px-3 py-1.5 text-sm rounded-lg bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 transition-colors"
         >
           <Sparkles size={14} />
-          {loading ? "Reflecting..." : "Run Reflection"}
+          {loading ? t("reflect.running") : t("reflect.run")}
         </button>
       </header>
 
@@ -164,7 +166,7 @@ export function ReflectPanel() {
 
         {!result && !loading && (
           <p className="text-sm text-gray-500 text-center mt-8">
-            Run reflection on the current session to extract skills and memories.
+            {t("reflect.empty")}
           </p>
         )}
 
@@ -177,7 +179,7 @@ export function ReflectPanel() {
             {result.skillCandidates.length > 0 && (
               <section className="space-y-3">
                 <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide">
-                  Skill Candidates
+                  {t("reflect.skillCandidates")}
                 </h3>
                 {result.skillCandidates.map((c) => (
                   <div
@@ -193,7 +195,7 @@ export function ReflectPanel() {
                         <button
                           onClick={() => acceptSkill(c)}
                           className="p-1.5 rounded hover:bg-green-100 dark:hover:bg-green-900 text-green-600"
-                          title="Accept"
+                          title={t("reflect.accept")}
                         >
                           <Check size={14} />
                         </button>
@@ -206,7 +208,7 @@ export function ReflectPanel() {
                             )
                           }
                           className="p-1.5 rounded hover:bg-red-100 dark:hover:bg-red-900 text-red-500"
-                          title="Reject"
+                          title={t("reflect.reject")}
                         >
                           <X size={14} />
                         </button>
@@ -221,7 +223,7 @@ export function ReflectPanel() {
             {result.memoryCandidates.filter((c) => !linkedFacts.has(c.fact)).length > 0 && (
               <section className="space-y-3">
                 <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide">
-                  Memory Candidates
+                  {t("reflect.memoryCandidates")}
                 </h3>
                 {result.memoryCandidates
                   .filter((c) => !linkedFacts.has(c.fact))
@@ -236,7 +238,7 @@ export function ReflectPanel() {
                           <button
                             onClick={() => acceptMemory(c)}
                             className="p-1.5 rounded hover:bg-green-100 dark:hover:bg-green-900 text-green-600"
-                            title="Accept"
+                            title={t("reflect.accept")}
                           >
                             <Check size={14} />
                           </button>
@@ -249,14 +251,16 @@ export function ReflectPanel() {
                               )
                             }
                             className="p-1.5 rounded hover:bg-red-100 dark:hover:bg-red-900 text-red-500"
-                            title="Reject"
+                            title={t("reflect.reject")}
                           >
                             <X size={14} />
                           </button>
                         </div>
                       </div>
                       <div className="flex gap-2 flex-wrap">
-                        <span className="text-xs text-gray-400">{c.scope} / {c.confidence}</span>
+                        <span className="text-xs text-gray-400">
+                          {displayScope(c.scope, t)} / {displayConfidence(c.confidence, t)}
+                        </span>
                         {c.tags.map((t) => (
                           <span key={t} className="text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700">
                             {t}
@@ -272,7 +276,7 @@ export function ReflectPanel() {
             {(linkedConflicts.length > 0 || orphanConflicts.length > 0) && (
               <section className="space-y-3">
                 <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide">
-                  Conflicts
+                  {t("reflect.conflicts")}
                 </h3>
                 {linkedConflicts.map(({ conflict, candidate }) => (
                   <ConflictCard
@@ -292,13 +296,15 @@ export function ReflectPanel() {
                         <span className="text-xs font-medium uppercase text-yellow-700 dark:text-yellow-300">
                           {c.kind}
                         </span>
-                        <span className="text-xs text-gray-400">with: {c.with}</span>
+                        <span className="text-xs text-gray-400">
+                          {t("reflect.with", { id: c.with })}
+                        </span>
                       </div>
                       <button
                         onClick={() => dismissOrphan(c)}
                         className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
                       >
-                        Dismiss
+                        {t("reflect.dismiss")}
                       </button>
                     </div>
                     <p className="text-sm">{c.explain}</p>
@@ -325,6 +331,7 @@ interface ConflictCardProps {
 }
 
 function ConflictCard({ conflict, candidate, onResolve }: ConflictCardProps) {
+  const t = useUiStore((state) => state.t);
   const [mergeMode, setMergeMode] = useState(false);
   const [mergeBody, setMergeBody] = useState(candidate.fact);
   const [busy, setBusy] = useState(false);
@@ -339,6 +346,7 @@ function ConflictCard({ conflict, candidate, onResolve }: ConflictCardProps) {
   };
 
   const oppositeScope = candidate.scope === "Project" ? "User" : "Project";
+  const oppositeScopeLabel = displayScope(oppositeScope, t);
 
   return (
     <div className="p-3 rounded-lg border border-yellow-200 dark:border-yellow-700 bg-yellow-50 dark:bg-yellow-900/20 space-y-3">
@@ -346,21 +354,25 @@ function ConflictCard({ conflict, candidate, onResolve }: ConflictCardProps) {
         <span className="text-xs font-medium uppercase text-yellow-700 dark:text-yellow-300">
           {conflict.kind}
         </span>
-        <span className="text-xs text-gray-400">with: {conflict.with}</span>
+        <span className="text-xs text-gray-400">
+          {t("reflect.with", { id: conflict.with })}
+        </span>
       </div>
       <p className="text-sm text-gray-700 dark:text-gray-200">{conflict.explain}</p>
 
       <div className="rounded border border-yellow-200/60 dark:border-yellow-700/60 bg-white/60 dark:bg-gray-900/40 p-2">
-        <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">New candidate</div>
+        <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">
+          {t("reflect.newCandidate")}
+        </div>
         <p className="text-sm">{candidate.fact}</p>
         <div className="mt-1 text-xs text-gray-400">
-          {candidate.scope} / {candidate.confidence}
+          {displayScope(candidate.scope, t)} / {displayConfidence(candidate.confidence, t)}
         </div>
       </div>
 
       {mergeMode ? (
         <div className="space-y-2">
-          <label className="block text-xs text-gray-500">Merged body</label>
+          <label className="block text-xs text-gray-500">{t("reflect.mergedBody")}</label>
           <textarea
             value={mergeBody}
             onChange={(e) => setMergeBody(e.target.value)}
@@ -373,37 +385,37 @@ function ConflictCard({ conflict, candidate, onResolve }: ConflictCardProps) {
               disabled={busy}
               className="text-xs px-2.5 py-1 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800"
             >
-              Cancel
+              {t("reflect.cancel")}
             </button>
             <button
               onClick={() => run("merge", mergeBody)}
               disabled={busy || !mergeBody.trim()}
               className="text-xs px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
             >
-              Apply merge
+              {t("reflect.applyMerge")}
             </button>
           </div>
         </div>
       ) : (
         <div className="flex flex-wrap gap-1.5">
           <ActionButton
-            label="Keep new"
-            title="Persist the new candidate; mark old as superseded"
+            label={t("reflect.keepNew")}
+            title={t("reflect.keepNewTitle")}
             icon={<Check size={12} />}
             tone="primary"
             disabled={busy}
             onClick={() => run("keep_new")}
           />
           <ActionButton
-            label="Keep old"
-            title="Discard the new candidate; keep the existing memory"
+            label={t("reflect.keepOld")}
+            title={t("reflect.keepOldTitle")}
             icon={<X size={12} />}
             disabled={busy}
             onClick={() => run("keep_old")}
           />
           <ActionButton
-            label="Merge"
-            title="Edit and save a combined body that supersedes the old"
+            label={t("reflect.merge")}
+            title={t("reflect.mergeTitle")}
             icon={<Merge size={12} />}
             disabled={busy}
             onClick={() => {
@@ -412,15 +424,15 @@ function ConflictCard({ conflict, candidate, onResolve }: ConflictCardProps) {
             }}
           />
           <ActionButton
-            label={`Scope-split → ${oppositeScope}`}
-            title={`Save the candidate in ${oppositeScope} scope; keep both`}
+            label={t("reflect.scopeSplit", { scope: oppositeScopeLabel })}
+            title={t("reflect.scopeSplitTitle", { scope: oppositeScopeLabel })}
             icon={<ArrowRightLeft size={12} />}
             disabled={busy}
             onClick={() => run("scope_split")}
           />
           <ActionButton
-            label="Skip"
-            title="Defer — no write"
+            label={t("reflect.skip")}
+            title={t("reflect.skipTitle")}
             icon={<SkipForward size={12} />}
             disabled={busy}
             onClick={() => run("skip")}
@@ -429,6 +441,18 @@ function ConflictCard({ conflict, candidate, onResolve }: ConflictCardProps) {
       )}
     </div>
   );
+}
+
+function displayScope(scope: string, t: ReturnType<typeof useUiStore.getState>["t"]) {
+  return scope === "Project" ? t("scope.project") : t("scope.user");
+}
+
+function displayConfidence(confidence: string, t: ReturnType<typeof useUiStore.getState>["t"]) {
+  const normalized = confidence.toLowerCase();
+  if (normalized === "high") return t("confidence.high");
+  if (normalized === "medium") return t("confidence.medium");
+  if (normalized === "low") return t("confidence.low");
+  return confidence;
 }
 
 interface ActionButtonProps {

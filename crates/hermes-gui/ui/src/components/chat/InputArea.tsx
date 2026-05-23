@@ -1,11 +1,13 @@
 import { useState, useRef, useCallback } from "react";
 import { Send, Square } from "lucide-react";
 import { useChatStore } from "../../store/chatStore";
+import { useUiStore } from "../../store/uiStore";
 
 export function InputArea() {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { isStreaming, sendMessage, cancelStream } = useChatStore();
+  const t = useUiStore((s) => s.t);
 
   const handleSubmit = useCallback(() => {
     const trimmed = input.trim();
@@ -39,7 +41,7 @@ export function InputArea() {
           value={input}
           onChange={handleInput}
           onKeyDown={handleKeyDown}
-          placeholder="Send a message..."
+          placeholder={t("chat.placeholder")}
           rows={1}
           className="flex-1 resize-none rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
         />
@@ -47,7 +49,7 @@ export function InputArea() {
           <button
             onClick={cancelStream}
             className="p-3 rounded-xl bg-red-500 text-white hover:bg-red-600 transition-colors"
-            aria-label="Stop"
+            aria-label={t("chat.stop")}
           >
             <Square size={16} />
           </button>
@@ -56,7 +58,7 @@ export function InputArea() {
             onClick={handleSubmit}
             disabled={!input.trim()}
             className="p-3 rounded-xl bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            aria-label="Send"
+            aria-label={t("chat.send")}
           >
             <Send size={16} />
           </button>
