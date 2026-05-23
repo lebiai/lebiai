@@ -62,7 +62,7 @@ impl OpenAiProvider {
 impl LlmProvider for OpenAiProvider {
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse> {
         let body = build_request_body(&self.inner.default_model, &req, false);
-        let url = format!("{}/v1/chat/completions", self.inner.base_url);
+        let url = format!("{}/chat/completions", self.inner.base_url);
         tracing::debug!(url = %url, "openai request");
 
         let resp = self
@@ -109,7 +109,7 @@ impl LlmProvider for OpenAiProvider {
         req: CompletionRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent>>> {
         let body = build_request_body(&self.inner.default_model, &req, true);
-        let url = format!("{}/v1/chat/completions", self.inner.base_url);
+        let url = format!("{}/chat/completions", self.inner.base_url);
 
         let resp = self
             .inner
