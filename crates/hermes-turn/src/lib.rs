@@ -78,6 +78,50 @@ pub fn tool_call_summary(name: &str, input: &serde_json::Value) -> String {
     format!("{name}: {truncated}")
 }
 
+/// Pair any tool_use blocks in the last assistant message that aren't yet
+/// covered by `tool_results`, by appending error-flagged "cancelled"
+/// placeholders, then push the resulting User message onto `messages`.
+///
+/// Used by cancel paths so we never persist an assistant message containing
+/// orphan tool_use blocks — the Anthropic API rejects such histories with
+/// "tool_use ids were found without tool_result blocks immediately after".
+fn flush_with_cancel_pairing(
+    messages: &mut Vec<Message>,
+    mut tool_results: Vec<ContentBlock>,
+) {
+    let collected: std::collections::HashSet<String> = tool_results
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let unpaired: Vec<String> = match messages.last() {
+        Some(m) if m.role == Role::Assistant => m
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, .. } if !collected.contains(id) => Some(id.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    for id in unpaired {
+        tool_results.push(ContentBlock::ToolResult {
+            tool_use_id: id,
+            content: "Tool call cancelled.".to_string(),
+            is_error: true,
+        });
+    }
+    if !tool_results.is_empty() {
+        messages.push(Message {
+            role: Role::User,
+            content: tool_results,
+        });
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TurnEvent {
     TextDelta(String),
@@ -226,48 +270,54 @@ where
         };
         messages.push(assistant_msg);
 
-        if !resp.truncated_tool_ids.is_empty() {
-            let mut tool_results = Vec::new();
-            for block in &resp.content {
-                if let ContentBlock::ToolUse { id, name, .. } = block {
-                    if resp.truncated_tool_ids.contains(id) {
-                        let msg = format!(
-                            "Tool call truncated: output exceeded token limit while generating \
-                             arguments for '{}'. Retry with shorter content or break into smaller steps.",
-                            name
-                        );
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: msg.clone(),
-                            is_error: true,
-                        });
-                        on_event(TurnEvent::ToolUseResult {
-                            id: id.clone(),
-                            content: msg,
-                            is_error: true,
-                        });
-                    }
+        // Pre-fill placeholder tool_results for truncated tool_use blocks so
+        // they get paired in the same User message as the real tool results.
+        // Previously this branch `continue`d before normal tool execution,
+        // leaving any non-truncated tool_use in the same response orphaned —
+        // which the API then rejected on the next round.
+        let mut tool_results: Vec<ContentBlock> = Vec::new();
+        for block in &resp.content {
+            if let ContentBlock::ToolUse { id, name, .. } = block {
+                if resp.truncated_tool_ids.contains(id) {
+                    let msg = format!(
+                        "Tool call truncated: output exceeded token limit while generating \
+                         arguments for '{}'. Retry with shorter content or break into smaller steps.",
+                        name
+                    );
+                    tool_results.push(ContentBlock::ToolResult {
+                        tool_use_id: id.clone(),
+                        content: msg.clone(),
+                        is_error: true,
+                    });
+                    on_event(TurnEvent::ToolUseResult {
+                        id: id.clone(),
+                        content: msg,
+                        is_error: true,
+                    });
                 }
             }
+        }
+
+        if resp.stop_reason != StopReason::ToolUse {
+            // Flush any truncation placeholders even on non-tool_use stop, so
+            // the assistant message's tool_use blocks aren't left orphaned.
             if !tool_results.is_empty() {
                 messages.push(Message {
                     role: Role::User,
                     content: tool_results,
                 });
-                continue;
             }
-        }
-
-        if resp.stop_reason != StopReason::ToolUse {
             break;
         }
 
-        // Extract and execute tool calls
+        // Extract tool calls, skipping those already handled as truncated.
         let tool_uses: Vec<(String, String, serde_json::Value)> = resp
             .content
             .iter()
             .filter_map(|b| match b {
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse { id, name, input }
+                    if !resp.truncated_tool_ids.contains(id) =>
+                {
                     Some((id.clone(), name.clone(), input.clone()))
                 }
                 _ => None,
@@ -275,11 +325,20 @@ where
             .collect();
 
         if tool_uses.is_empty() {
+            // All tool_use blocks were truncated, or none existed. If we have
+            // placeholder results, flush them and let the model retry.
+            if !tool_results.is_empty() {
+                messages.push(Message {
+                    role: Role::User,
+                    content: tool_results,
+                });
+                continue;
+            }
             tracing::warn!("stop_reason=tool_use but no tool_use blocks");
             break;
         }
 
-        let mut tool_results: Vec<ContentBlock> = Vec::with_capacity(tool_uses.len());
+        tool_results.reserve(tool_uses.len());
         let mut safe_calls = Vec::new();
         let mut confirm_calls = Vec::new();
 
@@ -345,6 +404,7 @@ where
                 biased;
                 _ = &mut cancel => {
                     on_event(TurnEvent::Done);
+                    flush_with_cancel_pairing(&mut messages, tool_results);
                     let new_messages = messages[turn_start_idx..].to_vec();
                     return Ok(TurnOutput {
                         new_messages,
@@ -385,6 +445,7 @@ where
                     biased;
                     _ = &mut cancel => {
                         on_event(TurnEvent::Done);
+                        flush_with_cancel_pairing(&mut messages, tool_results);
                         let new_messages = messages[turn_start_idx..].to_vec();
                         return Ok(TurnOutput {
                             new_messages,

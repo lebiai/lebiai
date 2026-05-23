@@ -34,5 +34,12 @@ pub enum ChatStreamEvent {
     },
     #[serde(rename_all = "camelCase")]
     Error { message: String },
+    #[serde(rename_all = "camelCase")]
+    SkillCandidateProposed {
+        name: String,
+        description: String,
+        body: String,
+        triggers: Vec<String>,
+    },
     Done,
 }

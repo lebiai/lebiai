@@ -544,6 +544,47 @@ fn persist_skill(store: &FsSkillStore, c: &SkillCandidate) -> Result<PathBuf> {
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+/// Interactively review a single skill candidate proposed mid-session (e.g.
+/// by the `propose_skill` tool). Accept → write to skill store; Reject /
+/// Defer → just log the decision. Used by the chat loop's drain step.
+pub(crate) async fn review_proposed_skill(
+    c: &SkillCandidate,
+    session_id: &str,
+    skill_store: &FsSkillStore,
+) -> Result<()> {
+    let stdin = tokio::io::stdin();
+    let mut reader = BufReader::new(stdin).lines();
+
+    eprintln!("\n\x1b[1m\x1b[36m== Proposed skill (from agent) ==\x1b[0m");
+    let outcome = prompt_skill(c, 1, 1, &mut reader).await?;
+    match outcome {
+        Some(Action::Accept) => match persist_skill(skill_store, c) {
+            Ok(path) => eprintln!("  ✓ wrote {}", path.display()),
+            Err(e) => eprintln!("  ✗ failed to persist: {e:#}"),
+        },
+        Some(Action::Reject) => eprintln!("  (rejected)"),
+        Some(Action::Defer) => eprintln!("  (deferred — appears next session)"),
+        None => eprintln!("  (stdin closed; skipping)"),
+    }
+    if let Some(act) = outcome {
+        log_action(
+            session_id,
+            hermes_reflect::CandidateKind::Skill,
+            &c.name,
+            map_action(act),
+        );
+    } else {
+        // stdin closed — still log as cancelled.
+        log_action(
+            session_id,
+            hermes_reflect::CandidateKind::Skill,
+            &c.name,
+            hermes_reflect::ActionTaken::Cancelled,
+        );
+    }
+    Ok(())
+}
+
 fn persist_memory(store: &FsMemoryStore, c: &MemoryCandidate) -> Result<PathBuf> {
     let mut fm = MemoryFrontmatter::new(MemorySource::Reflection, c.confidence, c.tags.clone(), "general".to_string());
     fm.supersedes = c.supersedes.clone();

@@ -83,6 +83,12 @@ pub async fn send_message(
     let history = active_session.session.messages.clone();
     drop(sessions);
 
+    // Snapshot for the propose_skill tool to read mid-turn. Must be set
+    // before run_turn fires because the tool may be invoked during it.
+    if let Ok(mut guard) = state.propose_messages.write() {
+        *guard = history.clone();
+    }
+
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
     state
         .cancel_tokens
@@ -98,6 +104,7 @@ pub async fn send_message(
     let sid = session_id.clone();
     let sessions_arc = state.sessions.clone();
     let cancel_tokens_arc = state.cancel_tokens.clone();
+    let propose_queue = state.propose_queue.clone();
 
     tokio::spawn(async move {
         let config = TurnConfig {
@@ -187,6 +194,24 @@ pub async fn send_message(
             Err(e) => {
                 tracing::warn!(error=%e, "turn failed");
             }
+        }
+
+        // Drain any skill candidates the `propose_skill` tool queued during
+        // the turn; surface them to the frontend so the approval UI can
+        // run them through the same modal as `/reflect` candidates.
+        let drained: Vec<hermes_reflect::SkillCandidate> = {
+            match propose_queue.lock() {
+                Ok(mut q) => q.drain(..).collect(),
+                Err(_) => Vec::new(),
+            }
+        };
+        for c in drained {
+            let _ = on_event.send(ChatStreamEvent::SkillCandidateProposed {
+                name: c.name,
+                description: c.description,
+                body: c.body,
+                triggers: c.triggers,
+            });
         }
 
         cancel_tokens_arc.lock().await.remove(&sid);

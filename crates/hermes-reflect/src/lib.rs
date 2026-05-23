@@ -9,6 +9,7 @@
 
 pub mod compile;
 pub mod deferred;
+pub mod focused;
 pub mod log;
 pub mod micro;
 pub mod output;
@@ -17,6 +18,7 @@ pub mod runner;
 
 pub use compile::{compile_palace_index, compile_profile, compile_zone_summary};
 pub use deferred::{DeferredCandidate, save as deferred_save, load as deferred_load, clear as deferred_clear};
+pub use focused::reflect_focused;
 pub use log::{
     append as log_append, default_log_path as log_default_path, read_all as log_read_all,
     stats as log_stats, ActionTaken, CandidateKind, ReflectLogEntry, Stats,

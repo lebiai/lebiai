@@ -30,6 +30,7 @@ interface ChatState {
   outputTokens: number;
   lastReflection: { summary: string; memoryCount: number; skillCount: number } | null;
   pendingConfirm: PendingConfirm | null;
+  proposedSkills: { name: string; description: string; body: string; triggers: string[] }[];
 
   fetchSessions: () => Promise<void>;
   newSession: () => Promise<void>;
@@ -39,6 +40,8 @@ interface ChatState {
   cancelStream: () => void;
   clearReflection: () => void;
   respondConfirm: (action: ConfirmAction, reason?: string) => Promise<void>;
+  acceptProposedSkill: (name: string) => Promise<void>;
+  dismissProposedSkill: (name: string) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -53,6 +56,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   outputTokens: 0,
   lastReflection: null,
   pendingConfirm: null,
+  proposedSkills: [],
 
   fetchSessions: async () => {
     const sessions = await invoke<SessionSummary[]>("list_sessions");
@@ -179,6 +183,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         case "microReflection":
           set({ lastReflection: event.data });
           break;
+        case "skillCandidateProposed":
+          set((s) => {
+            if (s.proposedSkills.some((p) => p.name === event.data.name)) {
+              return {};
+            }
+            return { proposedSkills: [...s.proposedSkills, event.data] };
+          });
+          break;
         case "done": {
           const state = get();
           const blocks: ContentBlock[] = [];
@@ -249,4 +261,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
       reason: reason && reason.trim() ? reason : null,
     });
   },
+
+  acceptProposedSkill: async (name) => {
+    const candidate = get().proposedSkills.find((p) => p.name === name);
+    if (!candidate) return;
+    try {
+      await invoke("accept_skill_candidate", {
+        name: candidate.name,
+        description: candidate.description,
+        triggers: candidate.triggers,
+        body: candidate.body,
+      });
+    } finally {
+      set((s) => ({ proposedSkills: s.proposedSkills.filter((p) => p.name !== name) }));
+    }
+  },
+
+  dismissProposedSkill: (name) =>
+    set((s) => ({ proposedSkills: s.proposedSkills.filter((p) => p.name !== name) })),
 }));

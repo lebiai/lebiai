@@ -1,15 +1,16 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result};
 use hermes_core::{LlmProvider, Session, SessionMeta, ToolHost, ToolSpec};
 use hermes_llm::Config;
 use hermes_mcp::{McpConfig, McpToolHost, ServerSpec};
 use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore};
+use hermes_reflect::SkillCandidate;
 use hermes_skills::{FsSkillStore, LoadedSkill, SkillStore};
 use hermes_store::SessionWriter;
-use hermes_tools::{BuiltinToolHost, CompositeToolHost};
+use hermes_tools::{BuiltinToolHost, CompositeToolHost, ProposeContext};
 use tokio::sync::Mutex;
 
 pub type Sessions = Arc<Mutex<HashMap<String, ActiveSession>>>;
@@ -20,6 +21,8 @@ pub type ConfirmTokens =
 /// a tool confirmation. Lives only for the lifetime of the GUI process; to
 /// persist allow rules, the user edits `config.toml` directly.
 pub type AlwaysAllowedTools = Arc<Mutex<HashSet<String>>>;
+pub type ProposeMessages = Arc<RwLock<Vec<hermes_core::Message>>>;
+pub type ProposeQueue = Arc<std::sync::Mutex<Vec<SkillCandidate>>>;
 
 #[allow(dead_code)]
 pub struct AppState {
@@ -36,6 +39,8 @@ pub struct AppState {
     pub skills: Mutex<Vec<LoadedSkill>>,
     pub pinned_memories: Mutex<Vec<LoadedMemory>>,
     pub active_memories: Mutex<Vec<LoadedMemory>>,
+    pub propose_messages: ProposeMessages,
+    pub propose_queue: ProposeQueue,
 }
 
 #[allow(dead_code)]
@@ -57,7 +62,15 @@ impl AppState {
         let workspace_root = base.join("workspace");
         std::fs::create_dir_all(&workspace_root)?;
 
-        let host = load_tool_host(&workspace_root).await?;
+        let propose_messages: ProposeMessages = Arc::new(RwLock::new(Vec::new()));
+        let propose_queue: ProposeQueue = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let propose_ctx = Arc::new(ProposeContext {
+            provider: provider.clone(),
+            messages: propose_messages.clone(),
+            queue: propose_queue.clone(),
+        });
+
+        let host = load_tool_host(&workspace_root, Some(propose_ctx)).await?;
         let tools = host.list_tools().await.unwrap_or_default();
 
         let skill_store = FsSkillStore::new(base.join("skills"), None);
@@ -85,6 +98,8 @@ impl AppState {
             skills: Mutex::new(skills),
             pinned_memories: Mutex::new(pinned),
             active_memories: Mutex::new(all_memories),
+            propose_messages,
+            propose_queue,
         })
     }
 
@@ -107,8 +122,14 @@ impl AppState {
     }
 }
 
-async fn load_tool_host(workspace_root: &Path) -> Result<Arc<dyn ToolHost>> {
-    let builtin = BuiltinToolHost::new(workspace_root.to_path_buf());
+async fn load_tool_host(
+    workspace_root: &Path,
+    propose_ctx: Option<Arc<ProposeContext>>,
+) -> Result<Arc<dyn ToolHost>> {
+    let mut builtin = BuiltinToolHost::new(workspace_root.to_path_buf());
+    if let Some(ctx) = propose_ctx {
+        builtin = builtin.with_propose_ctx(ctx);
+    }
 
     let mut cfg = McpConfig::load_default().unwrap_or_else(|_| McpConfig {
         servers: Default::default(),

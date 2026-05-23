@@ -6,6 +6,7 @@ export type ChatStreamEvent =
   | { event: "confirmRequired"; data: { id: string; toolName: string; summary: string } }
   | { event: "usageUpdate"; data: { inputTokens: number; outputTokens: number } }
   | { event: "microReflection"; data: { summary: string; memoryCount: number; skillCount: number } }
+  | { event: "skillCandidateProposed"; data: { name: string; description: string; body: string; triggers: string[] } }
   | { event: "error"; data: { message: string } }
   | { event: "done" };
 

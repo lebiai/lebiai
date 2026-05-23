@@ -4,6 +4,7 @@ import { MessageBubble } from "./MessageBubble";
 import { InputArea } from "./InputArea";
 import { StreamingBubble } from "./StreamingBubble";
 import { ConfirmModal } from "./ConfirmModal";
+import { ProposedSkillModal } from "./ProposedSkillModal";
 import { Sparkles, X } from "lucide-react";
 import { useUiStore } from "../../store/uiStore";
 
@@ -82,6 +83,7 @@ export function ChatView() {
 
       <InputArea />
       <ConfirmModal />
+      <ProposedSkillModal />
     </div>
   );
 }

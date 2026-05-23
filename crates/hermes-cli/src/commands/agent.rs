@@ -31,7 +31,7 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
     let memory_store_arc: Arc<dyn MemoryStore> = Arc::new(
         FsMemoryStore::standard().map_err(|e| anyhow::anyhow!("memory store: {e}"))?,
     );
-    let host = load_tool_host(&workspace_root, Some(memory_store_arc.clone())).await?;
+    let host = load_tool_host(&workspace_root, Some(memory_store_arc.clone()), None).await?;
     let tools = host
         .list_tools()
         .await

@@ -13,7 +13,7 @@ mod commands;
 mod system_prompt;
 mod turn;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{Context, Result};
 use hermes_core::{
@@ -23,6 +23,7 @@ use hermes_llm::Config;
 use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore};
 use hermes_skills::{FsSkillStore, LoadedSkill, SkillStore};
 use hermes_store::SessionWriter;
+use hermes_tools::ProposeContext;
 
 use super::context::ContextSources;
 use super::readline::{ChatLineEditor, LineOutcome};
@@ -50,7 +51,26 @@ pub async fn run(
     let memory_store_arc: Arc<dyn MemoryStore> = Arc::new(
         FsMemoryStore::standard().map_err(|e| anyhow::anyhow!("memory store: {e}"))?,
     );
-    let host = load_tool_host(&workspace_root, Some(memory_store_arc.clone())).await?;
+
+    // Wire up propose_skill: a shared message snapshot (kept in sync by the
+    // chat loop) + a queue the tool pushes candidates onto. The chat loop
+    // drains the queue after each turn and runs the interactive approval.
+    let propose_messages: Arc<RwLock<Vec<hermes_core::Message>>> =
+        Arc::new(RwLock::new(Vec::new()));
+    let propose_queue: Arc<Mutex<Vec<hermes_reflect::SkillCandidate>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let propose_ctx = Arc::new(ProposeContext {
+        provider: provider.clone(),
+        messages: propose_messages.clone(),
+        queue: propose_queue.clone(),
+    });
+
+    let host = load_tool_host(
+        &workspace_root,
+        Some(memory_store_arc.clone()),
+        Some(propose_ctx),
+    )
+    .await?;
     let tools = host
         .list_tools()
         .await
@@ -338,6 +358,12 @@ pub async fn run(
         let pre_input = session.total_input_tokens;
         let pre_output = session.total_output_tokens;
 
+        // Sync the snapshot the propose_skill tool reads from. Must happen
+        // before the turn runs because the tool may fire mid-turn.
+        if let Ok(mut guard) = propose_messages.write() {
+            *guard = session.messages.clone();
+        }
+
         match turn::run_one_turn(
             provider.as_ref(),
             host.as_ref(),
@@ -367,6 +393,27 @@ pub async fn run(
                 }
             }
             Err(e) => eprintln!("turn error: {e:#}"),
+        }
+
+        // Drain any skill candidates the `propose_skill` tool queued during
+        // the turn, then run the interactive approval. Reuses the same UI
+        // path as `/reflect` so the approval gate stays uniform.
+        let proposed: Vec<hermes_reflect::SkillCandidate> = {
+            match propose_queue.lock() {
+                Ok(mut q) => q.drain(..).collect(),
+                Err(_) => Vec::new(),
+            }
+        };
+        for c in &proposed {
+            if let Err(e) = super::reflect::review_proposed_skill(
+                c,
+                &session.meta.id,
+                &skill_store,
+            )
+            .await
+            {
+                tracing::warn!(error=%e, "review proposed skill failed");
+            }
         }
 
         // Record SkillEvent::Used / MemoryEvent::Referenced when the turn

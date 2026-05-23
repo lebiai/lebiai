@@ -20,7 +20,7 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
     let provider = build_active_provider(&cfg)?;
 
     let workspace_root = cfg.workspace.root.clone();
-    let host = load_tool_host(&workspace_root, None).await?;
+    let host = load_tool_host(&workspace_root, None, None).await?;
     let tools = host
         .list_tools()
         .await

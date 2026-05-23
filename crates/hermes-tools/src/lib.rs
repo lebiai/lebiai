@@ -13,6 +13,7 @@ pub mod memory;
 pub mod palace;
 pub mod read;
 pub mod safety;
+pub mod skill_propose;
 pub mod think;
 pub mod todo;
 pub mod web_fetch;
@@ -26,11 +27,14 @@ use async_trait::async_trait;
 use hermes_core::{Error, Result, ToolCallOutcome, ToolHost, ToolSpec};
 use hermes_memory::MemoryStore;
 
+pub use skill_propose::{ProposeContext, SessionMessages, SkillProposeQueue};
+
 const BASIC_TOOLS: &[&str] = &["read", "write", "edit", "bash", "glob", "grep", "git"];
 
 pub struct BuiltinToolHost {
     workspace: PathBuf,
     memory_store: Option<Arc<dyn MemoryStore>>,
+    propose_ctx: Option<Arc<ProposeContext>>,
 }
 
 impl BuiltinToolHost {
@@ -38,6 +42,7 @@ impl BuiltinToolHost {
         Self {
             workspace,
             memory_store: None,
+            propose_ctx: None,
         }
     }
 
@@ -46,10 +51,27 @@ impl BuiltinToolHost {
         self
     }
 
+    pub fn with_propose_ctx(mut self, ctx: Arc<ProposeContext>) -> Self {
+        self.propose_ctx = Some(ctx);
+        self
+    }
+
     pub fn handles(&self, name: &str) -> bool {
         BASIC_TOOLS.contains(&name)
             || todo::handles(name)
-            || matches!(name, "think" | "web_fetch" | "web_search" | "memory_search" | "memory_save" | "memory_delete" | "palace_zones" | "palace_read_zone" | "palace_recall")
+            || matches!(
+                name,
+                "think"
+                    | "web_fetch"
+                    | "web_search"
+                    | "memory_search"
+                    | "memory_save"
+                    | "memory_delete"
+                    | "palace_zones"
+                    | "palace_read_zone"
+                    | "palace_recall"
+                    | "propose_skill"
+            )
     }
 }
 
@@ -76,6 +98,9 @@ impl ToolHost for BuiltinToolHost {
             tools.push(palace::zones_spec());
             tools.push(palace::read_zone_spec());
             tools.push(palace::recall_spec());
+        }
+        if self.propose_ctx.is_some() {
+            tools.push(skill_propose::spec());
         }
         Ok(tools)
     }
@@ -127,6 +152,12 @@ impl ToolHost for BuiltinToolHost {
                     Error::ToolHost("palace_recall: no memory store configured".into())
                 })?;
                 palace::recall_run(store.as_ref(), args).await
+            }
+            "propose_skill" => {
+                let ctx = self.propose_ctx.as_ref().ok_or_else(|| {
+                    Error::ToolHost("propose_skill: not wired up (provider/session missing)".into())
+                })?;
+                skill_propose::run(ctx, args).await
             }
             n if todo::handles(n) => todo::run(&self.workspace, n, args).await,
             _ => Err(Error::ToolHost(format!("unknown built-in tool: {name}"))),

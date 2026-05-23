@@ -10,6 +10,7 @@ description = "Built-in tools: read, write, edit, bash, glob, grep"
 [dependencies]
 hermes-core = { workspace = true }
 hermes-memory = { workspace = true }
+hermes-reflect = { workspace = true }
 tokio = { workspace = true, features = ["process", "fs"] }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
