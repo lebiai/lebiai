@@ -70,6 +70,20 @@ enum Command {
         #[arg(long, default_value_t = 50)]
         last: usize,
     },
+
+    /// WeChat (iLink Bot) bridge: scan QR in the terminal, chat with the model
+    /// from WeChat.
+    #[command(subcommand)]
+    Wechat(WechatCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum WechatCmd {
+    /// Render a terminal QR; scan it in WeChat to authorize this machine.
+    /// Persists `bot_token` to `~/.small-rust-hermes/wechat.toml` (mode 600).
+    Login,
+    /// Long-poll for incoming WeChat messages and reply with the Hermes model.
+    Run,
 }
 
 #[derive(Subcommand, Debug)]
@@ -209,6 +223,10 @@ async fn main() -> Result<()> {
             SessionCmd::Show { path } => commands::session::show(&path),
         },
         Command::ReflectStats { last } => commands::reflect_stats::run(last),
+        Command::Wechat(sub) => match sub {
+            WechatCmd::Login => commands::wechat::login().await,
+            WechatCmd::Run => commands::wechat::run().await,
+        },
     }
 }
 

@@ -21,6 +21,7 @@ hermes-memory = { workspace = true }
 hermes-tools = { workspace = true }
 hermes-reflect = { workspace = true }
 hermes-turn = { workspace = true }
+hermes-weixin = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
