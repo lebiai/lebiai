@@ -230,4 +230,35 @@ Minimum Rust version: 1.78 (edition 2021).
 
 ## License
 
-MIT OR Apache-2.0
+This project is licensed under the **PolyForm Noncommercial License 1.0.0** —
+see the [LICENSE](./LICENSE) file for the full text.
+
+**TL;DR:**
+
+- ✅ **Free for noncommercial use** — personal study, research, hobby projects,
+  teaching, and use inside non-profits / educational / governmental /
+  charitable organizations.
+- ❌ **Commercial use is not permitted without a paid license** — this
+  includes building paid products on top of it, deploying it inside a
+  for-profit company's workflow, or using its output as part of any
+  revenue-generating activity.
+- ❌ **Reselling, sublicensing, or repackaging for a fee is prohibited** —
+  even with attribution.
+
+**许可摘要（中文）：**
+
+- ✅ **非商业用途免费**：个人学习、研究、业余项目、教学，以及在非营利
+  组织 / 学校 / 政府机构 / 慈善机构内部使用，均无需付费。
+- ❌ **未经书面授权禁止任何商业用途**：包括但不限于构建付费产品、
+  在营利性公司内部工作流中部署、使用其输出物开展营利活动。
+- ❌ **禁止售卖、转售、再许可、收费转发或重新打包**——即使附带
+  原作者署名也不行。
+
+### Commercial Licensing / 商业授权
+
+如需将本项目用于任何商业场景，请联系作者获取商业授权：
+
+- **作者 / Author:** 老码小张
+- **联系邮箱 / Contact:** [1595819400@qq.com](mailto:1595819400@qq.com)
+
+商业授权可根据使用范围、规模和场景一事一议，欢迎来信沟通。
