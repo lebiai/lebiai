@@ -9,6 +9,7 @@ members = [
     "crates/hermes-cli",
     "crates/hermes-gui", "crates/hermes-skills", "crates/hermes-memory", "crates/hermes-tools",
     "crates/hermes-turn",
+    "crates/hermes-weixin",
 ]
 
 [workspace.package]
@@ -68,6 +69,7 @@ hermes-memory = { path = "crates/hermes-memory" }
 hermes-tools = { path = "crates/hermes-tools" }
 hermes-reflect = { path = "crates/hermes-reflect" }
 hermes-turn = { path = "crates/hermes-turn" }
+hermes-weixin = { path = "crates/hermes-weixin" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

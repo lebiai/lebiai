@@ -29,7 +29,7 @@ use super::context::ContextSources;
 use super::readline::{ChatLineEditor, LineOutcome};
 use super::util::{build_active_provider, load_tool_host, session_path_for};
 
-pub(crate) use system_prompt::compose_system_prompt;
+pub(crate) use system_prompt::{compose_system_prompt, inject_time_header};
 
 struct SessionStats {
     turn_count: usize,

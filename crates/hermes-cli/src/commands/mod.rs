@@ -13,3 +13,4 @@ pub mod reflect_stats;
 pub mod session;
 pub mod skills;
 pub mod util;
+pub mod wechat;
