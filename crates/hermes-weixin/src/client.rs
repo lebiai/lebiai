@@ -22,7 +22,7 @@ const AUTH_TYPE: &str = "ilink_bot_token";
 /// of network jitter. Matches the value used by the official client.
 const LONG_POLL_HTTP_TIMEOUT: Duration = Duration::from_secs(38);
 /// Per-call default for non-long-poll endpoints (login, sendmessage…).
-const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// HTTP client. Construct with [`Client::new`] (anonymous, only for the QR
 /// login flow) or [`Client::with_token`] (authenticated).
@@ -145,9 +145,32 @@ impl Client {
 
     pub async fn send_message(&self, msg: WeixinMessage) -> Result<SendMessageResp> {
         let body = SendMessageReq { msg };
-        let env: ApiEnvelope<SendMessageResp> =
-            self.post_json("/ilink/bot/sendmessage", &body, None).await?;
-        check_ret(env)
+        let path = "/ilink/bot/sendmessage";
+        // Retry once on transport-level failures (timeout / connect drop).
+        // Application-level errors (HTTP 4xx, ret≠0, decode) propagate
+        // immediately — those are not transient.
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..2 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            match self
+                .post_json::<_, ApiEnvelope<SendMessageResp>>(path, &body, None)
+                .await
+            {
+                Ok(env) => return check_ret(env),
+                Err(e) if is_transient_transport_error(&e) => {
+                    tracing::warn!(
+                        attempt,
+                        error = %format!("{e:#}"),
+                        "sendmessage transient transport failure; retrying"
+                    );
+                    last_err = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("sendmessage: exhausted retries")))
     }
 
     /// Send a typing indicator. Best-effort: errors are non-fatal for callers.
@@ -210,6 +233,26 @@ fn check_ret<T>(env: ApiEnvelope<T>) -> Result<T> {
         ));
     }
     Ok(env.data)
+}
+
+/// True if the error looks like a transport-level failure worth retrying.
+/// Conservative: only matches reqwest's well-known transport markers, so
+/// application-level errors (4xx, ret≠0, JSON decode) don't get retried.
+fn is_transient_transport_error(e: &anyhow::Error) -> bool {
+    // First try a clean downcast through the chain — `with_context` wraps
+    // `reqwest::Error`, which preserves the source.
+    for cause in e.chain() {
+        if let Some(re) = cause.downcast_ref::<reqwest::Error>() {
+            return re.is_timeout() || re.is_connect() || re.is_request();
+        }
+    }
+    // Fallback: string-match the rendered chain. Covers cases where the
+    // reqwest error has already been converted to a plain anyhow message.
+    let s = format!("{e:#}").to_lowercase();
+    s.contains("timed out")
+        || s.contains("operation timed out")
+        || s.contains("connection")
+        || s.contains("error sending request")
 }
 
 /// `X-WECHAT-UIN`: base64(decimal-string(random u32)).
