@@ -8,6 +8,7 @@ use hermes_core::{LlmProvider, SessionMeta, ToolHost};
 use hermes_llm::Config;
 use hermes_mcp::{McpConfig, McpToolHost, ServerSpec};
 use hermes_memory::MemoryStore;
+use hermes_skills::SkillStore;
 use hermes_tools::{BuiltinToolHost, CompositeToolHost, ProposeContext};
 
 /// Build the active [`LlmProvider`] selected by `default_provider` in
@@ -34,9 +35,14 @@ pub fn session_path_for(meta: &SessionMeta) -> Result<PathBuf> {
 /// Pass `propose_ctx = Some(...)` to enable the `propose_skill` tool; pass
 /// `None` for one-shot modes (e.g. `hermes ask`) where reflective skill
 /// drafting doesn't apply.
+///
+/// Pass `skill_store = Some(...)` to enable the `skill_list` / `skill_read` /
+/// `skill_read_file` / `skill_create` tools — the Activation and Execution
+/// stages of the Agent Skills Progressive Disclosure model.
 pub async fn load_tool_host(
     workspace_root: &Path,
     memory_store: Option<Arc<dyn MemoryStore>>,
+    skill_store: Option<Arc<dyn SkillStore>>,
     propose_ctx: Option<Arc<ProposeContext>>,
 ) -> Result<Arc<dyn ToolHost>> {
     std::fs::create_dir_all(workspace_root).with_context(|| {
@@ -46,6 +52,9 @@ pub async fn load_tool_host(
     let mut builtin = BuiltinToolHost::new(workspace_root.to_path_buf());
     if let Some(store) = memory_store {
         builtin = builtin.with_memory_store(store);
+    }
+    if let Some(store) = skill_store {
+        builtin = builtin.with_skill_store(store);
     }
     if let Some(ctx) = propose_ctx {
         builtin = builtin.with_propose_ctx(ctx);

@@ -31,7 +31,17 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
     let memory_store_arc: Arc<dyn MemoryStore> = Arc::new(
         FsMemoryStore::standard().map_err(|e| anyhow::anyhow!("memory store: {e}"))?,
     );
-    let host = load_tool_host(&workspace_root, Some(memory_store_arc.clone()), None).await?;
+    let skill_store_arc: Arc<FsSkillStore> = Arc::new(
+        FsSkillStore::standard().map_err(|e| anyhow::anyhow!("skill store: {e}"))?,
+    );
+    super::chat::auto_install_palace_skill(skill_store_arc.as_ref());
+    let host = load_tool_host(
+        &workspace_root,
+        Some(memory_store_arc.clone()),
+        Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
+        None,
+    )
+    .await?;
     let tools = host
         .list_tools()
         .await
@@ -41,12 +51,7 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
     let system = super::chat::compose_system_prompt(system, &workspace_root);
 
     // --- skills & memories snapshot ---
-    let skill_store = FsSkillStore::standard()
-        .map_err(|e| anyhow::anyhow!("skill store: {e}"))?;
-
-    // --- Memory Palace: auto-install skill, build index, collect always-active ---
-    super::chat::auto_install_palace_skill(&skill_store);
-    let all_skills: Vec<LoadedSkill> = skill_store
+    let all_skills: Vec<LoadedSkill> = skill_store_arc
         .list()
         .map_err(|e| anyhow::anyhow!("listing skills: {e}"))?;
     let always_active_refs: Vec<&LoadedSkill> = all_skills

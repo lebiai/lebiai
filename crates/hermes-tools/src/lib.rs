@@ -13,6 +13,7 @@ pub mod memory;
 pub mod palace;
 pub mod read;
 pub mod safety;
+pub mod skill;
 pub mod skill_propose;
 pub mod think;
 pub mod todo;
@@ -26,6 +27,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use hermes_core::{Error, Result, ToolCallOutcome, ToolHost, ToolSpec};
 use hermes_memory::MemoryStore;
+use hermes_skills::SkillStore;
 
 pub use skill_propose::{ProposeContext, SessionMessages, SkillProposeQueue};
 
@@ -34,6 +36,7 @@ const BASIC_TOOLS: &[&str] = &["read", "write", "edit", "bash", "glob", "grep", 
 pub struct BuiltinToolHost {
     workspace: PathBuf,
     memory_store: Option<Arc<dyn MemoryStore>>,
+    skill_store: Option<Arc<dyn SkillStore>>,
     propose_ctx: Option<Arc<ProposeContext>>,
 }
 
@@ -42,12 +45,18 @@ impl BuiltinToolHost {
         Self {
             workspace,
             memory_store: None,
+            skill_store: None,
             propose_ctx: None,
         }
     }
 
     pub fn with_memory_store(mut self, store: Arc<dyn MemoryStore>) -> Self {
         self.memory_store = Some(store);
+        self
+    }
+
+    pub fn with_skill_store(mut self, store: Arc<dyn SkillStore>) -> Self {
+        self.skill_store = Some(store);
         self
     }
 
@@ -70,6 +79,10 @@ impl BuiltinToolHost {
                     | "palace_zones"
                     | "palace_read_zone"
                     | "palace_recall"
+                    | "skill_list"
+                    | "skill_read"
+                    | "skill_read_file"
+                    | "skill_create"
                     | "propose_skill"
             )
     }
@@ -98,6 +111,12 @@ impl ToolHost for BuiltinToolHost {
             tools.push(palace::zones_spec());
             tools.push(palace::read_zone_spec());
             tools.push(palace::recall_spec());
+        }
+        if self.skill_store.is_some() {
+            tools.push(skill::list_spec());
+            tools.push(skill::read_spec());
+            tools.push(skill::read_file_spec());
+            tools.push(skill::create_spec());
         }
         if self.propose_ctx.is_some() {
             tools.push(skill_propose::spec());
@@ -152,6 +171,30 @@ impl ToolHost for BuiltinToolHost {
                     Error::ToolHost("palace_recall: no memory store configured".into())
                 })?;
                 palace::recall_run(store.as_ref(), args).await
+            }
+            "skill_list" => {
+                let store = self.skill_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("skill_list: no skill store configured".into())
+                })?;
+                skill::list_run(store.as_ref()).await
+            }
+            "skill_read" => {
+                let store = self.skill_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("skill_read: no skill store configured".into())
+                })?;
+                skill::read_run(store.as_ref(), args).await
+            }
+            "skill_read_file" => {
+                let store = self.skill_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("skill_read_file: no skill store configured".into())
+                })?;
+                skill::read_file_run(store.as_ref(), args).await
+            }
+            "skill_create" => {
+                let store = self.skill_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("skill_create: no skill store configured".into())
+                })?;
+                skill::create_run(store.as_ref(), args).await
             }
             "propose_skill" => {
                 let ctx = self.propose_ctx.as_ref().ok_or_else(|| {

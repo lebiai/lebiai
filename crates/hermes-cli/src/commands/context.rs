@@ -1,7 +1,8 @@
 //! Per-turn context assembly: stitch base system prompt + pinned memories
-//! + active memory index + skills index (+ matched-skill bodies) into the
-//!
-//! `system` string sent to the LLM.
+//! + active memory index + skills discovery index into the `system` string
+//! sent to the LLM. Skill bodies are NOT injected here — the LLM activates
+//! a skill by calling the `skill_read` tool when it decides one is relevant
+//! (Agent Skills "Progressive Disclosure": Discovery → Activation → Execution).
 //!
 //! Layout:
 //! ```text
@@ -13,12 +14,9 @@
 //! ## Active memory index
 //! - <id>: <one-line summary>
 //!
-//! ## Available skills (use the body only when you decide to)
+//! ## Available skills
+//! <usage instruction telling the LLM to call skill_read>
 //! - <name>: <description>
-//!
-//! ## Skills triggered for this turn
-//! ### <name>
-//! <full body>
 //! ```
 
 use std::collections::HashMap;
@@ -95,7 +93,12 @@ impl<'a> ContextSources<'a> {
         }
 
         if !self.all_skills.is_empty() {
-            buf.push_str("## Available skills (use the body only when you decide to)\n");
+            buf.push_str("## Available skills\n");
+            buf.push_str(
+                "Each entry below is just a skill's name and one-line description — the body is NOT loaded yet. \
+When a user's request matches one of these, call the `skill_read` tool with the skill's name to load its full instructions before acting. \
+Do not invent capabilities that aren't listed; do not paraphrase a skill from memory — read it first.\n\n",
+            );
             for s in self.all_skills.iter().take(self.limits.skill_index_cap) {
                 buf.push_str(&format!(
                     "- {}: {}\n",
@@ -115,7 +118,9 @@ impl<'a> ContextSources<'a> {
     }
 
     /// Build the per-turn system prompt: session-level prefix + relevant
-    /// memory bodies + the bodies of the skills triggered by this user turn.
+    /// memory bodies. Skill bodies are NOT injected here — the discovery
+    /// index lives in `build_session_system`, and the LLM activates a skill
+    /// by calling the `skill_read` tool when it decides one is relevant.
     pub fn build_turn_system(&self, user_query: &str) -> String {
         let mut buf = self.build_session_system();
 
@@ -144,24 +149,11 @@ impl<'a> ContextSources<'a> {
             }
         }
 
-        let matched = hermes_skills::match_for_query_with_effectiveness(
-            self.all_skills,
-            user_query,
-            self.limits.triggered_skill_cap,
-            self.effectiveness,
-        );
-        if matched.is_empty() {
-            return buf.trim_end().to_string();
-        }
-        if !buf.is_empty() {
-            buf.push_str("\n\n");
-        }
-        buf.push_str("## Skills triggered for this turn\n\n");
-        for s in matched {
-            buf.push_str(&format!("### {}\n", s.frontmatter.name));
-            buf.push_str(s.body.trim());
-            buf.push_str("\n\n");
-        }
+        // Skill effectiveness is currently unread post-token-matcher removal;
+        // keeping the field on the struct so callers don't have to be updated
+        // when we wire it back in for ordering the discovery index.
+        let _ = self.effectiveness;
+
         buf.trim_end().to_string()
     }
 }
@@ -267,7 +259,10 @@ mod tests {
     }
 
     #[test]
-    fn build_turn_system_injects_matched_skill_body() {
+    fn build_turn_system_does_not_inject_skill_bodies() {
+        // Skills are now discovered via the index + activated via the
+        // `skill_read` tool. The per-turn prompt must NOT inline any
+        // skill body, even when the user query matches the triggers.
         let sk = skill(
             "rust-error",
             "switch unwrap to anyhow",
@@ -287,28 +282,16 @@ mod tests {
             limits: ContextLimits::default(),
         };
         let s = sources.build_turn_system("please rewrite the rust unwrap calls");
-        assert!(s.contains("Skills triggered for this turn"));
-        assert!(s.contains("### rust-error"));
-        assert!(s.contains("step 1: find unwrap"));
-    }
-
-    #[test]
-    fn build_turn_system_skips_section_when_no_match() {
-        let sk = skill("python-x", "py", &["python"], "py body");
-        let sources = ContextSources {
-            base: None,
-            palace_index: None,
-            compiled_profile: None,
-            always_active_skills: &[],
-            pinned: &[],
-            active: &[],
-            all_skills: &[sk],
-            effectiveness: None,
-            memory_effectiveness: None,
-            limits: ContextLimits::default(),
-        };
-        let s = sources.build_turn_system("rust unwrap question");
-        assert!(!s.contains("Skills triggered"));
+        assert!(s.contains("Available skills"), "discovery index must appear");
+        assert!(s.contains("rust-error: switch unwrap to anyhow"));
+        assert!(
+            !s.contains("Skills triggered"),
+            "per-turn skill injection has been removed"
+        );
+        assert!(
+            !s.contains("step 1: find unwrap"),
+            "skill body must NOT be inlined — LLM should call skill_read instead"
+        );
     }
 
     #[test]
@@ -408,8 +391,18 @@ mod tests {
         };
         let s = sources.build_turn_system("rewrite rust unwrap calls");
         assert!(s.contains("User Profile"), "profile should be present");
-        assert!(s.contains("Skills triggered"), "skills should still trigger");
-        assert!(s.contains("step 1: find unwrap"), "skill body should be injected");
+        assert!(
+            s.contains("Available skills"),
+            "discovery index should still appear"
+        );
+        assert!(
+            s.contains("rust-error: switch unwrap to anyhow"),
+            "skill name + description should be in discovery"
+        );
+        assert!(
+            !s.contains("step 1: find unwrap"),
+            "skill body must NOT be inlined post-token-matcher removal"
+        );
     }
 
     #[test]

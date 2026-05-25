@@ -51,6 +51,10 @@ pub async fn run(
     let memory_store_arc: Arc<dyn MemoryStore> = Arc::new(
         FsMemoryStore::standard().map_err(|e| anyhow::anyhow!("memory store: {e}"))?,
     );
+    let skill_store_arc: Arc<FsSkillStore> = Arc::new(
+        FsSkillStore::standard().map_err(|e| anyhow::anyhow!("skill store: {e}"))?,
+    );
+    auto_install_palace_skill(skill_store_arc.as_ref());
 
     // Wire up propose_skill: a shared message snapshot (kept in sync by the
     // chat loop) + a queue the tool pushes candidates onto. The chat loop
@@ -68,6 +72,7 @@ pub async fn run(
     let host = load_tool_host(
         &workspace_root,
         Some(memory_store_arc.clone()),
+        Some(skill_store_arc.clone() as Arc<dyn hermes_skills::SkillStore>),
         Some(propose_ctx),
     )
     .await?;
@@ -83,9 +88,6 @@ pub async fn run(
     let system = compose_system_prompt(system, &workspace_root);
 
     // ---- skill / memory snapshot for this session ----
-    let skill_store = FsSkillStore::standard()
-        .map_err(|e| anyhow::anyhow!("skill store: {e}"))?;
-
     let active_memories: Vec<LoadedMemory> = memory_store_arc
         .list_active()
         .map_err(|e| anyhow::anyhow!("listing memories: {e}"))?;
@@ -103,9 +105,7 @@ pub async fn run(
     let mem_effectiveness: std::collections::HashMap<String, hermes_memory::MemoryEffectiveness> =
         hermes_memory::load_effectiveness().unwrap_or_default();
 
-    // --- Memory Palace: auto-install skill, build index, collect always-active ---
-    auto_install_palace_skill(&skill_store);
-    let all_skills: Vec<LoadedSkill> = skill_store
+    let all_skills: Vec<LoadedSkill> = skill_store_arc
         .list()
         .map_err(|e| anyhow::anyhow!("listing skills: {e}"))?;
     let always_active_refs: Vec<&LoadedSkill> = all_skills
@@ -251,7 +251,7 @@ pub async fn run(
                 palace_index.as_deref(),
                 &always_active_refs,
                 &*memory_store_arc,
-                &skill_store,
+                skill_store_arc.as_ref(),
                 provider.as_ref(),
                 cfg.limits,
             ).await {
@@ -408,7 +408,7 @@ pub async fn run(
             if let Err(e) = super::reflect::review_proposed_skill(
                 c,
                 &session.meta.id,
-                &skill_store,
+                skill_store_arc.as_ref(),
             )
             .await
             {

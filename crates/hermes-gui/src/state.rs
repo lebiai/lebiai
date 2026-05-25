@@ -29,7 +29,7 @@ pub struct AppState {
     pub provider: Arc<dyn LlmProvider>,
     pub host: Arc<dyn ToolHost>,
     pub config: Config,
-    pub skill_store: FsSkillStore,
+    pub skill_store: Arc<FsSkillStore>,
     pub memory_store: FsMemoryStore,
     pub sessions: Sessions,
     pub cancel_tokens: CancelTokens,
@@ -70,11 +70,17 @@ impl AppState {
             queue: propose_queue.clone(),
         });
 
-        let host = load_tool_host(&workspace_root, Some(propose_ctx)).await?;
-        let tools = host.list_tools().await.unwrap_or_default();
-
-        let skill_store = FsSkillStore::new(base.join("skills"), None);
+        let skill_store: Arc<FsSkillStore> =
+            Arc::new(FsSkillStore::new(base.join("skills"), None));
         let memory_store = FsMemoryStore::new(base.join("memories"), None);
+
+        let host = load_tool_host(
+            &workspace_root,
+            Some(skill_store.clone() as Arc<dyn SkillStore>),
+            Some(propose_ctx),
+        )
+        .await?;
+        let tools = host.list_tools().await.unwrap_or_default();
 
         let skills = skill_store.list().unwrap_or_default();
         let all_memories = memory_store.list_active().unwrap_or_default();
@@ -124,9 +130,13 @@ impl AppState {
 
 async fn load_tool_host(
     workspace_root: &Path,
+    skill_store: Option<Arc<dyn SkillStore>>,
     propose_ctx: Option<Arc<ProposeContext>>,
 ) -> Result<Arc<dyn ToolHost>> {
     let mut builtin = BuiltinToolHost::new(workspace_root.to_path_buf());
+    if let Some(store) = skill_store {
+        builtin = builtin.with_skill_store(store);
+    }
     if let Some(ctx) = propose_ctx {
         builtin = builtin.with_propose_ctx(ctx);
     }

@@ -178,17 +178,28 @@ pub async fn run() -> Result<()> {
     let memory_store_arc: Arc<dyn MemoryStore> = Arc::new(
         FsMemoryStore::standard().map_err(|e| anyhow!("memory store: {e}"))?,
     );
+    let skill_store_arc: Arc<FsSkillStore> = Arc::new(
+        FsSkillStore::standard().map_err(|e| anyhow!("skill store: {e}"))?,
+    );
+    auto_install_palace_skill(skill_store_arc.as_ref());
 
-    // ----- tool host (memory tools enabled), then whitelist -------------
-    let host = load_tool_host(&workspace_root, Some(memory_store_arc.clone()), None).await?;
+    // ----- tool host (memory + skill tools enabled), then whitelist ------
+    let host = load_tool_host(
+        &workspace_root,
+        Some(memory_store_arc.clone()),
+        Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
+        None,
+    )
+    .await?;
     let all_tools = host
         .list_tools()
         .await
         .map_err(|e| anyhow!("listing tools: {e}"))?;
     // Whitelist: tools the bot can safely run from WeChat (no confirmation
-    // UI is available over chat). `palace_*` are kept so the bot can
-    // navigate the Memory Palace and actually answer "who am I"-style
-    // questions the same way the CLI does.
+    // UI is available over chat). Skill discovery/activation tools are on
+    // the list so the bot can answer "what skills do I have?" and actually
+    // load a skill before acting on it; `skill_create` is `requires_confirmation`
+    // so it's filtered out below regardless of being listed here.
     let allow_names: &[&str] = &[
         "web_search",
         "web_fetch",
@@ -198,6 +209,10 @@ pub async fn run() -> Result<()> {
         "palace_zones",
         "palace_read_zone",
         "palace_recall",
+        "skill_list",
+        "skill_read",
+        "skill_read_file",
+        "skill_create",
         "think",
     ];
     let tools: Vec<ToolSpec> = all_tools
@@ -207,10 +222,6 @@ pub async fn run() -> Result<()> {
     eprintln!("✓ tools ready: {} whitelisted", tools.len());
 
     // ----- memory + skills snapshot (mirror `chat` startup) -------------
-    let skill_store = FsSkillStore::standard()
-        .map_err(|e| anyhow!("skill store: {e}"))?;
-    auto_install_palace_skill(&skill_store);
-
     let active_memories: Vec<LoadedMemory> = memory_store_arc
         .list_active()
         .map_err(|e| anyhow!("listing memories: {e}"))?;
@@ -219,7 +230,7 @@ pub async fn run() -> Result<()> {
         .filter(|m| m.frontmatter.pinned)
         .cloned()
         .collect();
-    let all_skills: Vec<LoadedSkill> = skill_store
+    let all_skills: Vec<LoadedSkill> = skill_store_arc
         .list()
         .map_err(|e| anyhow!("listing skills: {e}"))?;
     let always_active_skills: Vec<LoadedSkill> = all_skills
