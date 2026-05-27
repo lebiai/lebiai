@@ -9,7 +9,7 @@ use hermes_llm::Config;
 use hermes_mcp::{McpConfig, McpToolHost, ServerSpec};
 use hermes_memory::MemoryStore;
 use hermes_skills::SkillStore;
-use hermes_tools::{BuiltinToolHost, CompositeToolHost, ProposeContext};
+use hermes_tools::{BuiltinToolHost, CompositeToolHost, ProposeContext, SubagentContext};
 
 /// Build the active [`LlmProvider`] selected by `default_provider` in
 /// `~/.small-rust-hermes/config.toml`.
@@ -39,11 +39,16 @@ pub fn session_path_for(meta: &SessionMeta) -> Result<PathBuf> {
 /// Pass `skill_store = Some(...)` to enable the `skill_list` / `skill_read` /
 /// `skill_read_file` / `skill_create` tools — the Activation and Execution
 /// stages of the Agent Skills Progressive Disclosure model.
+///
+/// Pass `subagent_ctx = Some(...)` to enable the `subagent` tool — the runtime
+/// primitive the bundled `skill-creator` meta-skill uses for real evaluations
+/// (each test case runs in a fresh child context, no parent reasoning leakage).
 pub async fn load_tool_host(
     workspace_root: &Path,
     memory_store: Option<Arc<dyn MemoryStore>>,
     skill_store: Option<Arc<dyn SkillStore>>,
     propose_ctx: Option<Arc<ProposeContext>>,
+    subagent_ctx: Option<Arc<SubagentContext>>,
 ) -> Result<Arc<dyn ToolHost>> {
     std::fs::create_dir_all(workspace_root).with_context(|| {
         format!("ensuring workspace exists: {}", workspace_root.display())
@@ -58,6 +63,9 @@ pub async fn load_tool_host(
     }
     if let Some(ctx) = propose_ctx {
         builtin = builtin.with_propose_ctx(ctx);
+    }
+    if let Some(ctx) = subagent_ctx {
+        builtin = builtin.with_subagent_ctx(ctx);
     }
 
     let mut cfg = McpConfig::load_default().context("loading mcp.json")?;

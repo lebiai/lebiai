@@ -11,7 +11,7 @@ Hermes learns from every conversation — distilling reusable skills, accumulati
 - **MCP tools** — Connect any [Model Context Protocol](https://modelcontextprotocol.io/) server (stdio or Streamable HTTP)
 - **Multi-provider** — Anthropic Claude, DeepSeek, any OpenAI-compatible API
 - **Plain-file storage** — Memories and skills are Markdown + YAML frontmatter, human-readable and git-friendly
-- **Single binary** — No database, no message queue, no Docker
+- **Single binary** — No database, no message queue; ships as a single static binary (Docker image also available)
 - **CLI and desktop GUI** — Same engine, same files; pick the surface that fits the task
 
 ## Quick Start
@@ -37,6 +37,35 @@ chmod 600 ~/.small-rust-hermes/config.toml
 # Run
 cargo run -p hermes-cli -- chat
 ```
+
+## Docker 一键部署
+
+不想本地装 Rust 工具链、或者想把 WeChat bot 当作后台服务长跑？用 Docker：
+
+```bash
+# 1. 准备配置（同上 Quick Start 的 config.toml）
+mkdir -p ~/.small-rust-hermes
+# ... 写好 ~/.small-rust-hermes/config.toml ...
+
+# 2. 构建 + 扫码登录微信（一次性）
+docker compose build
+docker compose run --rm hermes-wechat wechat login
+
+# 3. 启动微信 bot 长跑
+docker compose up -d
+docker compose logs -f
+```
+
+镜像是 debian-slim 基础（~100 MB），同时也能当通用 CLI 用：
+
+```bash
+docker run --rm -it \
+  -v ~/.small-rust-hermes:/data/.small-rust-hermes \
+  -e HOME=/data \
+  hermes:latest ask "解释这段错误"
+```
+
+完整说明见 [docs/docker.md](docs/docker.md)。
 
 ## Usage
 

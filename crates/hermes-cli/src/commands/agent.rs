@@ -17,6 +17,7 @@ use hermes_turn::{AgentConfig, AgentEvent, TurnConfig, TurnEvent};
 
 use super::context::ContextSources;
 use super::util::{build_active_provider, load_tool_host, session_path_for};
+use hermes_tools::SubagentContext;
 
 pub async fn run(goal: String, system: Option<String>, max_iterations: Option<usize>) -> Result<()> {
     let cfg = Config::load_default()
@@ -35,11 +36,28 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
         FsSkillStore::standard().map_err(|e| anyhow::anyhow!("skill store: {e}"))?,
     );
     super::chat::auto_install_palace_skill(skill_store_arc.as_ref());
+    super::chat::auto_install_skill_creator_skill(skill_store_arc.as_ref());
+    super::chat::auto_install_find_skills_skill(skill_store_arc.as_ref());
+
+    // Wire up `subagent` so an autonomous goal can spawn child contexts (skill
+    // evaluation, blind comparison, grader subagents — see skill-creator).
+    let subagent_ctx = Arc::new(SubagentContext::new(
+        provider.clone(),
+        provider_cfg.model.clone(),
+        provider_cfg.max_tokens,
+        cfg.limits.max_tool_rounds,
+        hermes_turn::PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
+        workspace_root.clone(),
+        Some(memory_store_arc.clone()),
+        Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
+    ));
+
     let host = load_tool_host(
         &workspace_root,
         Some(memory_store_arc.clone()),
         Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
         None,
+        Some(subagent_ctx),
     )
     .await?;
     let tools = host

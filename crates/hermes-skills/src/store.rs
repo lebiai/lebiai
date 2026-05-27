@@ -54,6 +54,12 @@ pub trait SkillStore: Send + Sync {
 
     /// Remove a skill. Returns true if it existed.
     fn delete(&self, scope: Scope, name: &str) -> Result<bool>;
+
+    /// Directory where a skill with `name` would live in `scope`. Validates
+    /// the name and resolves the per-scope root, but does NOT touch disk.
+    /// Used by multi-file install paths that need to write extra files
+    /// alongside `SKILL.md`.
+    fn skill_dir(&self, scope: Scope, name: &str) -> Result<PathBuf>;
 }
 
 /// Filesystem implementation backed by two scope roots.
@@ -196,6 +202,14 @@ impl SkillStore for FsSkillStore {
         })?;
         Ok(true)
     }
+
+    fn skill_dir(&self, scope: Scope, name: &str) -> Result<PathBuf> {
+        validate_name(name)?;
+        let root = self.root_for(scope).ok_or_else(|| {
+            SkillStoreError::Config("project scope requested but no project root configured".into())
+        })?;
+        Ok(root.join(name))
+    }
 }
 
 fn validate_name(name: &str) -> Result<()> {
@@ -211,6 +225,12 @@ fn validate_name(name: &str) -> Result<()> {
         return Err(SkillStoreError::InvalidName(name.to_string()));
     }
     Ok(())
+}
+
+/// Same rules as the internal name check, exposed so install / delete logic
+/// in sibling modules can validate frontmatter names *before* touching disk.
+pub fn validate_skill_name(name: &str) -> Result<()> {
+    validate_name(name)
 }
 
 /// `~/.small-rust-hermes/skills`.

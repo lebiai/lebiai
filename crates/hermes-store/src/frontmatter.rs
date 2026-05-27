@@ -55,6 +55,17 @@ pub fn read_doc<T: DeserializeOwned>(path: &Path) -> Result<FrontmatterDoc<T>> {
     parse_doc(path, &raw)
 }
 
+/// Parse a frontmatter document from an in-memory string. Used when the
+/// content originates from somewhere other than disk (`include_str!` of a
+/// bundled file, an HTTP body, a paste-from-chat). The `origin` label is
+/// only used to dress error messages.
+pub fn parse_doc_str<T: DeserializeOwned>(
+    origin: &str,
+    raw: &str,
+) -> Result<FrontmatterDoc<T>> {
+    parse_doc(Path::new(origin), raw)
+}
+
 /// Write a frontmatter document to disk (non-atomic; truncates).
 pub fn write_doc<T: Serialize>(path: &Path, doc: &FrontmatterDoc<T>) -> Result<()> {
     let serialized = serialize_doc(&doc.frontmatter, &doc.body)?;

@@ -1,0 +1,19 @@
+services:
+  hermes-wechat:
+    build: .
+    image: hermes:latest
+    container_name: hermes-wechat
+    # Bind-mount the host's hermes home into the container. config.toml,
+    # wechat.toml, sessions/, skills, memories all live here — same layout
+    # as a native install, so you can switch between docker and bare-metal
+    # without copying state around.
+    volumes:
+      - ${HERMES_HOME:-~/.small-rust-hermes}:/data/.small-rust-hermes
+    environment:
+      HOME: /data
+      HERMES_LOG: ${HERMES_LOG:-warn,hermes_cli=info}
+    # `wechat login` renders a QR in the terminal; keep stdin/tty open so
+    # `docker compose run hermes-wechat wechat login` works.
+    tty: true
+    stdin_open: true
+    restart: unless-stopped

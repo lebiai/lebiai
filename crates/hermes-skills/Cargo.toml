@@ -19,6 +19,8 @@ serde_yaml = { workspace = true }
 walkdir = { workspace = true }
 dirs = { workspace = true }
 chrono = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+tempfile = "3"
 
 [dev-dependencies]
 tempfile = "3"

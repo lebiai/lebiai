@@ -12,7 +12,8 @@ hermes-core = { workspace = true }
 hermes-memory = { workspace = true }
 hermes-skills = { workspace = true }
 hermes-reflect = { workspace = true }
-tokio = { workspace = true, features = ["process", "fs"] }
+hermes-turn = { workspace = true }
+tokio = { workspace = true, features = ["process", "fs", "rt"] }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }

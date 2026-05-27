@@ -118,12 +118,21 @@ enum SkillsCmd {
     },
     /// Print full body of one skill.
     Show { name: String },
-    /// Remove a skill directory.
-    Delete {
-        name: String,
-        #[arg(long, value_enum, default_value_t = ScopeArg::User)]
-        scope: ScopeArg,
+    /// Install a skill from `owner/repo@slug` (full directory) or a raw
+    /// https:// URL to a SKILL.md (single file, no siblings).
+    Install {
+        source: String,
+        #[arg(long)]
+        overwrite: bool,
+        /// Optional branch / tag / commit SHA (defaults to `main`).
+        /// Ignored for raw-URL installs.
+        #[arg(long, value_name = "REF")]
+        git_ref: Option<String>,
     },
+    /// Remove a skill directory. Bundled meta-skills (memory-palace,
+    /// skill-creator, find-skills) are refused — they reinstall at
+    /// launch and the delete would be a no-op.
+    Delete { name: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -200,7 +209,12 @@ async fn main() -> Result<()> {
         Command::Skills(sub) => match sub {
             SkillsCmd::List { scope } => commands::skills::list(scope.map(Into::into)),
             SkillsCmd::Show { name } => commands::skills::show(&name),
-            SkillsCmd::Delete { name, scope } => commands::skills::delete(&name, scope.into()),
+            SkillsCmd::Install {
+                source,
+                overwrite,
+                git_ref,
+            } => commands::skills::install(&source, overwrite, git_ref.as_deref()).await,
+            SkillsCmd::Delete { name } => commands::skills::delete(&name),
         },
         Command::Memory(sub) => match sub {
             MemoryCmd::List { all, pinned } => {

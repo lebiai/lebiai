@@ -15,6 +15,7 @@ pub mod read;
 pub mod safety;
 pub mod skill;
 pub mod skill_propose;
+pub mod subagent;
 pub mod think;
 pub mod todo;
 pub mod web_fetch;
@@ -30,6 +31,7 @@ use hermes_memory::MemoryStore;
 use hermes_skills::SkillStore;
 
 pub use skill_propose::{ProposeContext, SessionMessages, SkillProposeQueue};
+pub use subagent::SubagentContext;
 
 const BASIC_TOOLS: &[&str] = &["read", "write", "edit", "bash", "glob", "grep", "git"];
 
@@ -38,6 +40,7 @@ pub struct BuiltinToolHost {
     memory_store: Option<Arc<dyn MemoryStore>>,
     skill_store: Option<Arc<dyn SkillStore>>,
     propose_ctx: Option<Arc<ProposeContext>>,
+    subagent_ctx: Option<Arc<SubagentContext>>,
 }
 
 impl BuiltinToolHost {
@@ -47,6 +50,7 @@ impl BuiltinToolHost {
             memory_store: None,
             skill_store: None,
             propose_ctx: None,
+            subagent_ctx: None,
         }
     }
 
@@ -62,6 +66,11 @@ impl BuiltinToolHost {
 
     pub fn with_propose_ctx(mut self, ctx: Arc<ProposeContext>) -> Self {
         self.propose_ctx = Some(ctx);
+        self
+    }
+
+    pub fn with_subagent_ctx(mut self, ctx: Arc<SubagentContext>) -> Self {
+        self.subagent_ctx = Some(ctx);
         self
     }
 
@@ -83,7 +92,10 @@ impl BuiltinToolHost {
                     | "skill_read"
                     | "skill_read_file"
                     | "skill_create"
+                    | "skill_install"
+                    | "skill_delete"
                     | "propose_skill"
+                    | "subagent"
             )
     }
 }
@@ -117,9 +129,14 @@ impl ToolHost for BuiltinToolHost {
             tools.push(skill::read_spec());
             tools.push(skill::read_file_spec());
             tools.push(skill::create_spec());
+            tools.push(skill::install_spec());
+            tools.push(skill::delete_spec());
         }
         if self.propose_ctx.is_some() {
             tools.push(skill_propose::spec());
+        }
+        if self.subagent_ctx.is_some() {
+            tools.push(subagent::spec());
         }
         Ok(tools)
     }
@@ -196,11 +213,29 @@ impl ToolHost for BuiltinToolHost {
                 })?;
                 skill::create_run(store.as_ref(), args).await
             }
+            "skill_install" => {
+                let store = self.skill_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("skill_install: no skill store configured".into())
+                })?;
+                skill::install_run(store.clone(), args).await
+            }
+            "skill_delete" => {
+                let store = self.skill_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("skill_delete: no skill store configured".into())
+                })?;
+                skill::delete_run(store.clone(), args).await
+            }
             "propose_skill" => {
                 let ctx = self.propose_ctx.as_ref().ok_or_else(|| {
                     Error::ToolHost("propose_skill: not wired up (provider/session missing)".into())
                 })?;
                 skill_propose::run(ctx, args).await
+            }
+            "subagent" => {
+                let ctx = self.subagent_ctx.as_ref().ok_or_else(|| {
+                    Error::ToolHost("subagent: not wired up (provider/turn config missing)".into())
+                })?;
+                subagent::run(ctx, args).await
             }
             n if todo::handles(n) => todo::run(&self.workspace, n, args).await,
             _ => Err(Error::ToolHost(format!("unknown built-in tool: {name}"))),

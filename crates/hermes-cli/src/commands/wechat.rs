@@ -22,11 +22,15 @@ use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryEffectiveness, MemoryStor
 use hermes_skills::{FsSkillStore, LoadedSkill, SkillEffectiveness, SkillStore};
 use hermes_store::SessionWriter;
 use hermes_turn::{PermissionChecker, TurnConfig, TurnEvent};
+use hermes_tools::SubagentContext;
 use hermes_weixin::auth::{LoginSession, QrPollState, StoredCreds};
 use hermes_weixin::client::{Client as WxClient, DEFAULT_BASE_URL};
 use hermes_weixin::types::WeixinMessage;
 
-use super::chat::{auto_install_palace_skill, compose_system_prompt, inject_time_header};
+use super::chat::{
+    auto_install_find_skills_skill, auto_install_palace_skill, auto_install_skill_creator_skill,
+    compose_system_prompt, inject_time_header,
+};
 use super::context::ContextSources;
 use super::util::{build_active_provider, load_tool_host};
 
@@ -182,6 +186,22 @@ pub async fn run() -> Result<()> {
         FsSkillStore::standard().map_err(|e| anyhow!("skill store: {e}"))?,
     );
     auto_install_palace_skill(skill_store_arc.as_ref());
+    auto_install_skill_creator_skill(skill_store_arc.as_ref());
+    auto_install_find_skills_skill(skill_store_arc.as_ref());
+
+    // Wire up `subagent` so WeChat-driven skill authoring can do real evals
+    // (skill-creator's grader / blind-comparison flows need fresh child
+    // contexts — see crates/hermes-tools/src/subagent.rs).
+    let subagent_ctx = Arc::new(SubagentContext::new(
+        provider.clone(),
+        provider_cfg.model.clone(),
+        provider_cfg.max_tokens,
+        cfg.limits.max_tool_rounds,
+        PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
+        workspace_root.clone(),
+        Some(memory_store_arc.clone()),
+        Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
+    ));
 
     // ----- tool host (memory + skill tools enabled), then whitelist ------
     let host = load_tool_host(
@@ -189,17 +209,20 @@ pub async fn run() -> Result<()> {
         Some(memory_store_arc.clone()),
         Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
         None,
+        Some(subagent_ctx),
     )
     .await?;
     let all_tools = host
         .list_tools()
         .await
         .map_err(|e| anyhow!("listing tools: {e}"))?;
-    // Whitelist: tools the bot can safely run from WeChat (no confirmation
-    // UI is available over chat). Skill discovery/activation tools are on
-    // the list so the bot can answer "what skills do I have?" and actually
-    // load a skill before acting on it; `skill_create` is `requires_confirmation`
-    // so it's filtered out below regardless of being listed here.
+    // Whitelist: tools the bot can safely run from WeChat. The whitelist IS
+    // the safety boundary — every entry has been hand-vetted as appropriate
+    // for chat where there's no confirmation UI. Tools marked
+    // `requires_confirmation: true` (skill_create / skill_install /
+    // skill_delete) are auto-approved at the turn layer because we pass
+    // `confirm_tx: None` further down; that's the intentional model for
+    // chat surfaces. Each writer tool enforces its own path/quota guards.
     let allow_names: &[&str] = &[
         "web_search",
         "web_fetch",
@@ -213,11 +236,14 @@ pub async fn run() -> Result<()> {
         "skill_read",
         "skill_read_file",
         "skill_create",
+        "skill_install",
+        "skill_delete",
+        "subagent",
         "think",
     ];
     let tools: Vec<ToolSpec> = all_tools
         .into_iter()
-        .filter(|t| !t.requires_confirmation && allow_names.contains(&t.name.as_str()))
+        .filter(|t| allow_names.contains(&t.name.as_str()))
         .collect();
     eprintln!("✓ tools ready: {} whitelisted", tools.len());
 

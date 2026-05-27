@@ -1,0 +1,14 @@
+target/
+**/target/
+.git/
+.gitignore
+.github/
+docs/
+scripts/
+article*.md
+*.dmg
+.DS_Store
+.idea/
+.vscode/
+.claude/
+.small-rust-hermes/

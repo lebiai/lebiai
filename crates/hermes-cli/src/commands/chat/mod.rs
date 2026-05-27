@@ -23,7 +23,7 @@ use hermes_llm::Config;
 use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore};
 use hermes_skills::{FsSkillStore, LoadedSkill, SkillStore};
 use hermes_store::SessionWriter;
-use hermes_tools::ProposeContext;
+use hermes_tools::{ProposeContext, SubagentContext};
 
 use super::context::ContextSources;
 use super::readline::{ChatLineEditor, LineOutcome};
@@ -55,6 +55,8 @@ pub async fn run(
         FsSkillStore::standard().map_err(|e| anyhow::anyhow!("skill store: {e}"))?,
     );
     auto_install_palace_skill(skill_store_arc.as_ref());
+    auto_install_skill_creator_skill(skill_store_arc.as_ref());
+    auto_install_find_skills_skill(skill_store_arc.as_ref());
 
     // Wire up propose_skill: a shared message snapshot (kept in sync by the
     // chat loop) + a queue the tool pushes candidates onto. The chat loop
@@ -69,11 +71,26 @@ pub async fn run(
         queue: propose_queue.clone(),
     });
 
+    // Wire up `subagent`: lets the agent spawn fresh child contexts (used by
+    // skill-creator's eval flow — each test prompt runs in a clean context so
+    // the parent's reasoning doesn't leak into the grade).
+    let subagent_ctx = Arc::new(SubagentContext::new(
+        provider.clone(),
+        provider_cfg.model.clone(),
+        provider_cfg.max_tokens,
+        cfg.limits.max_tool_rounds,
+        hermes_turn::PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
+        workspace_root.clone(),
+        Some(memory_store_arc.clone()),
+        Some(skill_store_arc.clone() as Arc<dyn hermes_skills::SkillStore>),
+    ));
+
     let host = load_tool_host(
         &workspace_root,
         Some(memory_store_arc.clone()),
         Some(skill_store_arc.clone() as Arc<dyn hermes_skills::SkillStore>),
         Some(propose_ctx),
+        Some(subagent_ctx),
     )
     .await?;
     let tools = host
@@ -653,5 +670,267 @@ When using memory_save, set the zone parameter:
     match skill_store.put(SkScope::User, fm, body) {
         Ok(p) => tracing::info!(path=%p.display(), "auto-installed memory-palace skill"),
         Err(e) => tracing::warn!(error=%e, "failed to auto-install memory-palace skill"),
+    }
+}
+
+/// Auto-install the bundled `skill-creator` meta-skill — a guide that
+/// teaches the agent how to author new skills (single-file or multi-file
+/// with `scripts/` / `references/` / `assets/` / `agents/`), how to write
+/// test cases, how to spawn `subagent` evals, and how to iterate.
+///
+/// The bundle ships **six files**: SKILL.md plus three agents/ prompts
+/// (grader / comparator / analyzer), references/schemas.md, and the
+/// upstream Apache 2.0 LICENSE.txt. The skill body links to each via
+/// `skill_read_file` (Progressive Disclosure level 3) — they stay on disk
+/// until the agent actually needs them, so context cost is just the
+/// SKILL.md body during activation.
+///
+/// Runs at every chat / agent / wechat startup. **Upgrade-aware**: an
+/// older install that only has SKILL.md (no `agents/grader.md`) is
+/// considered stale and re-installed in full. This makes the upgrade
+/// from the abridged single-file version automatic — users don't need
+/// to `rm -rf` anything.
+pub(crate) fn auto_install_skill_creator_skill(skill_store: &FsSkillStore) {
+    use hermes_skills::{Scope as SkScope, SkillStore as _};
+
+    // Upgrade detection: skip only when both SKILL.md is registered
+    // AND the multi-file bundle marker (`agents/grader.md`) is on disk.
+    // If either is missing, re-install the full bundle.
+    let already_full = matches!(skill_store.get("skill-creator"), Ok(Some(_)))
+        && matches!(
+            skill_store.skill_dir(SkScope::User, "skill-creator"),
+            Ok(d) if d.join("agents").join("grader.md").is_file()
+        );
+    if already_full {
+        return;
+    }
+
+    let raw = include_str!("../../skills/skill-creator/SKILL.md");
+    install_bundled_skill(skill_store, "skill-creator", raw);
+
+    // SKILL.md is in place — now lay down the bundled subfiles next to
+    // it. Paths are compile-time constants (`include_str!`), so no path
+    // validation is needed here; the trust boundary is the source tree.
+    let extra_files: &[(&str, &str)] = &[
+        (
+            "agents/grader.md",
+            include_str!("../../skills/skill-creator/agents/grader.md"),
+        ),
+        (
+            "agents/comparator.md",
+            include_str!("../../skills/skill-creator/agents/comparator.md"),
+        ),
+        (
+            "agents/analyzer.md",
+            include_str!("../../skills/skill-creator/agents/analyzer.md"),
+        ),
+        (
+            "references/schemas.md",
+            include_str!("../../skills/skill-creator/references/schemas.md"),
+        ),
+        (
+            "LICENSE.txt",
+            include_str!("../../skills/skill-creator/LICENSE.txt"),
+        ),
+    ];
+    write_bundled_subfiles(skill_store, "skill-creator", extra_files);
+}
+
+/// Auto-install the bundled `find-skills` meta-skill — teaches the agent
+/// how to search skills.sh, vet candidates by install count / source
+/// reputation, present the SKILL.md for review, and call `skill_install`
+/// on confirmation.
+pub(crate) fn auto_install_find_skills_skill(skill_store: &FsSkillStore) {
+    use hermes_skills::SkillStore as _;
+    if let Ok(Some(_)) = skill_store.get("find-skills") {
+        return;
+    }
+    let raw = include_str!("../../skills/find-skills/SKILL.md");
+    install_bundled_skill(skill_store, "find-skills", raw);
+}
+
+/// Shared inner: parse a bundled SKILL.md and write it through the store.
+/// Bundled skills are user-scoped; failure is logged and swallowed so a
+/// malformed bundle never blocks the CLI from starting.
+fn install_bundled_skill(skill_store: &FsSkillStore, name: &str, raw: &str) {
+    use hermes_skills::{Scope as SkScope, SkillStore as _};
+    let (fm, body) = match hermes_skills::parse_skill_doc(raw) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(skill=%name, error=%e, "bundled SKILL.md failed to parse");
+            return;
+        }
+    };
+    match skill_store.put(SkScope::User, fm, &body) {
+        Ok(p) => tracing::info!(skill=%name, path=%p.display(), "auto-installed bundled skill"),
+        Err(e) => tracing::warn!(skill=%name, error=%e, "failed to auto-install bundled skill"),
+    }
+}
+
+/// Write extra files alongside a bundled skill's SKILL.md (the level-3
+/// Progressive Disclosure payload — `scripts/` / `references/` /
+/// `assets/` / `agents/`). Pass `subfiles` as `(rel_path, content)`
+/// pairs. Creates intermediate directories as needed.
+///
+/// Trust model: `rel_path` is a compile-time constant rooted at the
+/// bundle source tree (via `include_str!`), so no path validation here.
+/// Failures are logged and swallowed for the same reason as
+/// [`install_bundled_skill`] — a broken bundle should not block startup.
+fn write_bundled_subfiles(
+    skill_store: &FsSkillStore,
+    name: &str,
+    subfiles: &[(&str, &str)],
+) {
+    use hermes_skills::{Scope as SkScope, SkillStore as _};
+    let base = match skill_store.skill_dir(SkScope::User, name) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(skill=%name, error=%e, "resolving bundled skill dir failed");
+            return;
+        }
+    };
+    for (rel, content) in subfiles {
+        let target = base.join(rel);
+        if let Some(parent) = target.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!(skill=%name, rel=%rel, error=%e, "create subfile dir failed");
+                continue;
+            }
+        }
+        if let Err(e) = std::fs::write(&target, content) {
+            tracing::warn!(skill=%name, rel=%rel, error=%e, "write bundled subfile failed");
+        }
+    }
+}
+
+#[cfg(test)]
+mod bundled_skill_tests {
+    //! Compile-time guards for the bundled meta-skills. If their SKILL.md
+    //! frontmatter regresses (missing field, bad YAML, etc.) the test fails
+    //! at `cargo test`, long before users see a broken cold start.
+
+    #[test]
+    fn skill_creator_bundle_parses_and_is_not_always_active() {
+        let raw = include_str!("../../skills/skill-creator/SKILL.md");
+        let (fm, body) = hermes_skills::parse_skill_doc(raw)
+            .expect("bundled skill-creator SKILL.md must parse");
+        assert_eq!(fm.name, "skill-creator");
+        assert!(!fm.description.is_empty());
+        assert!(!fm.always_active, "skill-creator should not be always_active");
+        assert!(body.contains("Skill Creator"));
+        assert!(
+            body.contains("agents/grader.md"),
+            "skill-creator body must link to its bundled grader prompt"
+        );
+    }
+
+    #[test]
+    fn find_skills_bundle_parses_and_is_not_always_active() {
+        let raw = include_str!("../../skills/find-skills/SKILL.md");
+        let (fm, body) = hermes_skills::parse_skill_doc(raw)
+            .expect("bundled find-skills SKILL.md must parse");
+        assert_eq!(fm.name, "find-skills");
+        assert!(!fm.description.is_empty());
+        assert!(!fm.always_active, "find-skills should not be always_active");
+        assert!(body.contains("Finding and Installing Skills"));
+    }
+
+    #[test]
+    fn auto_install_writes_both_bundled_skills_into_a_fresh_store() {
+        use hermes_skills::{FsSkillStore, SkillStore};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsSkillStore::new(tmp.path().to_path_buf(), None);
+
+        // Bypass FsSkillStore::standard()-based functions; reach into the
+        // shared installer directly so the test doesn't touch $HOME.
+        let raw_creator = include_str!("../../skills/skill-creator/SKILL.md");
+        let raw_finder = include_str!("../../skills/find-skills/SKILL.md");
+
+        let (fm_c, body_c) = hermes_skills::parse_skill_doc(raw_creator).unwrap();
+        store
+            .put(hermes_skills::Scope::User, fm_c, &body_c)
+            .unwrap();
+
+        let (fm_f, body_f) = hermes_skills::parse_skill_doc(raw_finder).unwrap();
+        store
+            .put(hermes_skills::Scope::User, fm_f, &body_f)
+            .unwrap();
+
+        assert!(store.get("skill-creator").unwrap().is_some());
+        assert!(store.get("find-skills").unwrap().is_some());
+    }
+
+    #[test]
+    fn auto_install_skill_creator_writes_full_multi_file_bundle() {
+        use hermes_skills::{FsSkillStore, Scope, SkillStore};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsSkillStore::new(tmp.path().to_path_buf(), None);
+
+        super::auto_install_skill_creator_skill(&store);
+
+        // SKILL.md registered through the store.
+        assert!(store.get("skill-creator").unwrap().is_some());
+
+        // All five bundled subfiles landed on disk next to SKILL.md.
+        let dir = store
+            .skill_dir(Scope::User, "skill-creator")
+            .expect("skill_dir for skill-creator");
+        for rel in [
+            "agents/grader.md",
+            "agents/comparator.md",
+            "agents/analyzer.md",
+            "references/schemas.md",
+            "LICENSE.txt",
+        ] {
+            let p = dir.join(rel);
+            assert!(p.is_file(), "expected bundled subfile {} to exist", p.display());
+        }
+    }
+
+    #[test]
+    fn auto_install_skill_creator_is_upgrade_aware() {
+        // Simulate an older install: SKILL.md present, but no
+        // agents/grader.md. The upgrade-detection branch should re-run
+        // the full installer and lay down all five subfiles.
+        use hermes_skills::{FsSkillStore, Scope, SkillStore};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsSkillStore::new(tmp.path().to_path_buf(), None);
+
+        // Plant a stale single-file install by writing only SKILL.md.
+        let raw = include_str!("../../skills/skill-creator/SKILL.md");
+        let (fm, body) = hermes_skills::parse_skill_doc(raw).unwrap();
+        store.put(Scope::User, fm, &body).unwrap();
+        let dir = store.skill_dir(Scope::User, "skill-creator").unwrap();
+        assert!(!dir.join("agents").join("grader.md").exists());
+
+        super::auto_install_skill_creator_skill(&store);
+
+        assert!(dir.join("agents").join("grader.md").is_file());
+        assert!(dir.join("references").join("schemas.md").is_file());
+        assert!(dir.join("LICENSE.txt").is_file());
+    }
+
+    #[test]
+    fn auto_install_skill_creator_is_noop_when_bundle_already_complete() {
+        // When the multi-file marker is already on disk, the function
+        // must not overwrite (preserves any local edits a user made).
+        use hermes_skills::{FsSkillStore, Scope, SkillStore};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsSkillStore::new(tmp.path().to_path_buf(), None);
+
+        super::auto_install_skill_creator_skill(&store);
+
+        // Overwrite SKILL.md with a sentinel and the marker file with a
+        // sentinel; if the second call no-ops, both survive.
+        let dir = store.skill_dir(Scope::User, "skill-creator").unwrap();
+        let skill_md = dir.join("SKILL.md");
+        let marker = dir.join("agents").join("grader.md");
+        std::fs::write(&skill_md, "---\nname: skill-creator\ndescription: sentinel\nalways_active: false\n---\nsentinel-body\n").unwrap();
+        std::fs::write(&marker, "sentinel-grader").unwrap();
+
+        super::auto_install_skill_creator_skill(&store);
+
+        assert_eq!(std::fs::read_to_string(&skill_md).unwrap().trim_end(), "---\nname: skill-creator\ndescription: sentinel\nalways_active: false\n---\nsentinel-body");
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "sentinel-grader");
     }
 }
