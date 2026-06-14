@@ -17,7 +17,7 @@ pub mod permissions;
 pub use agent::{AgentConfig, AgentEvent, AgentOutput, run_agent};
 pub use permissions::{Permission, PermissionChecker};
 
-const DEFAULT_MAX_TOOL_ROUNDS: usize = 10;
+const DEFAULT_MAX_TOOL_ROUNDS: usize = 25;
 
 /// User's decision on a dangerous tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,8 +60,6 @@ pub fn tool_call_summary(name: &str, input: &serde_json::Value) -> String {
         "memory_search" => "query",
         "memory_save" => "content",
         "memory_delete" => "id",
-        "todo_add" => "title",
-        "todo_update" => "status",
         _ => "",
     };
 
@@ -184,6 +182,11 @@ where
         cache_read_tokens: 0,
         cache_creation_tokens: 0,
     };
+    // True if the loop runs out of rounds while the model still wants to call
+    // tools (vs. breaking early because it produced a final answer). When set,
+    // we do one final tool-less turn so the user isn't left with dangling tool
+    // results and no answer.
+    let mut hit_round_cap = true;
 
     for _round in 0..config.max_tool_rounds {
         let req = CompletionRequest {
@@ -307,6 +310,7 @@ where
                     content: tool_results,
                 });
             }
+            hit_round_cap = false;
             break;
         }
 
@@ -335,6 +339,7 @@ where
                 continue;
             }
             tracing::warn!("stop_reason=tool_use but no tool_use blocks");
+            hit_round_cap = false;
             break;
         }
 
@@ -504,6 +509,76 @@ where
             content: tool_results,
         };
         messages.push(result_msg);
+    }
+
+    // If we ran out of tool rounds mid-task, the last message is a User turn of
+    // tool_results with no assistant answer. Do one final tool-less turn so the
+    // user gets a textual answer instead of a silent stop.
+    let dangling_results = matches!(
+        messages.last(),
+        Some(m) if m.role == Role::User
+            && m.content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+    );
+    if hit_round_cap && dangling_results {
+        let mut synth_messages = messages.clone();
+        synth_messages.push(Message::user_text(
+            "You've reached the tool-call budget for this turn. Do not call any more tools. \
+             Based on what you've gathered so far, give the user your best final answer now.",
+        ));
+        let req = CompletionRequest {
+            model: config.model.clone(),
+            system: config.system.clone(),
+            messages: synth_messages,
+            tools: Vec::new(), // no tools advertised → forces a textual answer
+            max_tokens: config.max_tokens,
+            temperature: None,
+            enable_caching: provider.capabilities().prompt_caching,
+        };
+        match provider.stream(req).await {
+            Ok(mut stream) => {
+                let mut final_resp = None;
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = &mut cancel => break,
+                        ev = stream.next() => {
+                            let Some(ev) = ev else { break };
+                            match ev {
+                                Ok(StreamEvent::TextDelta { text, .. }) => {
+                                    on_event(TurnEvent::TextDelta(text));
+                                }
+                                Ok(StreamEvent::ThinkingDelta { text, .. }) => {
+                                    on_event(TurnEvent::ThinkingDelta(text));
+                                }
+                                Ok(StreamEvent::Final(resp)) => final_resp = Some(resp),
+                                Ok(_) => {}
+                                Err(e) => {
+                                    on_event(TurnEvent::Error(format!("final synthesis: {e}")));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(resp) = final_resp {
+                    on_event(TurnEvent::Usage {
+                        input_tokens: resp.usage.input_tokens,
+                        output_tokens: resp.usage.output_tokens,
+                    });
+                    cumulative_usage.input_tokens += resp.usage.input_tokens;
+                    cumulative_usage.output_tokens += resp.usage.output_tokens;
+                    cumulative_usage.cache_read_tokens += resp.usage.cache_read_tokens;
+                    cumulative_usage.cache_creation_tokens += resp.usage.cache_creation_tokens;
+                    messages.push(Message {
+                        role: Role::Assistant,
+                        content: resp.content,
+                    });
+                }
+            }
+            Err(e) => {
+                on_event(TurnEvent::Error(format!("final synthesis start: {e}")));
+            }
+        }
     }
 
     on_event(TurnEvent::Done);

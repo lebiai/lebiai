@@ -27,7 +27,7 @@ use hermes_tools::{ProposeContext, SubagentContext};
 
 use super::context::ContextSources;
 use super::readline::{ChatLineEditor, LineOutcome};
-use super::util::{build_active_provider, load_tool_host, session_path_for};
+use super::util::{build_active_provider, build_web_ctx, load_tool_host, session_path_for};
 
 pub(crate) use system_prompt::{compose_system_prompt, inject_time_header};
 
@@ -91,6 +91,7 @@ pub async fn run(
         Some(skill_store_arc.clone() as Arc<dyn hermes_skills::SkillStore>),
         Some(propose_ctx),
         Some(subagent_ctx),
+        Some(build_web_ctx(&cfg, provider.clone())),
     )
     .await?;
     let tools = host
@@ -489,6 +490,14 @@ pub async fn run(
             let skills_snap = all_skills.clone();
             let mems_snap = active_memories.clone();
             let auto_accept = cfg.reflect.auto_accept_memories;
+            let min_confidence: hermes_memory::Confidence = cfg
+                .reflect
+                .auto_accept_min_confidence
+                .parse()
+                .unwrap_or(hermes_memory::Confidence::Medium);
+            // Turns where the user explicitly taught us something persist even
+            // below the confidence floor — they asked to be remembered.
+            let explicit_intent = hermes_reflect::has_explicit_intent(&turn_messages);
             let session_id = session.meta.id.clone();
             tokio::spawn(async move {
                 match hermes_reflect::micro_reflect(
@@ -508,8 +517,12 @@ pub async fn run(
 
                         let mut any_accepted = false;
                         for c in &output.memory_candidates {
+                            // Clear the configured confidence floor, OR be an
+                            // explicit teaching turn (then even Low persists).
+                            // Candidates that supersede/conflict still defer.
+                            let clears_floor = c.confidence >= min_confidence || explicit_intent;
                             let eligible = auto_accept
-                                && matches!(c.confidence, hermes_memory::Confidence::Medium)
+                                && clears_floor
                                 && c.supersedes.is_empty()
                                 && !c.supersedes.iter().any(|id| conflict_ids.contains(id));
 
@@ -526,6 +539,17 @@ pub async fn run(
                                         eprintln!("  \x1b[32m💾 learned: {preview}\x1b[0m");
                                         tracing::info!(path=%path.display(), "auto-accepted memory");
                                         any_accepted = true;
+                                    }
+                                    Err(hermes_memory::MemoryStoreError::Conflict {
+                                        existing_id,
+                                        similarity,
+                                    }) => {
+                                        // Dedup gate rejected a near-duplicate —
+                                        // surface it so auto-learn is observable.
+                                        eprintln!(
+                                            "  \x1b[90m↺ skipped (similar to {existing_id}, {:.0}%)\x1b[0m",
+                                            similarity * 100.0
+                                        );
                                     }
                                     Err(e) => {
                                         tracing::warn!(error=%e, "auto-accept memory failed");

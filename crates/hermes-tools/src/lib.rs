@@ -18,6 +18,8 @@ pub mod skill_propose;
 pub mod subagent;
 pub mod think;
 pub mod todo;
+pub mod web;
+pub mod web_cache;
 pub mod web_fetch;
 pub mod web_search;
 pub mod write;
@@ -32,6 +34,7 @@ use hermes_skills::SkillStore;
 
 pub use skill_propose::{ProposeContext, SessionMessages, SkillProposeQueue};
 pub use subagent::SubagentContext;
+pub use web::{SearchBackend, WebToolsContext};
 
 const BASIC_TOOLS: &[&str] = &["read", "write", "edit", "bash", "glob", "grep", "git"];
 
@@ -41,6 +44,10 @@ pub struct BuiltinToolHost {
     skill_store: Option<Arc<dyn SkillStore>>,
     propose_ctx: Option<Arc<ProposeContext>>,
     subagent_ctx: Option<Arc<SubagentContext>>,
+    web_ctx: Option<Arc<WebToolsContext>>,
+    /// Per-session todo list (Claude Code-style single-write). Owned here so
+    /// todos don't leak across sessions the way a process global would.
+    todos: todo::TodoStore,
 }
 
 impl BuiltinToolHost {
@@ -51,6 +58,8 @@ impl BuiltinToolHost {
             skill_store: None,
             propose_ctx: None,
             subagent_ctx: None,
+            web_ctx: None,
+            todos: todo::TodoStore::default(),
         }
     }
 
@@ -71,6 +80,11 @@ impl BuiltinToolHost {
 
     pub fn with_subagent_ctx(mut self, ctx: Arc<SubagentContext>) -> Self {
         self.subagent_ctx = Some(ctx);
+        self
+    }
+
+    pub fn with_web_ctx(mut self, ctx: Arc<WebToolsContext>) -> Self {
+        self.web_ctx = Some(ctx);
         self
     }
 
@@ -150,8 +164,8 @@ impl ToolHost for BuiltinToolHost {
             "glob" => glob::run(&self.workspace, args).await,
             "grep" => grep::run(&self.workspace, args).await,
             "git" => git::run(&self.workspace, args).await,
-            "web_fetch" => web_fetch::run(&self.workspace, args).await,
-            "web_search" => web_search::run(&self.workspace, args).await,
+            "web_fetch" => web_fetch::run(&self.workspace, args, self.web_ctx.as_deref()).await,
+            "web_search" => web_search::run(&self.workspace, args, self.web_ctx.as_deref()).await,
             "think" => think::run(args).await,
             "memory_search" => {
                 let store = self.memory_store.as_ref().ok_or_else(|| {
@@ -237,7 +251,7 @@ impl ToolHost for BuiltinToolHost {
                 })?;
                 subagent::run(ctx, args).await
             }
-            n if todo::handles(n) => todo::run(&self.workspace, n, args).await,
+            n if todo::handles(n) => todo::run(&self.todos, &self.workspace, n, args).await,
             _ => Err(Error::ToolHost(format!("unknown built-in tool: {name}"))),
         }
     }

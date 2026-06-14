@@ -216,8 +216,7 @@ fn friendly_tool_desc(name: &str) -> String {
         "grep" => "🔎 Searching content...".into(),
         "web_fetch" => "🌐 Fetching web page...".into(),
         "web_search" => "🔍 Searching the web...".into(),
-        "todo_add" => "📋 Adding task...".into(),
-        "todo_update" => "✅ Updating task...".into(),
+        "todo_write" => "📋 Updating plan...".into(),
         "todo_list" => "📋 Listing tasks...".into(),
         other => {
             let display = other.split_once("__").map(|(_, t)| t).unwrap_or(other);
@@ -308,14 +307,21 @@ fn friendly_tool_result(name: &str, input: &serde_json::Value, workspace: &std::
             format!("🌐 fetch {url}")
         }
         "think" => "💭 thinking…".into(),
-        "todo_add" => {
-            let title = input.get("title").and_then(|t| t.as_str()).unwrap_or("?");
-            format!("📋 + \"{title}\"")
-        }
-        "todo_update" => {
-            let id = input.get("id").and_then(|i| i.as_u64()).unwrap_or(0);
-            let status = input.get("status").and_then(|s| s.as_str()).unwrap_or("?");
-            format!("✅ todo #{id} → {status}")
+        "todo_write" => {
+            let items = input.get("items").and_then(|i| i.as_array());
+            let n = items.map(|a| a.len()).unwrap_or(0);
+            // Surface the task currently in progress, if any.
+            let active = items
+                .and_then(|a| {
+                    a.iter().find(|it| {
+                        it.get("status").and_then(|s| s.as_str()) == Some("in_progress")
+                    })
+                })
+                .and_then(|it| it.get("content").and_then(|c| c.as_str()));
+            match active {
+                Some(c) => format!("📋 plan ({n}) → {c}"),
+                None => format!("📋 plan ({n} tasks)"),
+            }
         }
         "todo_list" => "📋 listing todos".into(),
         other => {

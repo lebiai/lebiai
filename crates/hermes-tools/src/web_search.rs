@@ -1,4 +1,10 @@
-//! `web_search` — search the web via Brave Search HTML (no API key needed).
+//! `web_search` — search the web. Backends, selected via [`WebToolsContext`]:
+//! - `Scraper` (default): scrape Brave Search HTML, no API key required.
+//! - `Tavily`: Tavily Search API — returns a synthesised answer plus results.
+//! - `BraveApi`: Brave Search API — structured JSON, requires a token.
+//!
+//! Results are cached for the configured TTL. When an API backend is selected
+//! but its key is missing, it transparently falls back to the scraper.
 
 use std::path::Path;
 
@@ -6,6 +12,8 @@ use hermes_core::{Result, ToolCallOutcome, ToolSpec};
 use serde::Deserialize;
 
 use crate::http_defaults::HTTP_CLIENT;
+use crate::web::{ttl_or_default, SearchBackend, WebToolsContext};
+use crate::web_cache;
 
 #[derive(Deserialize)]
 struct Args {
@@ -21,8 +29,10 @@ fn default_limit() -> usize {
 pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "web_search".into(),
-        description: "Search the web for current information. Returns titles, URLs, and snippets. \
-            Always search first before fetching — the snippet alone is often enough. \
+        description: "Search the web for current information. Returns titles, URLs, and snippets \
+            (and, on some backends, a synthesised answer). \
+            Always search first before fetching — the snippet or answer is often enough, so \
+            you may not need web_fetch at all. If you do, fetch at most 1–2 of the returned URLs. \
             Do not construct deep-link URLs yourself; use the URLs returned by this tool."
             .into(),
         input_schema: serde_json::json!({
@@ -37,43 +47,62 @@ pub fn spec() -> ToolSpec {
     }
 }
 
-pub async fn run(_workspace: &Path, args: serde_json::Value) -> Result<ToolCallOutcome> {
+pub async fn run(
+    _workspace: &Path,
+    args: serde_json::Value,
+    ctx: Option<&WebToolsContext>,
+) -> Result<ToolCallOutcome> {
     let a: Args = serde_json::from_value(args)
         .map_err(|e| hermes_core::Error::ToolHost(format!("web_search: bad args: {e}")))?;
 
-    let url = format!(
-        "https://search.brave.com/search?q={}",
-        urlencoding::encode(&a.query)
-    );
-    let resp = HTTP_CLIENT
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| hermes_core::Error::ToolHost(format!("web_search fetch: {e}")))?;
-
-    if !resp.status().is_success() {
+    let ttl = ttl_or_default(ctx);
+    let cache_key = web_cache::search_key(&a.query, a.limit);
+    if let Some(cached) = web_cache::get(&cache_key, ttl) {
         return Ok(ToolCallOutcome {
-            content: format!("web_search: HTTP {}", resp.status()),
-            is_error: true,
+            content: format!("(cached)\n{cached}"),
+            is_error: false,
         });
     }
 
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| hermes_core::Error::ToolHost(format!("web_search body: {e}")))?;
+    let result = match ctx {
+        Some(c) => match c.effective_backend() {
+            SearchBackend::Tavily => tavily_search(&a.query, a.limit, &c.tavily_api_key).await,
+            SearchBackend::BraveApi => brave_api_search(&a.query, a.limit, &c.brave_api_key).await,
+            SearchBackend::Scraper => scraper_search(&a.query, a.limit).await,
+        },
+        None => scraper_search(&a.query, a.limit).await,
+    };
 
-    let results = parse_brave_html(&body, a.limit);
-    if results.is_empty() {
-        return Ok(ToolCallOutcome {
+    match result {
+        Ok(content) if !content.trim().is_empty() => {
+            web_cache::put(cache_key, content.clone());
+            Ok(ToolCallOutcome {
+                content,
+                is_error: false,
+            })
+        }
+        Ok(_) => Ok(ToolCallOutcome {
             content: format!(
                 "No results for: \"{}\". Try rephrasing the query or using different keywords.",
                 a.query
             ),
             is_error: true,
-        });
+        }),
+        Err(e) => Ok(ToolCallOutcome {
+            content: format!("web_search error: {e}"),
+            is_error: true,
+        }),
     }
-    let out = results
+}
+
+struct SearchResult {
+    title: String,
+    url: String,
+    snippet: String,
+}
+
+fn format_results(results: &[SearchResult]) -> String {
+    results
         .iter()
         .enumerate()
         .map(|(i, r)| {
@@ -84,18 +113,185 @@ pub async fn run(_workspace: &Path, args: serde_json::Value) -> Result<ToolCallO
             }
         })
         .collect::<Vec<_>>()
-        .join("\n");
-    Ok(ToolCallOutcome {
-        content: out,
-        is_error: false,
-    })
+        .join("\n")
 }
 
-struct SearchResult {
-    title: String,
-    url: String,
-    snippet: String,
+/// Drop results whose host already appeared, so a single domain can't fill the
+/// list. Preserves order.
+fn dedupe_by_domain(results: Vec<SearchResult>) -> Vec<SearchResult> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(results.len());
+    for r in results {
+        let host = host_of(&r.url);
+        if seen.insert(host) {
+            out.push(r);
+        }
+    }
+    out
 }
+
+fn host_of(url: &str) -> String {
+    url.split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+// ── Scraper backend ─────────────────────────────────────────────────────────
+
+async fn scraper_search(query: &str, limit: usize) -> Result<String> {
+    let url = format!(
+        "https://search.brave.com/search?q={}",
+        urlencoding::encode(query)
+    );
+    let resp = HTTP_CLIENT
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| hermes_core::Error::ToolHost(format!("web_search fetch: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(hermes_core::Error::ToolHost(format!(
+            "HTTP {} (Brave scraper may be rate-limited; consider configuring a search API key)",
+            resp.status()
+        )));
+    }
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| hermes_core::Error::ToolHost(format!("web_search body: {e}")))?;
+    // Parse more than `limit` then dedupe by domain down to `limit`.
+    let parsed = parse_brave_html(&body, limit * 3);
+    let results: Vec<SearchResult> = dedupe_by_domain(parsed).into_iter().take(limit).collect();
+    Ok(format_results(&results))
+}
+
+// ── Tavily backend ──────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct TavilyResponse {
+    #[serde(default)]
+    answer: Option<String>,
+    #[serde(default)]
+    results: Vec<TavilyResult>,
+}
+
+#[derive(Deserialize)]
+struct TavilyResult {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    content: String,
+}
+
+async fn tavily_search(query: &str, limit: usize, api_key: &str) -> Result<String> {
+    let payload = serde_json::json!({
+        "api_key": api_key,
+        "query": query,
+        "max_results": limit,
+        "include_answer": true,
+        "include_raw_content": false,
+    });
+    let resp = HTTP_CLIENT
+        .post("https://api.tavily.com/search")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| hermes_core::Error::ToolHost(format!("tavily request: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(hermes_core::Error::ToolHost(format!(
+            "tavily HTTP {}",
+            resp.status()
+        )));
+    }
+    let parsed: TavilyResponse = resp
+        .json()
+        .await
+        .map_err(|e| hermes_core::Error::ToolHost(format!("tavily decode: {e}")))?;
+    let results: Vec<SearchResult> = parsed
+        .results
+        .into_iter()
+        .map(|r| SearchResult {
+            title: r.title,
+            url: r.url,
+            snippet: r.content,
+        })
+        .collect();
+    let mut out = String::new();
+    if let Some(ans) = parsed.answer.filter(|s| !s.trim().is_empty()) {
+        out.push_str(&format!("Answer: {ans}\n\nSources:\n"));
+    }
+    out.push_str(&format_results(&results));
+    Ok(out)
+}
+
+// ── Brave Search API backend ──────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct BraveApiResponse {
+    #[serde(default)]
+    web: Option<BraveWeb>,
+}
+
+#[derive(Deserialize)]
+struct BraveWeb {
+    #[serde(default)]
+    results: Vec<BraveApiResult>,
+}
+
+#[derive(Deserialize)]
+struct BraveApiResult {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    description: String,
+}
+
+async fn brave_api_search(query: &str, limit: usize, api_key: &str) -> Result<String> {
+    let url = format!(
+        "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
+        urlencoding::encode(query),
+        limit
+    );
+    let resp = HTTP_CLIENT
+        .get(&url)
+        .header("X-Subscription-Token", api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| hermes_core::Error::ToolHost(format!("brave api request: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(hermes_core::Error::ToolHost(format!(
+            "brave api HTTP {}",
+            resp.status()
+        )));
+    }
+    let parsed: BraveApiResponse = resp
+        .json()
+        .await
+        .map_err(|e| hermes_core::Error::ToolHost(format!("brave api decode: {e}")))?;
+    let results: Vec<SearchResult> = parsed
+        .web
+        .map(|w| w.results)
+        .unwrap_or_default()
+        .into_iter()
+        .take(limit)
+        .map(|r| SearchResult {
+            title: r.title,
+            url: r.url,
+            snippet: r.description,
+        })
+        .collect();
+    Ok(format_results(&results))
+}
+
+// ── Brave HTML parsing (scraper backend) ──────────────────────────────────────
 
 /// Parse Brave Search HTML results.
 ///
@@ -106,26 +302,21 @@ struct SearchResult {
 /// - Snippet: `<div class="generic-snippet ...">...</div>`
 fn parse_brave_html(html: &str, limit: usize) -> Vec<SearchResult> {
     let mut results = Vec::new();
-    // Split on data-type="web" to isolate each result block
     let blocks: Vec<&str> = html.split("data-type=\"web\"").collect();
 
     for chunk in blocks.iter().skip(1) {
         if results.len() >= limit {
             break;
         }
-
         let url = match extract_first_https_href(chunk) {
             Some(u) => u,
             None => continue,
         };
-
         let title = extract_div_text(chunk, "title").unwrap_or_default();
         let snippet = extract_div_text(chunk, "generic-snippet").unwrap_or_default();
-
         if title.is_empty() && snippet.is_empty() {
             continue;
         }
-
         results.push(SearchResult {
             title,
             url,
@@ -135,7 +326,6 @@ fn parse_brave_html(html: &str, limit: usize) -> Vec<SearchResult> {
     results
 }
 
-/// Extract the first `href="https://..."` from a chunk.
 fn extract_first_https_href(chunk: &str) -> Option<String> {
     let marker = "href=\"https://";
     let pos = chunk.find(marker)?;
@@ -146,15 +336,12 @@ fn extract_first_https_href(chunk: &str) -> Option<String> {
     Some(decode_html_entities(raw))
 }
 
-/// Extract text content from a `<div class="PREFIX ...">...</div>`.
 fn extract_div_text(chunk: &str, class_prefix: &str) -> Option<String> {
     let pat = format!("class=\"{class_prefix}");
     let pos = chunk.find(&pat)?;
     let after = &chunk[pos..];
-    // Find closing > of the opening tag
     let gt = after.find('>')?;
     let rest = &after[gt + 1..];
-    // Find closing </div>
     let end = rest.find("</div>")?;
     let inner = &rest[..end];
     let text = strip_html_tags(inner);
@@ -175,8 +362,6 @@ fn decode_html_entities(s: &str) -> String {
 }
 
 fn strip_html_tags(s: &str) -> String {
-    // Strip real HTML tags first, then decode entities (so &lt; doesn't get
-    // misinterpreted as an HTML tag).
     let mut out = String::new();
     let mut in_tag = false;
     for c in s.chars() {
@@ -203,10 +388,7 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].title, "Tech News | Reuters");
         assert_eq!(results[0].url, "https://www.reuters.com/technology/");
-        assert_eq!(
-            results[0].snippet,
-            "Latest technology news from Reuters."
-        );
+        assert_eq!(results[0].snippet, "Latest technology news from Reuters.");
         assert_eq!(results[1].title, "Technology | AP News");
         assert_eq!(results[1].url, "https://apnews.com/technology");
     }
@@ -233,5 +415,18 @@ mod tests {
         assert_eq!(results[0].url, "https://example.com/a?b=1&c=2");
         assert_eq!(results[0].title, "Tom & Jerry");
         assert_eq!(results[0].snippet, "A <classic> show.");
+    }
+
+    #[test]
+    fn dedupe_keeps_first_per_domain() {
+        let results = vec![
+            SearchResult { title: "a".into(), url: "https://x.com/1".into(), snippet: String::new() },
+            SearchResult { title: "b".into(), url: "https://x.com/2".into(), snippet: String::new() },
+            SearchResult { title: "c".into(), url: "https://y.com/1".into(), snippet: String::new() },
+        ];
+        let deduped = dedupe_by_domain(results);
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].url, "https://x.com/1");
+        assert_eq!(deduped[1].url, "https://y.com/1");
     }
 }

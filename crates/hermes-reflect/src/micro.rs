@@ -35,7 +35,12 @@ pub fn should_micro_reflect(
     turns_since_last_reflect >= REFLECT_INTERVAL
 }
 
-fn has_explicit_intent(turn_messages: &[Message]) -> bool {
+/// True when the user's turn explicitly teaches the agent something —
+/// a stated preference, convention, or a correction. Such turns should
+/// persist their memory candidate regardless of the confidence floor: the
+/// user literally asked to be remembered, so requiring extra confidence (or
+/// manual confirmation) would feel broken.
+pub fn has_explicit_intent(turn_messages: &[Message]) -> bool {
     let mut user_text = String::new();
     for msg in turn_messages {
         if msg.role != Role::User {

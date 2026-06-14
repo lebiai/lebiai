@@ -11,7 +11,7 @@ use hermes_core::Message;
 use hermes_llm::Config;
 use hermes_turn::{TurnConfig, TurnEvent};
 
-use super::util::{build_active_provider, load_tool_host};
+use super::util::{build_active_provider, build_web_ctx, load_tool_host};
 
 pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
     let cfg = Config::load_default()
@@ -20,7 +20,15 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
     let provider = build_active_provider(&cfg)?;
 
     let workspace_root = cfg.workspace.root.clone();
-    let host = load_tool_host(&workspace_root, None, None, None, None).await?;
+    let host = load_tool_host(
+        &workspace_root,
+        None,
+        None,
+        None,
+        None,
+        Some(build_web_ctx(&cfg, provider.clone())),
+    )
+    .await?;
     let tools = host
         .list_tools()
         .await

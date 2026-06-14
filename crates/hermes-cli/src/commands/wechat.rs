@@ -32,7 +32,7 @@ use super::chat::{
     compose_system_prompt, inject_time_header,
 };
 use super::context::ContextSources;
-use super::util::{build_active_provider, load_tool_host};
+use super::util::{build_active_provider, build_web_ctx, load_tool_host};
 
 // ===== login =================================================================
 
@@ -210,6 +210,7 @@ pub async fn run() -> Result<()> {
         Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
         None,
         Some(subagent_ctx),
+        Some(build_web_ctx(&cfg, provider.clone())),
     )
     .await?;
     let all_tools = host

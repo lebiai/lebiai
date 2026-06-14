@@ -32,6 +32,8 @@ pub struct Config {
     pub permissions: PermissionsConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub web: WebConfig,
 }
 
 /// Numeric caps applied to per-turn context assembly and tool-loop bounds.
@@ -84,7 +86,7 @@ impl Default for ContextLimits {
 }
 
 fn default_max_tool_rounds() -> usize {
-    10
+    25
 }
 fn default_agent_max_iterations() -> usize {
     50
@@ -167,12 +169,20 @@ pub struct ReflectConfig {
     #[serde(default = "default_min_turns")]
     pub min_turns: usize,
 
-    /// When true, micro-reflection memory candidates with confidence=Medium,
-    /// no conflicts, and no supersedes links are persisted automatically
-    /// without user prompting. Skills and conflict resolutions always
-    /// require manual review.
+    /// When true, micro-reflection memory candidates that meet
+    /// `auto_accept_min_confidence` (and have no conflicts/supersedes links)
+    /// are persisted automatically without user prompting. Skills and
+    /// conflict resolutions always require manual review.
     #[serde(default)]
     pub auto_accept_memories: bool,
+
+    /// Minimum confidence (`low` / `medium` / `high`) for a reflection memory
+    /// candidate to be auto-accepted. Parsed at the use site into
+    /// `hermes_memory::Confidence`; an unrecognized value falls back to
+    /// `medium`. Turns explicitly teaching the agent ("记住…", "always…")
+    /// bypass this floor — they persist regardless.
+    #[serde(default = "default_min_confidence")]
+    pub auto_accept_min_confidence: String,
 }
 
 impl Default for ReflectConfig {
@@ -180,12 +190,17 @@ impl Default for ReflectConfig {
         Self {
             min_turns: default_min_turns(),
             auto_accept_memories: true,
+            auto_accept_min_confidence: default_min_confidence(),
         }
     }
 }
 
 fn default_min_turns() -> usize {
     3
+}
+
+fn default_min_confidence() -> String {
+    "medium".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +220,50 @@ impl Default for UiConfig {
 
 fn default_ui_language() -> String {
     "en-US".to_string()
+}
+
+/// Configuration for the `web_search` / `web_fetch` tools.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConfig {
+    /// Search backend: `"scraper"` (Brave HTML, no key), `"tavily"`, or
+    /// `"brave_api"`. API backends fall back to the scraper when their key is
+    /// empty.
+    #[serde(default = "default_search_backend")]
+    pub search_backend: String,
+    /// Tavily Search API key (used when `search_backend = "tavily"`).
+    #[serde(default)]
+    pub tavily_api_key: String,
+    /// Brave Search API subscription token (used when `search_backend = "brave_api"`).
+    #[serde(default)]
+    pub brave_api_key: String,
+    /// TTL (seconds) for the in-process fetch/search result cache.
+    #[serde(default = "default_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+    /// Model id used for `web_fetch` prompt-extraction. Empty → reuse the main
+    /// provider's model. Set to a cheaper model (e.g. a Haiku / mini tier) to
+    /// cut extraction cost.
+    #[serde(default)]
+    pub extract_model: String,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            search_backend: default_search_backend(),
+            tavily_api_key: String::new(),
+            brave_api_key: String::new(),
+            cache_ttl_secs: default_cache_ttl_secs(),
+            extract_model: String::new(),
+        }
+    }
+}
+
+fn default_search_backend() -> String {
+    "scraper".to_string()
+}
+
+fn default_cache_ttl_secs() -> u64 {
+    900
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -287,6 +346,7 @@ max_tokens = 16384
 [reflect]
 min_turns = 3
 auto_accept_memories = true
+auto_accept_min_confidence = "medium"
 
 [context]
 model_limit = 128000
@@ -294,7 +354,7 @@ headroom = 0.18
 keep_recent_turns = 4
 
 [limits]
-max_tool_rounds = 10
+max_tool_rounds = 25
 agent_max_iterations = 50
 active_memory_index_cap = 50
 skill_index_cap = 50
@@ -307,6 +367,13 @@ deny = []
 
 [ui]
 language = "en-US"
+
+[web]
+search_backend = "scraper"   # scraper | tavily | brave_api
+tavily_api_key = ""
+brave_api_key = ""
+cache_ttl_secs = 900
+extract_model = ""           # empty = reuse main model; e.g. a Haiku / mini tier
 "#
     }
 
@@ -400,6 +467,24 @@ mod tests {
         assert_eq!(cfg.reflect.min_turns, 3);
         assert_eq!(cfg.context.model_limit, 128_000);
         assert_eq!(cfg.ui.language, "en-US");
+        assert_eq!(cfg.limits.max_tool_rounds, 25);
+        assert_eq!(cfg.web.search_backend, "scraper");
+        assert_eq!(cfg.web.cache_ttl_secs, 900);
+        assert!(cfg.web.extract_model.is_empty());
+    }
+
+    #[test]
+    fn web_config_defaults_when_section_absent() {
+        // A config with no [web] section must still parse, using WebConfig::default().
+        let minimal = r#"default_provider = "anthropic"
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+api_key = ""
+model = "claude-sonnet-4-20250514"
+"#;
+        let cfg: Config = toml::from_str(minimal).unwrap();
+        assert_eq!(cfg.web.search_backend, "scraper");
+        assert_eq!(cfg.web.cache_ttl_secs, 900);
     }
 
     #[test]

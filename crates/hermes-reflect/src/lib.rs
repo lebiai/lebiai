@@ -23,6 +23,6 @@ pub use log::{
     append as log_append, default_log_path as log_default_path, read_all as log_read_all,
     stats as log_stats, ActionTaken, CandidateKind, ReflectLogEntry, Stats,
 };
-pub use micro::{micro_reflect, should_micro_reflect};
+pub use micro::{has_explicit_intent, micro_reflect, should_micro_reflect};
 pub use output::{ConflictCandidate, MemoryCandidate, ReflectionOutput, SkillCandidate};
 pub use runner::{reflect, ReflectError};

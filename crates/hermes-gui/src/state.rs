@@ -10,7 +10,7 @@ use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore};
 use hermes_reflect::SkillCandidate;
 use hermes_skills::{FsSkillStore, LoadedSkill, SkillStore};
 use hermes_store::SessionWriter;
-use hermes_tools::{BuiltinToolHost, CompositeToolHost, ProposeContext};
+use hermes_tools::{BuiltinToolHost, CompositeToolHost, ProposeContext, SearchBackend, WebToolsContext};
 use tokio::sync::Mutex;
 
 pub type Sessions = Arc<Mutex<HashMap<String, ActiveSession>>>;
@@ -74,10 +74,21 @@ impl AppState {
             Arc::new(FsSkillStore::new(base.join("skills"), None));
         let memory_store = FsMemoryStore::new(base.join("memories"), None);
 
+        let web_ctx = Arc::new(WebToolsContext {
+            extract_provider: provider.clone(),
+            extract_model: config.web.extract_model.clone(),
+            extract_max_tokens: 2048,
+            search_backend: SearchBackend::parse(&config.web.search_backend),
+            tavily_api_key: config.web.tavily_api_key.clone(),
+            brave_api_key: config.web.brave_api_key.clone(),
+            cache_ttl_secs: config.web.cache_ttl_secs,
+        });
+
         let host = load_tool_host(
             &workspace_root,
             Some(skill_store.clone() as Arc<dyn SkillStore>),
             Some(propose_ctx),
+            Some(web_ctx),
         )
         .await?;
         let tools = host.list_tools().await.unwrap_or_default();
@@ -132,6 +143,7 @@ async fn load_tool_host(
     workspace_root: &Path,
     skill_store: Option<Arc<dyn SkillStore>>,
     propose_ctx: Option<Arc<ProposeContext>>,
+    web_ctx: Option<Arc<WebToolsContext>>,
 ) -> Result<Arc<dyn ToolHost>> {
     let mut builtin = BuiltinToolHost::new(workspace_root.to_path_buf());
     if let Some(store) = skill_store {
@@ -139,6 +151,9 @@ async fn load_tool_host(
     }
     if let Some(ctx) = propose_ctx {
         builtin = builtin.with_propose_ctx(ctx);
+    }
+    if let Some(ctx) = web_ctx {
+        builtin = builtin.with_web_ctx(ctx);
     }
 
     let mut cfg = McpConfig::load_default().unwrap_or_else(|_| McpConfig {

@@ -16,7 +16,7 @@ use hermes_store::SessionWriter;
 use hermes_turn::{AgentConfig, AgentEvent, TurnConfig, TurnEvent};
 
 use super::context::ContextSources;
-use super::util::{build_active_provider, load_tool_host, session_path_for};
+use super::util::{build_active_provider, build_web_ctx, load_tool_host, session_path_for};
 use hermes_tools::SubagentContext;
 
 pub async fn run(goal: String, system: Option<String>, max_iterations: Option<usize>) -> Result<()> {
@@ -58,6 +58,7 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
         Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
         None,
         Some(subagent_ctx),
+        Some(build_web_ctx(&cfg, provider.clone())),
     )
     .await?;
     let tools = host

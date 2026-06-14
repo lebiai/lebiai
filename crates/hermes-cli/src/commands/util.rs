@@ -9,12 +9,34 @@ use hermes_llm::Config;
 use hermes_mcp::{McpConfig, McpToolHost, ServerSpec};
 use hermes_memory::MemoryStore;
 use hermes_skills::SkillStore;
-use hermes_tools::{BuiltinToolHost, CompositeToolHost, ProposeContext, SubagentContext};
+use hermes_tools::{
+    BuiltinToolHost, CompositeToolHost, ProposeContext, SearchBackend, SubagentContext,
+    WebToolsContext,
+};
 
 /// Build the active [`LlmProvider`] selected by `default_provider` in
 /// `~/.small-rust-hermes/config.toml`.
 pub fn build_active_provider(cfg: &Config) -> Result<Arc<dyn LlmProvider>> {
     cfg.build_active_provider()
+}
+
+/// `max_tokens` budget for `web_fetch` prompt-extraction answers — concise by
+/// design, independent of the (larger) main-turn budget.
+const WEB_EXTRACT_MAX_TOKENS: u32 = 2048;
+
+/// Build the [`WebToolsContext`] wiring the `web_fetch` / `web_search` tools:
+/// the extraction provider (reused from the main provider), the configured
+/// search backend + keys, and the cache TTL — all from the `[web]` config.
+pub fn build_web_ctx(cfg: &Config, provider: Arc<dyn LlmProvider>) -> Arc<WebToolsContext> {
+    Arc::new(WebToolsContext {
+        extract_provider: provider,
+        extract_model: cfg.web.extract_model.clone(),
+        extract_max_tokens: WEB_EXTRACT_MAX_TOKENS,
+        search_backend: SearchBackend::parse(&cfg.web.search_backend),
+        tavily_api_key: cfg.web.tavily_api_key.clone(),
+        brave_api_key: cfg.web.brave_api_key.clone(),
+        cache_ttl_secs: cfg.web.cache_ttl_secs,
+    })
 }
 
 /// Where to write a session JSONL given its metadata.
@@ -49,6 +71,7 @@ pub async fn load_tool_host(
     skill_store: Option<Arc<dyn SkillStore>>,
     propose_ctx: Option<Arc<ProposeContext>>,
     subagent_ctx: Option<Arc<SubagentContext>>,
+    web_ctx: Option<Arc<WebToolsContext>>,
 ) -> Result<Arc<dyn ToolHost>> {
     std::fs::create_dir_all(workspace_root).with_context(|| {
         format!("ensuring workspace exists: {}", workspace_root.display())
@@ -66,6 +89,9 @@ pub async fn load_tool_host(
     }
     if let Some(ctx) = subagent_ctx {
         builtin = builtin.with_subagent_ctx(ctx);
+    }
+    if let Some(ctx) = web_ctx {
+        builtin = builtin.with_web_ctx(ctx);
     }
 
     let mut cfg = McpConfig::load_default().context("loading mcp.json")?;
