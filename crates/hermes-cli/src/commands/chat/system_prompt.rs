@@ -35,6 +35,8 @@ pub(crate) fn compose_system_prompt(
          - Use bash for builds, tests, and shell commands.\n\
          - Use git for read-only repo inspection (status, diff, log, blame).\n\
          - Use think to reason through complex multi-step plans.\n\
+         - For multi-step tasks (~3+ steps): call todo_write first to lay out the plan, \
+         keep exactly one task in_progress, and mark tasks completed as you finish.\n\
          Minimize tool calls: batch related reads, avoid re-reading unchanged files.\n\n\
          ## Code Analysis Workflow\n\
          1. grep/glob → locate relevant files and symbols\n\

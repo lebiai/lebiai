@@ -93,26 +93,19 @@ impl AnthropicProvider {
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse> {
-        let model = if req.model.is_empty() {
-            self.inner.default_model.clone()
-        } else {
-            req.model.clone()
-        };
+        let enable_caching = req.enable_caching && self.inner.supports_caching;
+        let body = self.build_body(req, false);
 
-        let body = AnthropicRequest {
-            model,
-            max_tokens: req.max_tokens,
-            system: req.system,
-            messages: req.messages,
-            tools: if req.tools.is_empty() { None } else { Some(req.tools) },
-            temperature: req.temperature,
-            stream: false,
-        };
+        let mut body_json = serde_json::to_value(&body)
+            .map_err(|e| Error::Provider(format!("serializing request: {e}")))?;
+        if enable_caching {
+            inject_cache_breakpoints(&mut body_json);
+        }
 
         let url = format!("{}/v1/messages", self.inner.base_url);
-        tracing::debug!(url = %url, model = %body.model, "anthropic request");
+        tracing::debug!(url = %url, model = %body.model, caching = enable_caching, "anthropic request");
 
-        let resp = self.send_with_retry(&url, &body, false).await?;
+        let resp = self.send_with_retry(&url, &body_json, false).await?;
 
         let parsed: AnthropicResponse = resp
             .json()
@@ -138,39 +131,56 @@ impl LlmProvider for AnthropicProvider {
         &self,
         req: CompletionRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent>>> {
-        let model = if req.model.is_empty() {
-            self.inner.default_model.clone()
-        } else {
-            req.model.clone()
-        };
+        let enable_caching = req.enable_caching && self.inner.supports_caching;
+        let body = self.build_body(req, true);
 
-        let body = AnthropicRequest {
-            model,
-            max_tokens: req.max_tokens,
-            system: req.system,
-            messages: req.messages,
-            tools: if req.tools.is_empty() { None } else { Some(req.tools) },
-            temperature: req.temperature,
-            stream: true,
-        };
+        let mut body_json = serde_json::to_value(&body)
+            .map_err(|e| Error::Provider(format!("serializing request: {e}")))?;
+        if enable_caching {
+            inject_cache_breakpoints(&mut body_json);
+        }
 
         let url = format!("{}/v1/messages", self.inner.base_url);
-        tracing::debug!(url = %url, model = %body.model, "anthropic stream request");
+        tracing::debug!(url = %url, model = %body.model, caching = enable_caching, "anthropic stream request");
 
-        let resp = self.send_with_retry(&url, &body, true).await?;
+        let resp = self.send_with_retry(&url, &body_json, true).await?;
 
         Ok(Box::pin(parse_sse_stream(resp.bytes_stream().boxed())))
     }
 }
 
 impl AnthropicProvider {
+    /// Assemble the wire request struct, resolving the default model and
+    /// dropping an empty tools array. Caching breakpoints are applied later,
+    /// at the JSON layer, so this stays provider-shape only.
+    fn build_body(&self, req: CompletionRequest, stream: bool) -> AnthropicRequest {
+        let model = if req.model.is_empty() {
+            self.inner.default_model.clone()
+        } else {
+            req.model
+        };
+        AnthropicRequest {
+            model,
+            max_tokens: req.max_tokens,
+            system: req.system,
+            messages: req.messages,
+            tools: if req.tools.is_empty() {
+                None
+            } else {
+                Some(req.tools)
+            },
+            temperature: req.temperature,
+            stream,
+        }
+    }
+
     /// POST `body` to `url`, retrying on transient errors. `streaming=true`
     /// adds the `accept: text/event-stream` header. Returns the successful
     /// response — caller is responsible for decoding it.
     async fn send_with_retry(
         &self,
         url: &str,
-        body: &AnthropicRequest,
+        body: &serde_json::Value,
         streaming: bool,
     ) -> Result<reqwest::Response> {
         let mut last_err: Option<String> = None;
@@ -232,6 +242,66 @@ impl AnthropicProvider {
         Err(Error::Provider(
             last_err.unwrap_or_else(|| "exhausted retries".to_string()),
         ))
+    }
+}
+
+// ---- prompt caching ----------------------------------------------------
+
+/// Attach Anthropic `cache_control: {type: "ephemeral"}` breakpoints to the
+/// serialized request body so repeated rounds within a turn — and repeated
+/// turns within a session — reuse the stable prefix instead of re-billing it.
+///
+/// Anthropic caches the longest matching prefix and allows up to 4
+/// breakpoints. We place three, ordered from most- to least-stable:
+///   1. the **last tool** definition → caches every tool schema
+///   2. the **system** prompt        → caches the system text
+///   3. the **last message**'s last block → caches the conversation prefix
+///      (each round writes the breakpoint the next round reads, so the loop
+///      caches incrementally)
+///
+/// Mutates `body` in place; a no-op for any section that is absent or empty.
+/// Confined to the Anthropic provider — core request types never carry
+/// cache_control, so OpenAI/DeepSeek paths are unaffected.
+fn inject_cache_breakpoints(body: &mut serde_json::Value) {
+    fn cc() -> serde_json::Value {
+        serde_json::json!({"type": "ephemeral"})
+    }
+
+    // 1. tools → last tool object.
+    if let Some(last) = body
+        .get_mut("tools")
+        .and_then(|t| t.as_array_mut())
+        .and_then(|tools| tools.last_mut())
+        .and_then(|t| t.as_object_mut())
+    {
+        last.insert("cache_control".into(), cc());
+    }
+
+    // 2. system: a plain string can't carry cache_control, so promote it to a
+    //    single-element text-block array. Anthropic accepts either form.
+    if let Some(text) = body.get("system").and_then(|s| s.as_str()) {
+        if !text.is_empty() {
+            let text = text.to_string();
+            body["system"] = serde_json::json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": cc(),
+            }]);
+        }
+    }
+
+    // 3. messages → last block of the last message. `content` is always a
+    //    block array (see hermes_core::Message), so tag its final element.
+    if let Some(last_block) = body
+        .get_mut("messages")
+        .and_then(|m| m.as_array_mut())
+        .and_then(|msgs| msgs.last_mut())
+        .and_then(|m| m.get_mut("content"))
+        .and_then(|c| c.as_array_mut())
+        .and_then(|blocks| blocks.last_mut())
+        .and_then(|b| b.as_object_mut())
+    {
+        last_block.insert("cache_control".into(), cc());
     }
 }
 
@@ -717,5 +787,64 @@ mod tests {
         assert!(!is_retriable_status(reqwest::StatusCode::BAD_REQUEST));
         assert!(!is_retriable_status(reqwest::StatusCode::UNAUTHORIZED));
         assert!(!is_retriable_status(reqwest::StatusCode::NOT_FOUND));
+    }
+
+    #[test]
+    fn cache_breakpoints_injected_on_stable_prefix() {
+        let mut body = serde_json::json!({
+            "model": "claude-x",
+            "system": "you are helpful",
+            "tools": [
+                {"name": "a", "description": "d", "input_schema": {}},
+                {"name": "b", "description": "d", "input_schema": {}}
+            ],
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "yo"}]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+                    {"type": "text", "text": "thanks"}
+                ]}
+            ]
+        });
+        inject_cache_breakpoints(&mut body);
+
+        // Last tool tagged, earlier tool untouched.
+        let tools = body["tools"].as_array().unwrap();
+        assert!(tools[0].get("cache_control").is_none());
+        assert_eq!(tools[1]["cache_control"]["type"], "ephemeral");
+
+        // System promoted to a single text block carrying cache_control.
+        let sys = body["system"].as_array().unwrap();
+        assert_eq!(sys[0]["type"], "text");
+        assert_eq!(sys[0]["text"], "you are helpful");
+        assert_eq!(sys[0]["cache_control"]["type"], "ephemeral");
+
+        // Last block of the last message tagged; earlier block + earlier
+        // message untouched (so the cached prefix ends exactly there).
+        let msgs = body["messages"].as_array().unwrap();
+        let last_content = msgs[2]["content"].as_array().unwrap();
+        assert!(last_content[0].get("cache_control").is_none());
+        assert_eq!(last_content[1]["cache_control"]["type"], "ephemeral");
+        assert!(msgs[0]["content"][0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn cache_breakpoints_noop_on_empty_sections() {
+        // No tools, no system — must not panic, and the lone message block is
+        // still tagged so even a first-turn request caches its prefix.
+        let mut body = serde_json::json!({
+            "model": "claude-x",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+            ]
+        });
+        inject_cache_breakpoints(&mut body);
+        assert!(body.get("tools").is_none());
+        assert!(body.get("system").is_none());
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
     }
 }

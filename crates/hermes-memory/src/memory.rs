@@ -30,12 +30,31 @@ pub enum Source {
     Imported,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Confidence in a memory, ordered `Low < Medium < High` (the derived
+/// `Ord` follows declaration order). Used to gate reflection auto-accept
+/// against a configurable minimum threshold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Confidence {
     Low,
     Medium,
     High,
+}
+
+impl std::str::FromStr for Confidence {
+    type Err = ();
+
+    /// Parse a case-insensitive `low` / `medium` / `high` label. Used to read
+    /// the auto-accept threshold from config (stored as a string so the LLM
+    /// provider crate need not depend on this one).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "low" => Ok(Confidence::Low),
+            "medium" => Ok(Confidence::Medium),
+            "high" => Ok(Confidence::High),
+            _ => Err(()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,5 +123,30 @@ pub struct LoadedMemory {
 impl LoadedMemory {
     pub fn id(&self) -> &str {
         &self.frontmatter.id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confidence_is_ordered_low_to_high() {
+        assert!(Confidence::Low < Confidence::Medium);
+        assert!(Confidence::Medium < Confidence::High);
+        // The auto-accept gate is `candidate >= threshold`.
+        assert!(Confidence::High >= Confidence::Medium);
+        assert!(Confidence::Medium >= Confidence::Medium);
+        assert!(!(Confidence::Low >= Confidence::Medium));
+    }
+
+    #[test]
+    fn confidence_parses_case_insensitively() {
+        assert_eq!("low".parse(), Ok(Confidence::Low));
+        assert_eq!("Medium".parse(), Ok(Confidence::Medium));
+        assert_eq!("HIGH".parse(), Ok(Confidence::High));
+        assert_eq!("  medium  ".parse(), Ok(Confidence::Medium));
+        assert_eq!("".parse::<Confidence>(), Err(()));
+        assert_eq!("bogus".parse::<Confidence>(), Err(()));
     }
 }
