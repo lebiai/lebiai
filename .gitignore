@@ -9,5 +9,6 @@ article3.md
 article4.md
 article5.md
 article6.md
+article*.md
 node_modules/
 dist
