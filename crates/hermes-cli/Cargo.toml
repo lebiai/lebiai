@@ -22,6 +22,7 @@ hermes-tools = { workspace = true }
 hermes-reflect = { workspace = true }
 hermes-turn = { workspace = true }
 hermes-weixin = { workspace = true }
+hermes-feishu = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -35,6 +36,7 @@ uuid = { workspace = true }
 futures = { workspace = true }
 rustyline = "18"
 tempfile = "3"
+rpassword = "7"
 
 [lints]
 workspace = true

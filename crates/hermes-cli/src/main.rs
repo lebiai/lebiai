@@ -75,6 +75,11 @@ enum Command {
     /// from WeChat.
     #[command(subcommand)]
     Wechat(WechatCmd),
+
+    /// Feishu (Lark) bridge: connect via WS long-connection, chat with the model
+    /// from Feishu.
+    #[command(subcommand)]
+    Feishu(FeishuCmd),
 }
 
 #[derive(Subcommand, Debug)]
@@ -83,6 +88,15 @@ enum WechatCmd {
     /// Persists `bot_token` to `~/.small-rust-hermes/wechat.toml` (mode 600).
     Login,
     /// Long-poll for incoming WeChat messages and reply with the Hermes model.
+    Run,
+}
+
+#[derive(Subcommand, Debug)]
+enum FeishuCmd {
+    /// Validate app_id/app_secret and persist them to
+    /// `~/.small-rust-hermes/feishu.toml` (mode 600).
+    Auth,
+    /// Connect to Feishu via WS long-connection and reply to messages.
     Run,
 }
 
@@ -240,6 +254,10 @@ async fn main() -> Result<()> {
         Command::Wechat(sub) => match sub {
             WechatCmd::Login => commands::wechat::login().await,
             WechatCmd::Run => commands::wechat::run().await,
+        },
+        Command::Feishu(sub) => match sub {
+            FeishuCmd::Auth => commands::feishu::auth().await,
+            FeishuCmd::Run => commands::feishu::run().await,
         },
     }
 }

@@ -67,6 +67,58 @@ docker run --rm -it \
 
 完整说明见 [docs/docker.md](docs/docker.md)。
 
+## 消息渠道
+
+Hermes 支持通过微信和飞书与 AI 对话——在手机上发消息，Hermes 在后台自动回复。
+
+### 微信 (WeChat)
+
+```bash
+# 1. 扫码登录（终端显示二维码，用微信扫码授权）
+hermes wechat login
+
+# 2. 启动长轮询，接收微信消息并回复
+hermes wechat run
+```
+
+凭证保存在 `~/.small-rust-hermes/wechat.toml`（mode 600）。
+
+### 飞书 (Feishu / Lark)
+
+飞书通过 **WebSocket 长连接** 接收消息，无需公网回调地址，适合本地开发和内网部署。
+
+#### 前置准备
+
+1. 登录 [飞书开放平台](https://open.feishu.cn)，创建一个 **自建应用**
+2. 在应用凭证页面获取 **App ID** 和 **App Secret**
+3. 开启 **机器人** 能力：应用功能 → 机器人 → 开启
+4. 添加事件订阅：事件与回调 → 事件配置 → 添加事件 → 搜索 `im.message.receive_v1` 并订阅
+5. 接收消息方式选择 **长连接**：事件与回调 → 接收消息方式 → 选择「使用长连接接收消息」
+6. 发布应用版本并让目标用户/群组可见
+
+#### 配置与运行
+
+```bash
+# 方式一：交互式配置（推荐）
+hermes feishu auth
+# 按提示输入 App ID 和 App Secret，自动验证并保存
+
+# 方式二：手动填写配置文件
+cat > ~/.small-rust-hermes/feishu.toml << 'EOF'
+app_id = "cli_xxxxxxxxxxxx"
+app_secret = "xxxxxxxxxxxxxxxxxxxxxxxx"
+domain = "https://open.feishu.cn"
+EOF
+chmod 600 ~/.small-rust-hermes/feishu.toml
+
+# 启动飞书长连接
+hermes feishu run
+```
+
+运行后 Hermes 会通过 WebSocket 连接到飞书服务器，收到文本消息时自动调用 AI 回复。每个飞书用户拥有独立的会话历史，保存在 `~/.small-rust-hermes/sessions/feishu/{user_id}/` 下。
+
+工具调用时会在飞书中实时推送 🔧 摘要消息，让你知道 AI 正在做什么。
+
 ## Usage
 
 ```bash
@@ -197,6 +249,8 @@ hermes-skills      Skill loading, storage, relevance matching (BM25 + triggers)
 hermes-memory      Memory palace: zone-based storage, supersedes chain, effectiveness tracking
 hermes-reflect     Full + micro reflection pipeline, profile compilation
 hermes-cli         CLI entry point and subcommands
+hermes-weixin      WeChat (iLink Bot) bridge: QR login, long-poll, send message
+hermes-feishu      Feishu (Lark) bridge: WS long-connection, protobuf frames, send message
 hermes-gui         Desktop GUI (Tauri)
 ```
 
@@ -227,9 +281,12 @@ During a session, **micro-reflection** runs asynchronously after qualifying turn
 ~/.small-rust-hermes/
 ├── config.toml          # API keys, provider config (mode 600)
 ├── mcp.json             # MCP server definitions
+├── wechat.toml          # WeChat bot token (mode 600)
+├── feishu.toml          # Feishu app_id/app_secret (mode 600)
 ├── skills/              # Learned skills (Markdown + YAML frontmatter)
 ├── memories/            # Accumulated memories (Markdown + YAML frontmatter)
 ├── sessions/            # JSONL transcripts
+│   └── feishu/          # Per-Feishu-user session JSONLs
 └── reflect-log.jsonl    # Reflection acceptance/rejection audit log
 ```
 

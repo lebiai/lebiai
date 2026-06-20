@@ -14,3 +14,4 @@ pub mod session;
 pub mod skills;
 pub mod util;
 pub mod wechat;
+pub mod feishu;
