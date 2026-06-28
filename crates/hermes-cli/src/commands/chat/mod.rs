@@ -19,7 +19,6 @@ use anyhow::{Context, Result};
 use hermes_core::{
     ContentBlock, Role, Session, SessionEvent, SessionMeta,
 };
-use hermes_llm::Config;
 use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore};
 use hermes_skills::{FsSkillStore, LoadedSkill, SkillStore};
 use hermes_store::SessionWriter;
@@ -27,6 +26,7 @@ use hermes_tools::{ProposeContext, SubagentContext};
 
 use super::context::ContextSources;
 use super::readline::{ChatLineEditor, LineOutcome};
+use super::style;
 use super::util::{build_active_provider, build_web_ctx, load_tool_host, session_path_for};
 
 pub(crate) use system_prompt::{compose_system_prompt, inject_time_header};
@@ -42,8 +42,7 @@ pub async fn run(
     model_override: Option<String>,
     resume_path: Option<std::path::PathBuf>,
 ) -> Result<()> {
-    let cfg = Config::load_default()
-        .context("loading config from ~/.small-rust-hermes/config.toml")?;
+    let cfg = super::util::load_config_or_hint()?;
     let provider_cfg = cfg.active_provider()?.clone();
     let provider = build_active_provider(&cfg)?;
 
@@ -213,13 +212,13 @@ pub async fn run(
     if !active_memories.is_empty()
         && hermes_memory::load_profile().unwrap_or(None).is_none()
     {
-        eprintln!("\x1b[90m(compiling memory profile for the first time...)\x1b[0m");
+        eprintln!("{}", style::dim("(compiling memory profile for the first time...)"));
         match hermes_reflect::compile_profile(provider.as_ref(), &active_memories).await {
             Ok(profile) => match hermes_memory::save_profile(&profile) {
-                Ok(p) => eprintln!("\x1b[32m✓ profile compiled ({})\x1b[0m", p.display()),
-                Err(e) => eprintln!("\x1b[31m✗ profile save failed: {e}\x1b[0m"),
+                Ok(p) => eprintln!("{}", style::green(&format!("✓ profile compiled ({})", p.display()))),
+                Err(e) => eprintln!("{}", style::red(&format!("✗ profile save failed: {e}"))),
             },
-            Err(e) => eprintln!("\x1b[31m✗ profile compile failed: {e}\x1b[0m"),
+            Err(e) => eprintln!("{}", style::red(&format!("✗ profile compile failed: {e}"))),
         }
     }
 
@@ -536,7 +535,7 @@ pub async fn run(
                                 match ms.put(c.scope, fm, &c.fact) {
                                     Ok(path) => {
                                         let preview: String = c.fact.chars().take(60).collect();
-                                        eprintln!("  \x1b[32m💾 learned: {preview}\x1b[0m");
+                                        eprintln!("{}", style::green(&format!("  💾 learned: {preview}")));
                                         tracing::info!(path=%path.display(), "auto-accepted memory");
                                         any_accepted = true;
                                     }
@@ -547,8 +546,8 @@ pub async fn run(
                                         // Dedup gate rejected a near-duplicate —
                                         // surface it so auto-learn is observable.
                                         eprintln!(
-                                            "  \x1b[90m↺ skipped (similar to {existing_id}, {:.0}%)\x1b[0m",
-                                            similarity * 100.0
+                                            "{}",
+                                            style::dim(&format!("  ↺ skipped (similar to {existing_id}, {:.0}%)", similarity * 100.0))
                                         );
                                     }
                                     Err(e) => {
@@ -588,7 +587,7 @@ pub async fn run(
                                         if let Err(e) = hermes_memory::save_profile(&profile) {
                                             tracing::warn!(error=%e, "save compiled profile");
                                         } else {
-                                            eprintln!("  \x1b[90m📋 profile recompiled\x1b[0m");
+                                            eprintln!("{}", style::dim("  📋 profile recompiled"));
                                         }
                                     }
                                     Err(e) => {
@@ -599,7 +598,7 @@ pub async fn run(
                                 if let Err(e) = hermes_memory::save_palace_index(&idx) {
                                     tracing::warn!(error=%e, "save palace index");
                                 } else {
-                                    eprintln!("  \x1b[90m🏛 palace index updated\x1b[0m");
+                                    eprintln!("{}", style::dim("  🏛 palace index updated"));
                                 }
                             }
                         }

@@ -20,6 +20,31 @@ pub fn build_active_provider(cfg: &Config) -> Result<Arc<dyn LlmProvider>> {
     cfg.build_active_provider()
 }
 
+/// Load the default config, turning the two most common first-run failures
+/// (no config file, or an empty API key) into a short, actionable message
+/// that points at `hermes init` instead of a raw deserialize / IO error.
+pub fn load_config_or_hint() -> Result<Config> {
+    let path = Config::default_path()?;
+    if !path.exists() {
+        anyhow::bail!(
+            "no config found at {}\n  \u{2192} run `hermes init` to set up your provider and API key",
+            path.display()
+        );
+    }
+    let cfg = Config::load_default()
+        .with_context(|| format!("loading config from {}", path.display()))?;
+    if let Ok(provider) = cfg.active_provider() {
+        if provider.api_key.trim().is_empty() {
+            anyhow::bail!(
+                "API key for provider `{}` is empty\n  \u{2192} run `hermes init`, or edit {} to set it",
+                cfg.default_provider,
+                path.display()
+            );
+        }
+    }
+    Ok(cfg)
+}
+
 /// `max_tokens` budget for `web_fetch` prompt-extraction answers — concise by
 /// design, independent of the (larger) main-turn budget.
 const WEB_EXTRACT_MAX_TOKENS: u32 = 2048;

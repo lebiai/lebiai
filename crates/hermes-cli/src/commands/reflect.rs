@@ -555,7 +555,7 @@ pub(crate) async fn review_proposed_skill(
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
 
-    eprintln!("\n\x1b[1m\x1b[36m== Proposed skill (from agent) ==\x1b[0m");
+    eprintln!("\n{}", crate::commands::style::paint("1;36", "== Proposed skill (from agent) =="));
     let outcome = prompt_skill(c, 1, 1, &mut reader).await?;
     match outcome {
         Some(Action::Accept) => match persist_skill(skill_store, c) {

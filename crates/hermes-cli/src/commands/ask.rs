@@ -6,16 +6,15 @@
 
 use std::io::Write;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use hermes_core::Message;
-use hermes_llm::Config;
 use hermes_turn::{TurnConfig, TurnEvent};
 
 use super::util::{build_active_provider, build_web_ctx, load_tool_host};
+use super::{style, toolfmt};
 
 pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
-    let cfg = Config::load_default()
-        .context("loading config from ~/.small-rust-hermes/config.toml")?;
+    let cfg = super::util::load_config_or_hint()?;
     let provider_cfg = cfg.active_provider()?.clone();
     let provider = build_active_provider(&cfg)?;
 
@@ -65,9 +64,9 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
                     eprint!("\r\x1b[K");
                     let mut buf = thinking_buf.lock().unwrap();
                     if !buf.is_empty() {
-                        eprintln!("\x1b[90m  💭 ──────\x1b[0m");
+                        eprintln!("{}", style::dim("  💭 ──────"));
                         for line in buf.lines() {
-                            eprintln!("\x1b[90m  │ {line}\x1b[0m");
+                            eprintln!("{}", style::dim(&format!("  │ {line}")));
                         }
                     }
                     buf.clear();
@@ -84,7 +83,7 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
                     let preview: String = buf.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
                     let preview = preview.replace('\n', " ");
                     drop(buf);
-                    eprint!("\r\x1b[K\x1b[90m  💭 {preview}\x1b[0m");
+                    eprint!("\r\x1b[K{}", style::dim(&format!("  💭 {preview}")));
                     std::io::stderr().flush().ok();
                     thinking_started.store(true, Relaxed);
                 }
@@ -94,29 +93,29 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
                     eprint!("\r\x1b[K");
                     let mut buf = thinking_buf.lock().unwrap();
                     if !buf.is_empty() {
-                        eprintln!("\x1b[90m  💭 ──────\x1b[0m");
+                        eprintln!("{}", style::dim("  💭 ──────"));
                         for line in buf.lines() {
-                            eprintln!("\x1b[90m  │ {line}\x1b[0m");
+                            eprintln!("{}", style::dim(&format!("  │ {line}")));
                         }
                     }
                     buf.clear();
                     thinking_started.store(false, Relaxed);
                 }
-                eprint!("\x1b[33m  🔧 {name} …\x1b[0m");
+                eprint!("{}", style::yellow(&format!("  {}", toolfmt::friendly_tool_desc(&name))));
                 std::io::stderr().flush().ok();
             }
-            TurnEvent::ToolExecStart { summary, .. } => {
+            TurnEvent::ToolExecStart { name, input, .. } => {
                 eprint!("\r\x1b[K");
-                eprintln!("\x1b[33m  🔧 {summary}\x1b[0m");
+                eprintln!("{}", style::yellow(&format!("  {}", toolfmt::friendly_tool_result(&name, &input, &workspace_root))));
             }
             TurnEvent::ToolUseResult { content, is_error, .. } => {
                 if is_error {
-                    eprintln!("\x1b[31m  ✗ {}\x1b[0m", content.lines().next().unwrap_or(""));
+                    eprintln!("{}", style::red(&format!("  ✗ {}", content.lines().next().unwrap_or(""))));
                 }
             }
             TurnEvent::Usage { .. } | TurnEvent::Done | TurnEvent::ToolConfirmPending { .. } => {}
             TurnEvent::Error(msg) => {
-                eprintln!("\x1b[31m  error: {msg}\x1b[0m");
+                eprintln!("{}", style::red(&format!("  error: {msg}")));
             }
         }
     };

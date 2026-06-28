@@ -20,6 +20,13 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Interactive first-run setup: choose a provider, enter your API key,
+    /// and write ~/.small-rust-hermes/config.toml.
+    Init,
+
+    /// Check configuration & environment health (makes no changes).
+    Doctor,
+
     /// One-shot prompt: send a single user message, print assistant reply.
     Ask {
         prompt: String,
@@ -201,6 +208,8 @@ async fn main() -> Result<()> {
     init_tracing();
     let cli = Cli::parse();
     match cli.command {
+        Command::Init => commands::init::run().await,
+        Command::Doctor => commands::doctor::run().await,
         Command::Ask { prompt, system } => commands::ask::run(prompt, system).await,
         Command::Run {
             goal,

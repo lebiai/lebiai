@@ -394,6 +394,25 @@ extract_model = ""           # empty = reuse main model; e.g. a Haiku / mini tie
         Ok(())
     }
 
+    /// Serialize this config to TOML and write it to `path` (0600 on Unix),
+    /// creating parent directories as needed. Used by `hermes init`.
+    pub fn save_to(&self, path: &Path) -> Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("creating config dir {}", dir.display()))?;
+        }
+        let toml = toml::to_string_pretty(self).context("serializing config to TOML")?;
+        std::fs::write(path, toml)
+            .with_context(|| format!("writing config at {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("chmod 600 {}", path.display()))?;
+        }
+        Ok(())
+    }
+
     pub fn active_provider(&self) -> Result<&ProviderConfig> {
         match self.default_provider.as_str() {
             "anthropic" => self.providers.anthropic.as_ref().ok_or_else(|| {

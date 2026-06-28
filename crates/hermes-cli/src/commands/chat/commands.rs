@@ -13,6 +13,7 @@ use hermes_memory::{LoadedMemory, MemoryStore};
 use hermes_skills::{FsSkillStore, LoadedSkill};
 
 use crate::commands::context::ContextSources;
+use crate::commands::style;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_command(
@@ -120,8 +121,8 @@ pub(super) async fn handle_command(
                 let mut fm = MemoryFrontmatter::new(MemSource::User, Confidence::High, vec![], "core".to_string());
                 fm.pinned = true;
                 match memory_store.put(MemScope::User, fm, text) {
-                    Ok(p) => eprintln!("\x1b[32m✓\x1b[0m remembered: {} ({})", text.chars().take(60).collect::<String>(), p.display()),
-                    Err(e) => eprintln!("\x1b[31m✗\x1b[0m {e}"),
+                    Ok(p) => eprintln!("{} remembered: {} ({})", style::ok_mark(), text.chars().take(60).collect::<String>(), p.display()),
+                    Err(e) => eprintln!("{} {e}", style::err_mark()),
                 }
             }
         }
@@ -143,9 +144,9 @@ pub(super) async fn handle_command(
                         let mut input = String::new();
                         if std::io::stdin().read_line(&mut input).is_ok() && input.trim() == "y" {
                             match memory_store.delete(m.scope, &m.frontmatter.id) {
-                                Ok(true) => eprintln!("\x1b[32m✓\x1b[0m forgotten"),
-                                Ok(false) => eprintln!("\x1b[31m✗\x1b[0m not found on disk"),
-                                Err(e) => eprintln!("\x1b[31m✗\x1b[0m {e}"),
+                                Ok(true) => eprintln!("{} forgotten", style::ok_mark()),
+                                Ok(false) => eprintln!("{} not found on disk", style::err_mark()),
+                                Err(e) => eprintln!("{} {e}", style::err_mark()),
                             }
                         } else {
                             eprintln!("(cancelled)");
@@ -165,9 +166,9 @@ pub(super) async fn handle_command(
             if session.messages.is_empty() {
                 eprintln!("(nothing to reflect on yet — send a message first)");
             } else {
-                eprintln!("\x1b[90m(reflecting on session so far...)\x1b[0m");
+                eprintln!("{}", style::dim("(reflecting on session so far...)"));
                 if let Err(e) = crate::commands::reflect::run_with_min_turns(provider, session, 0).await {
-                    eprintln!("\x1b[31m(reflection failed: {e:#})\x1b[0m");
+                    eprintln!("{}", style::red(&format!("(reflection failed: {e:#})")));
                 }
             }
         }
@@ -175,22 +176,22 @@ pub(super) async fn handle_command(
             if active_memories.is_empty() {
                 eprintln!("(no memories to compile)");
             } else {
-                eprint!("\x1b[90m(compiling memory profile...)\x1b[0m");
+                eprint!("{}", style::dim("(compiling memory profile...)"));
                 std::io::stderr().flush().ok();
                 match hermes_reflect::compile_profile(provider, active_memories).await {
                     Ok(profile) => match hermes_memory::save_profile(&profile) {
                         Ok(p) => {
                             eprint!("\r\x1b[K");
-                            eprintln!("\x1b[32m✓ profile updated ({})\x1b[0m", p.display());
+                            eprintln!("{}", style::green(&format!("✓ profile updated ({})", p.display())));
                         }
                         Err(e) => {
                             eprint!("\r\x1b[K");
-                            eprintln!("\x1b[31m✗ save failed: {e}\x1b[0m");
+                            eprintln!("{}", style::red(&format!("✗ save failed: {e}")));
                         }
                     },
                     Err(e) => {
                         eprint!("\r\x1b[K");
-                        eprintln!("\x1b[31m✗ compile failed: {e}\x1b[0m");
+                        eprintln!("{}", style::red(&format!("✗ compile failed: {e}")));
                     }
                 }
             }
@@ -232,23 +233,23 @@ pub(super) async fn handle_command(
             if active_memories.is_empty() {
                 eprintln!("(no memories to compile)");
             } else {
-                eprint!("\x1b[90m(compiling palace index via LLM...)\x1b[0m");
+                eprint!("{}", style::dim("(compiling palace index via LLM...)"));
                 std::io::stderr().flush().ok();
                 match hermes_reflect::compile_palace_index(provider, active_memories).await {
                     Ok(index) => match hermes_memory::save_palace_index(&index) {
                         Ok(p) => {
                             eprint!("\r\x1b[K");
-                            eprintln!("\x1b[32m✓ palace index compiled ({})\x1b[0m", p.display());
+                            eprintln!("{}", style::green(&format!("✓ palace index compiled ({})", p.display())));
                             eprintln!("(restart chat to use the new index)");
                         }
                         Err(e) => {
                             eprint!("\r\x1b[K");
-                            eprintln!("\x1b[31m✗ save failed: {e}\x1b[0m");
+                            eprintln!("{}", style::red(&format!("✗ save failed: {e}")));
                         }
                     },
                     Err(e) => {
                         eprint!("\r\x1b[K");
-                        eprintln!("\x1b[31m✗ compile failed: {e}\x1b[0m");
+                        eprintln!("{}", style::red(&format!("✗ compile failed: {e}")));
                     }
                 }
             }
@@ -311,7 +312,7 @@ fn handle_skill_add(rest: &str, skill_store: &FsSkillStore) {
     };
 
     if name.contains('/') || name.contains("..") || name.contains('\\') {
-        eprintln!("\x1b[31m✗\x1b[0m invalid skill name (no path separators or '..')");
+        eprintln!("{} invalid skill name (no path separators or '..')", style::err_mark());
         return;
     }
 
@@ -335,7 +336,7 @@ fn handle_skill_add(rest: &str, skill_store: &FsSkillStore) {
     )) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("\x1b[31m✗\x1b[0m editor failed: {e}");
+            eprintln!("{} editor failed: {e}", style::err_mark());
             return;
         }
     };
@@ -354,8 +355,8 @@ fn handle_skill_add(rest: &str, skill_store: &FsSkillStore) {
         extra: serde_yaml::Mapping::new(),
     };
     match skill_store.put(SkScope::User, fm, &body) {
-        Ok(p) => eprintln!("\x1b[32m✓\x1b[0m skill \"{name}\" saved: {}", p.display()),
-        Err(e) => eprintln!("\x1b[31m✗\x1b[0m {e}"),
+        Ok(p) => eprintln!("{} skill \"{name}\" saved: {}", style::ok_mark(), p.display()),
+        Err(e) => eprintln!("{} {e}", style::err_mark()),
     }
 }
 
@@ -373,7 +374,7 @@ fn handle_skill_edit(name: &str, skill_store: &FsSkillStore) {
             return;
         }
         Err(e) => {
-            eprintln!("\x1b[31m✗\x1b[0m {e}");
+            eprintln!("{} {e}", style::err_mark());
             return;
         }
     };
@@ -381,7 +382,7 @@ fn handle_skill_edit(name: &str, skill_store: &FsSkillStore) {
     let body = match edit_in_editor(&existing.body) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("\x1b[31m✗\x1b[0m editor failed: {e}");
+            eprintln!("{} editor failed: {e}", style::err_mark());
             return;
         }
     };
@@ -393,8 +394,8 @@ fn handle_skill_edit(name: &str, skill_store: &FsSkillStore) {
     let scope = existing.scope;
     let fm = existing.frontmatter;
     match skill_store.put(scope, fm, &body) {
-        Ok(p) => eprintln!("\x1b[32m✓\x1b[0m skill \"{name}\" updated: {}", p.display()),
-        Err(e) => eprintln!("\x1b[31m✗\x1b[0m {e}"),
+        Ok(p) => eprintln!("{} skill \"{name}\" updated: {}", style::ok_mark(), p.display()),
+        Err(e) => eprintln!("{} {e}", style::err_mark()),
     }
 }
 
@@ -415,7 +416,7 @@ fn handle_skill_show(name: &str, skill_store: &FsSkillStore) {
             eprintln!("{}", s.body.trim());
         }
         Ok(None) => eprintln!("skill \"{name}\" not found"),
-        Err(e) => eprintln!("\x1b[31m✗\x1b[0m {e}"),
+        Err(e) => eprintln!("{} {e}", style::err_mark()),
     }
 }
 

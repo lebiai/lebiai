@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use hermes_core::{Message, Session, SessionEvent, SessionMeta};
-use hermes_llm::Config;
 use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore};
 use hermes_skills::{FsSkillStore, LoadedSkill, SkillStore};
 use hermes_store::SessionWriter;
@@ -17,11 +16,11 @@ use hermes_turn::{AgentConfig, AgentEvent, TurnConfig, TurnEvent};
 
 use super::context::ContextSources;
 use super::util::{build_active_provider, build_web_ctx, load_tool_host, session_path_for};
+use super::{style, toolfmt};
 use hermes_tools::SubagentContext;
 
 pub async fn run(goal: String, system: Option<String>, max_iterations: Option<usize>) -> Result<()> {
-    let cfg = Config::load_default()
-        .context("loading config from ~/.small-rust-hermes/config.toml")?;
+    let cfg = super::util::load_config_or_hint()?;
     let provider_cfg = cfg.active_provider()?.clone();
     let provider = build_active_provider(&cfg)?;
     let max_iterations = max_iterations.unwrap_or(cfg.limits.agent_max_iterations);
@@ -189,13 +188,17 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
             }
             if first_prompt {
                 eprintln!(
-                    "\x1b[2m  (y = yes, a = always allow this tool, N = deny, or type a reason to deny with feedback)\x1b[0m"
+                    "{}",
+                    style::faint("  (y = yes, a = always allow this tool, N = deny, or type a reason to deny with feedback)")
                 );
                 first_prompt = false;
             }
             eprint!(
-                "\x1b[1m\x1b[33m  ⚠ confirm\x1b[0m {}: {}  \x1b[1m[y/a/N/...]\x1b[0m ",
-                req.tool_name, req.summary,
+                "{} {}: {}  {} ",
+                style::bold_yellow("  ⚠ confirm"),
+                req.tool_name,
+                req.summary,
+                style::bold("[y/a/N/...]"),
             );
             std::io::stderr().flush().ok();
             let mut input = String::new();
@@ -224,9 +227,9 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
         let mut b = buf.lock().unwrap();
         if !b.is_empty() {
             eprint!("\r\x1b[K");
-            eprintln!("\x1b[90m  💭 ──────\x1b[0m");
+            eprintln!("{}", style::dim("  💭 ──────"));
             for line in b.lines() {
-                eprintln!("\x1b[90m  │ {line}\x1b[0m");
+                eprintln!("{}", style::dim(&format!("  │ {line}")));
             }
             b.clear();
         }
@@ -235,7 +238,7 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
     let on_event = |event: AgentEvent| {
         match event {
             AgentEvent::TurnStart { iteration, max } => {
-                eprintln!("\x1b[1m--- Iteration {iteration}/{max} ---\x1b[0m");
+                eprintln!("{}", style::bold(&format!("--- Iteration {iteration}/{max} ---")));
             }
             AgentEvent::TurnEvent(te) => match te {
                 TurnEvent::TextDelta(text) => {
@@ -249,21 +252,21 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
                     let preview: String = buf.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
                     let preview = preview.replace('\n', " ");
                     drop(buf);
-                    eprint!("\r\x1b[K\x1b[90m  💭 {preview}\x1b[0m");
+                    eprint!("\r\x1b[K{}", style::dim(&format!("  💭 {preview}")));
                     std::io::stderr().flush().ok();
                 }
                 TurnEvent::ToolUseStart { name, .. } => {
                     flush_thinking(&thinking_buf);
-                    eprint!("\r\x1b[K\x1b[33m  🔧 {name} …\x1b[0m");
+                    eprint!("\r\x1b[K{}", style::yellow(&format!("  {}", toolfmt::friendly_tool_desc(&name))));
                     std::io::stderr().flush().ok();
                 }
-                TurnEvent::ToolExecStart { summary, .. } => {
+                TurnEvent::ToolExecStart { name, input, .. } => {
                     eprint!("\r\x1b[K");
-                    eprintln!("\x1b[33m  🔧 {summary}\x1b[0m");
+                    eprintln!("{}", style::yellow(&format!("  {}", toolfmt::friendly_tool_result(&name, &input, &workspace_root))));
                 }
                 TurnEvent::ToolUseResult { content, is_error, .. } => {
                     if is_error {
-                        eprintln!("\x1b[31m  ✗ {}\x1b[0m", content.lines().next().unwrap_or(""));
+                        eprintln!("{}", style::red(&format!("  ✗ {}", content.lines().next().unwrap_or(""))));
                     }
                 }
                 TurnEvent::ToolConfirmPending { tool_name, summary, .. } => {
@@ -271,23 +274,23 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
                 }
                 TurnEvent::Usage { .. } | TurnEvent::Done => {}
                 TurnEvent::Error(msg) => {
-                    eprintln!("\x1b[31m  error: {msg}\x1b[0m");
+                    eprintln!("{}", style::red(&format!("  error: {msg}")));
                 }
             },
             AgentEvent::TurnEnd { iteration } => {
-                eprintln!("\n\x1b[2m  iteration {iteration} done\x1b[0m");
+                eprintln!("\n{}", style::faint(&format!("  iteration {iteration} done")));
             }
             AgentEvent::Compacted { removed } => {
-                eprintln!("\x1b[2m  🗜 compacted: removed {removed} messages\x1b[0m");
+                eprintln!("{}", style::faint(&format!("  🗜 compacted: removed {removed} messages")));
             }
             AgentEvent::GoalComplete { summary } => {
-                eprintln!("\n\x1b[32m✓ Goal complete:\x1b[0m {summary}");
+                eprintln!("\n{} {summary}", style::green("✓ Goal complete:"));
             }
             AgentEvent::GoalFailed { reason } => {
-                eprintln!("\n\x1b[31m✗ Goal failed:\x1b[0m {reason}");
+                eprintln!("\n{} {reason}", style::red("✗ Goal failed:"));
             }
             AgentEvent::MaxIterationsReached => {
-                eprintln!("\n\x1b[33m⚠ Max iterations ({max_iterations}) reached without completion.\x1b[0m");
+                eprintln!("\n{}", style::yellow(&format!("⚠ Max iterations ({max_iterations}) reached without completion.")));
             }
         }
     };

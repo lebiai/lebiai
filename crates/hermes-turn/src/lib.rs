@@ -126,7 +126,7 @@ pub enum TurnEvent {
     ThinkingDelta(String),
     ToolUseStart { id: String, name: String },
     /// Emitted right before tool execution, when input is fully known.
-    ToolExecStart { id: String, name: String, summary: String },
+    ToolExecStart { id: String, name: String, summary: String, input: serde_json::Value },
     ToolUseResult { id: String, content: String, is_error: bool },
     ToolConfirmPending { id: String, tool_name: String, summary: String },
     Usage { input_tokens: u32, output_tokens: u32 },
@@ -353,6 +353,7 @@ where
                 id: id.clone(),
                 name: name.clone(),
                 summary: tool_call_summary(&name, &input),
+                input: input.clone(),
             });
 
             match config.permissions.check(&name, &input) {
