@@ -128,7 +128,7 @@ pub async fn send_message(
                 TurnEvent::ToolUseStart { id, name } => {
                     let _ = evt.send(ChatStreamEvent::ToolUseStart { id, name });
                 }
-                TurnEvent::ToolExecStart { id, name, summary } => {
+                TurnEvent::ToolExecStart { id, name, summary, .. } => {
                     let _ = evt.send(ChatStreamEvent::ToolExecStart { id, name, summary });
                 }
                 TurnEvent::ToolConfirmPending { id, tool_name, summary } => {
