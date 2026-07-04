@@ -216,6 +216,13 @@ fn translate_outbound(m: &Message) -> Vec<ChatMessage> {
                         // user-side tool_use never happens in our model;
                         // thinking is dropped.
                     }
+                    ContentBlock::Image { source } => {
+                        // OpenAI ChatMessage content is plain text here; full
+                        // image_url support needs multi-part content (TODO).
+                        // Embed a placeholder so the model knows an image was
+                        // attached.
+                        text_parts.push(format!("[image: {}]", source.media_type));
+                    }
                 }
             }
             if !text_parts.is_empty() {
@@ -254,6 +261,9 @@ fn translate_outbound(m: &Message) -> Vec<ChatMessage> {
                     ContentBlock::Thinking { .. } => {}
                     ContentBlock::ToolResult { .. } => {
                         // Assistant never produces tool_result in our model.
+                    }
+                    ContentBlock::Image { .. } => {
+                        // Assistant never produces images in our model.
                     }
                 }
             }

@@ -74,6 +74,9 @@ fn content_block_to_data(block: &hermes_core::ContentBlock) -> ContentBlockData 
             content: content.clone(),
             is_error: *is_error,
         },
+        hermes_core::ContentBlock::Image { source } => ContentBlockData::Text {
+            text: format!("[image: {}]", source.media_type),
+        },
     }
 }
 

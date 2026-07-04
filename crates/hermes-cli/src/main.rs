@@ -2,7 +2,9 @@
 
 mod commands;
 
+use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -92,6 +94,25 @@ enum Command {
     /// from Telegram.
     #[command(subcommand)]
     Telegram(TelegramCmd),
+
+    /// Start the HTTP/WebSocket server (Flutter / mobile client backend).
+    Serve {
+        /// Port to listen on.
+        #[arg(long, default_value_t = 8765)]
+        port: u16,
+        /// Address to bind. Default `127.0.0.1` (localhost only). Use
+        /// `0.0.0.0` to expose on the LAN/internet — the auth token is
+        /// always required either way.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: IpAddr,
+        /// Auth token (overrides --token-file / `HERMES_SERVER_TOKEN` /
+        /// the saved file). The server prints it on startup if generated.
+        #[arg(long)]
+        token: Option<String>,
+        /// Read the auth token from this file (one line, trimmed).
+        #[arg(long, value_name = "FILE")]
+        token_file: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -286,6 +307,20 @@ async fn main() -> Result<()> {
             TelegramCmd::Auth => commands::telegram::auth().await,
             TelegramCmd::Run => commands::telegram::run().await,
         },
+        Command::Serve {
+            port,
+            host,
+            token,
+            token_file,
+        } => {
+            let token = Arc::new(hermes_server::auth::resolve_token(
+                &hermes_server::auth::TokenOpts {
+                    value: token,
+                    file: token_file,
+                },
+            )?);
+            commands::serve::run(host, port, token).await
+        }
     }
 }
 

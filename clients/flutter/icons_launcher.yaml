@@ -1,0 +1,15 @@
+# Generate all platform launcher icons from the single 1024×1024 master.
+# Master is the same brand icon the Tauri (hermes-gui) app uses, so the two
+# frontends share one identity.
+#
+#   flutter pub get
+#   dart run icons_launcher:create
+icons_launcher:
+  image_path: "assets/icon/icon.png"
+  platforms:
+    android:
+      enable: true
+    ios:
+      enable: true
+    macos:
+      enable: true

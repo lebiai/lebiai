@@ -12,6 +12,7 @@ members = [
     "crates/hermes-weixin",
     "crates/hermes-feishu",
     "crates/hermes-telegram",
+    "crates/hermes-server",
 ]
 
 [workspace.package]
@@ -74,6 +75,13 @@ hermes-turn = { path = "crates/hermes-turn" }
 hermes-weixin = { path = "crates/hermes-weixin" }
 hermes-feishu = { path = "crates/hermes-feishu" }
 hermes-telegram = { path = "crates/hermes-telegram" }
+hermes-server = { path = "crates/hermes-server" }
+
+# HTTP/WebSocket server (hermes-server)
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+toml_edit = "0.22"
+rand = "0.8"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

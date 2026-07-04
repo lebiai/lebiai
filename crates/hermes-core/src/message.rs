@@ -59,6 +59,23 @@ pub enum ContentBlock {
         #[serde(default)]
         is_error: bool,
     },
+    /// Inline image (Anthropic "base64" source shape). Only valid in user
+    /// messages. The Anthropic provider serializes it directly (its request
+    /// body serde-encodes `ContentBlock`); OpenAI-style providers currently
+    /// drop it to a placeholder (their `content` is plain text).
+    Image {
+        source: ImageSource,
+    },
+}
+
+/// Inline image source — Anthropic "base64" shape. Serialized into the
+/// session log too, so history replay can render the image.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageSource {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub media_type: String,
+    pub data: String,
 }
 
 impl ContentBlock {

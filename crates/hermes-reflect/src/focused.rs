@@ -141,6 +141,9 @@ fn focused_user_prompt(recent: &[Message], hint: Option<&str>) -> String {
             };
             for block in &msg.content {
                 match block {
+                    ContentBlock::Image { source } => {
+                        buf.push_str(&format!("[{role} image: {}]\n", source.media_type));
+                    }
                     ContentBlock::Text { text } => {
                         buf.push_str(&format!("[{role}] {text}\n"));
                     }

@@ -15,7 +15,7 @@ pub mod style;
 pub mod tool_host;
 
 pub use error::{Error, Result};
-pub use message::{ContentBlock, Message, Role};
+pub use message::{ContentBlock, ImageSource, Message, Role};
 pub use provider::{
     Capabilities, CompletionRequest, CompletionResponse, LlmProvider, StopReason, StreamEvent,
     ToolSpec, Usage,

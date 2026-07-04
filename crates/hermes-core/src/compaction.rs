@@ -63,6 +63,9 @@ pub fn estimate_session_tokens(
                     total += estimate_tokens(&serde_json::to_string(input).unwrap_or_default());
                 }
                 ContentBlock::ToolResult { content, .. } => total += estimate_tokens(content),
+                // Base64 image data is sent to the provider; count it so
+                // compaction triggers correctly for image-heavy turns.
+                ContentBlock::Image { source } => total += estimate_tokens(&source.data),
             }
         }
     }
@@ -150,6 +153,9 @@ fn format_for_summary(messages: &[Message]) -> String {
                     buf.push_str(&format!("[{role} tool_result] {preview}\n"));
                 }
                 ContentBlock::Thinking { .. } => {}
+                ContentBlock::Image { source } => {
+                    buf.push_str(&format!("[{role} image: {}]\n", source.media_type));
+                }
             }
         }
     }

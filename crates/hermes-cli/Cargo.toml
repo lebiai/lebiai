@@ -24,6 +24,7 @@ hermes-turn = { workspace = true }
 hermes-weixin = { workspace = true }
 hermes-feishu = { workspace = true }
 hermes-telegram = { workspace = true }
+hermes-server = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }

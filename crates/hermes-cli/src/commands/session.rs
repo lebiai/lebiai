@@ -67,6 +67,7 @@ fn preview_message(m: &hermes_core::Message) -> String {
             } else {
                 "[tool_result]".into()
             }),
+            ContentBlock::Image { source } => parts.push(format!("[image: {}]", source.media_type)),
         }
     }
     parts.join(" · ")

@@ -13,6 +13,7 @@ pub mod memory;
 pub mod readline;
 pub mod reflect;
 pub mod reflect_stats;
+pub mod serve;
 pub mod session;
 pub mod skills;
 pub mod style;
