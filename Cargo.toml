@@ -11,6 +11,7 @@ members = [
     "crates/hermes-turn",
     "crates/hermes-weixin",
     "crates/hermes-feishu",
+    "crates/hermes-telegram",
 ]
 
 [workspace.package]
@@ -72,6 +73,7 @@ hermes-reflect = { path = "crates/hermes-reflect" }
 hermes-turn = { path = "crates/hermes-turn" }
 hermes-weixin = { path = "crates/hermes-weixin" }
 hermes-feishu = { path = "crates/hermes-feishu" }
+hermes-telegram = { path = "crates/hermes-telegram" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

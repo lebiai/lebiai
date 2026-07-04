@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod ask;
 pub mod chat;
+pub mod channel;
 pub mod context;
 pub mod doctor;
 pub mod editor;
@@ -19,3 +20,4 @@ pub mod toolfmt;
 pub mod util;
 pub mod wechat;
 pub mod feishu;
+pub mod telegram;

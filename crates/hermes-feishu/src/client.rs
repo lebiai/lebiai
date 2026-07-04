@@ -34,6 +34,15 @@ const ENDPOINT_PATH: &str = "/callback/ws/endpoint";
 const TOKEN_PATH: &str = "/open-apis/auth/v3/tenant_access_token/internal";
 const SEND_MESSAGE_PATH: &str = "/open-apis/im/v1/messages";
 
+// ---- shared WebSocket types ------------------------------------------------
+
+/// Shared write half of the Feishu WebSocket. Wrapped in `Arc<Mutex<…>>` so
+/// the ping loop, ACK sender, and close handler can all send frames without
+/// interleaving writes.
+type WsSink = Arc<
+    Mutex<futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>,
+>;
+
 // ---- bootstrap types ------------------------------------------------------
 
 #[derive(Debug, Serialize)]
@@ -263,7 +272,7 @@ impl FeishuClient {
                     let interval = config.reconnect_interval.unwrap_or(120);
                     // First reconnect: random jitter up to `nonce` seconds
                     let jitter = (nonce as u64 * 1000)
-                        * (uuid::Uuid::new_v4().as_u128() as u64 % 1000) as u64
+                        * (uuid::Uuid::new_v4().as_u128() as u64 % 1000)
                         / 1000;
                     tokio::time::sleep(Duration::from_millis(jitter)).await;
                     // Subsequent: fixed interval
@@ -470,10 +479,7 @@ impl FeishuClient {
         &self,
         data: &[u8],
         on_event: &EventHandler,
-        write: &Arc<Mutex<futures_util::stream::SplitSink<
-            WebSocketStream<MaybeTlsStream<TcpStream>>,
-            Message,
-        >>>,
+        write: &WsSink,
     ) -> Result<()> {
         let frame = Frame::decode(data).context("decoding WS frame")?;
 
@@ -506,10 +512,7 @@ impl FeishuClient {
         &self,
         frame: &Frame,
         on_event: &EventHandler,
-        write: &Arc<Mutex<futures_util::stream::SplitSink<
-            WebSocketStream<MaybeTlsStream<TcpStream>>,
-            Message,
-        >>>,
+        write: &WsSink,
     ) -> Result<()> {
         let msg_type = frame.header(frame::header_key::TYPE).unwrap_or("");
         let sum: i32 = frame
@@ -561,10 +564,7 @@ impl FeishuClient {
         &self,
         original: &Frame,
         status_code: i32,
-        write: &Arc<Mutex<futures_util::stream::SplitSink<
-            WebSocketStream<MaybeTlsStream<TcpStream>>,
-            Message,
-        >>>,
+        write: &WsSink,
     ) -> Result<()> {
         let mut resp_frame = Frame {
             seq_id: original.seq_id,

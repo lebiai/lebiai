@@ -87,6 +87,11 @@ enum Command {
     /// from Feishu.
     #[command(subcommand)]
     Feishu(FeishuCmd),
+
+    /// Telegram bridge: connect via Bot API long-poll, chat with the model
+    /// from Telegram.
+    #[command(subcommand)]
+    Telegram(TelegramCmd),
 }
 
 #[derive(Subcommand, Debug)]
@@ -104,6 +109,15 @@ enum FeishuCmd {
     /// `~/.small-rust-hermes/feishu.toml` (mode 600).
     Auth,
     /// Connect to Feishu via WS long-connection and reply to messages.
+    Run,
+}
+
+#[derive(Subcommand, Debug)]
+enum TelegramCmd {
+    /// Validate the bot token (from @BotFather) and persist it to
+    /// `~/.small-rust-hermes/telegram.toml` (mode 600).
+    Auth,
+    /// Long-poll for incoming Telegram messages and reply with the Hermes model.
     Run,
 }
 
@@ -267,6 +281,10 @@ async fn main() -> Result<()> {
         Command::Feishu(sub) => match sub {
             FeishuCmd::Auth => commands::feishu::auth().await,
             FeishuCmd::Run => commands::feishu::run().await,
+        },
+        Command::Telegram(sub) => match sub {
+            TelegramCmd::Auth => commands::telegram::auth().await,
+            TelegramCmd::Run => commands::telegram::run().await,
         },
     }
 }

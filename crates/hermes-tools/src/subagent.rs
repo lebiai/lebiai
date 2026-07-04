@@ -52,6 +52,7 @@ pub struct SubagentContext {
 }
 
 impl SubagentContext {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: Arc<dyn LlmProvider>,
         model: String,
@@ -95,6 +96,7 @@ struct SubagentArgs {
     ///   outputs, write grading.json)
     /// - comparator subagent: `["read", "glob", "write"]` (read both outputs,
     ///   write comparison.json)
+    ///
     /// The `subagent` tool itself is always excluded from the list (no nesting).
     #[serde(default)]
     allow_tools: Vec<String>,

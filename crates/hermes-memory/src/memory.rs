@@ -137,7 +137,7 @@ mod tests {
         // The auto-accept gate is `candidate >= threshold`.
         assert!(Confidence::High >= Confidence::Medium);
         assert!(Confidence::Medium >= Confidence::Medium);
-        assert!(!(Confidence::Low >= Confidence::Medium));
+        assert!(Confidence::Low < Confidence::Medium);
     }
 
     #[test]

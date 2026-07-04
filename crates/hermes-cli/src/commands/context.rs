@@ -1,8 +1,10 @@
-//! Per-turn context assembly: stitch base system prompt + pinned memories
-//! + active memory index + skills discovery index into the `system` string
-//! sent to the LLM. Skill bodies are NOT injected here — the LLM activates
-//! a skill by calling the `skill_read` tool when it decides one is relevant
-//! (Agent Skills "Progressive Disclosure": Discovery → Activation → Execution).
+//! Per-turn context assembly: stitch the base system prompt, pinned memories,
+//! active memory index, and skills discovery index into the `system` string
+//! sent to the LLM.
+//!
+//! Skill bodies are NOT injected here — the LLM activates a skill by calling
+//! the `skill_read` tool when it decides one is relevant (Agent Skills
+//! "Progressive Disclosure": Discovery → Activation → Execution).
 //!
 //! Layout:
 //! ```text
