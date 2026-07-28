@@ -134,6 +134,7 @@ impl ToolHost for BuiltinToolHost {
             tools.push(memory::spec());
             tools.push(memory::save_spec());
             tools.push(memory::delete_spec());
+            tools.push(memory::distill_spec());
             tools.push(palace::zones_spec());
             tools.push(palace::read_zone_spec());
             tools.push(palace::recall_spec());
@@ -184,6 +185,12 @@ impl ToolHost for BuiltinToolHost {
                     Error::ToolHost("memory_delete: no memory store configured".into())
                 })?;
                 memory::delete_run(store.as_ref(), args).await
+            }
+            "memory_distill" => {
+                let store = self.memory_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("memory_distill: no memory store configured".into())
+                })?;
+                memory::distill_run(store.as_ref(), args).await
             }
             "palace_zones" => {
                 let store = self.memory_store.as_ref().ok_or_else(|| {
