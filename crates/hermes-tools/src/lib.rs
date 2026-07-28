@@ -99,6 +99,7 @@ impl BuiltinToolHost {
                     | "memory_search"
                     | "memory_save"
                     | "memory_delete"
+                    | "memory_distill"
                     | "palace_zones"
                     | "palace_read_zone"
                     | "palace_recall"
@@ -292,5 +293,40 @@ impl ToolHost for CompositeToolHost {
         Err(Error::ToolHost(format!(
             "unknown tool: {name}. Use one of the tools listed in your tool definitions."
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hermes_memory::FsMemoryStore;
+    use tempfile::tempdir;
+
+    /// Regression guard: every tool that `list_tools` advertises must be
+    /// recognised by `handles()`. `CompositeToolHost::call` routes via
+    /// `handles` — a tool listed but not handled surfaces as "unknown tool"
+    /// at call time (the exact bug that shipped `memory_distill` listed but
+    /// uncallable). This test fails the moment a new tool is added to
+    /// `list_tools` without being added to the `handles` whitelist.
+    #[tokio::test]
+    async fn every_listed_tool_is_handled() {
+        let dir = tempdir().unwrap();
+        let store: Arc<dyn MemoryStore> = Arc::new(FsMemoryStore::new(
+            dir.path().to_path_buf(),
+            None,
+        ));
+        let host = BuiltinToolHost::new(dir.path().to_path_buf()).with_memory_store(store);
+
+        let tools = host.list_tools().await.unwrap();
+        assert!(!tools.is_empty(), "memory store wired → tools expected");
+        for spec in &tools {
+            assert!(
+                host.handles(&spec.name),
+                "tool {:?} is advertised by list_tools but NOT recognised by handles() \
+                 — CompositeToolHost::call will reject it as 'unknown tool'. \
+                 Add it to the handles() whitelist in lib.rs.",
+                spec.name
+            );
+        }
     }
 }
