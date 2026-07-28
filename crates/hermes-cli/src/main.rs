@@ -80,6 +80,26 @@ enum Command {
         last: usize,
     },
 
+    /// Distill the memory store: cluster near-duplicate memories across
+    /// sessions and merge each cluster into one survivor. The first
+    /// mechanism that makes the knowledge base *converge*, not just grow.
+    Distill {
+        /// Actually write changes. Without this, `hermes distill` is a
+        /// read-only dry-run that only prints the proposed clusters.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// For each accepted cluster, call the LLM once to fuse the members
+        /// into a single denser statement. Implies `--apply`. Cost is
+        /// bounded to clusters the user accepts.
+        #[arg(long, default_value_t = false)]
+        llm_merge: bool,
+        /// TF-IDF cosine-similarity threshold for "near-duplicate".
+        /// Genuine rewordings cluster around 0.55–0.65; unrelated facts
+        /// score below ~0.1.
+        #[arg(long, default_value_t = hermes_memory::distill::DEFAULT_THRESHOLD)]
+        threshold: f64,
+    },
+
     /// WeChat (iLink Bot) bridge: scan QR in the terminal, chat with the model
     /// from WeChat.
     #[command(subcommand)]
@@ -295,6 +315,18 @@ async fn main() -> Result<()> {
             SessionCmd::Show { path } => commands::session::show(&path),
         },
         Command::ReflectStats { last } => commands::reflect_stats::run(last),
+        Command::Distill {
+            apply,
+            llm_merge,
+            threshold,
+        } => {
+            commands::distill::run(&commands::distill::DistillOpts {
+                apply,
+                llm_merge,
+                threshold,
+            })
+            .await
+        }
         Command::Wechat(sub) => match sub {
             WechatCmd::Login => commands::wechat::login().await,
             WechatCmd::Run => commands::wechat::run().await,

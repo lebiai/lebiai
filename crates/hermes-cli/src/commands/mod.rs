@@ -5,6 +5,7 @@ pub mod ask;
 pub mod chat;
 pub mod channel;
 pub mod context;
+pub mod distill;
 pub mod doctor;
 pub mod editor;
 pub mod init;

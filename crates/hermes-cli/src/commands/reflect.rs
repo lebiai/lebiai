@@ -585,7 +585,10 @@ pub(crate) async fn review_proposed_skill(
     Ok(())
 }
 
-fn persist_memory(store: &FsMemoryStore, c: &MemoryCandidate) -> Result<PathBuf> {
+/// Persist a memory candidate: a fresh id, `supersedes` set to whatever the
+/// candidate carries. Reused by `hermes distill` to write the survivor of a
+/// cluster (its `supersedes` lists the other members' ids).
+pub(crate) fn persist_memory(store: &FsMemoryStore, c: &MemoryCandidate) -> Result<PathBuf> {
     let mut fm = MemoryFrontmatter::new(MemorySource::Reflection, c.confidence, c.tags.clone(), "general".to_string());
     fm.supersedes = c.supersedes.clone();
     let scope = c.scope;

@@ -6,6 +6,7 @@
 
 #[cfg(feature = "embed")]
 pub mod embed;
+pub mod distill;
 pub mod memory;
 pub mod palace;
 pub mod profile;
