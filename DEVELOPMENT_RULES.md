@@ -87,7 +87,7 @@ README.md
 - **禁止**在仓库根新增其他 `*.md`
 - **所有其他说明文档**必须放在 [`docs/`](./docs/)，并由 [`docs/README.md`](./docs/README.md) 索引
 - 变更台账：[`docs/records/`](./docs/records/)
-- 例外：`LICENSE`；代码树内运行时资源（如 `crates/hermes-cli/src/skills/**/SKILL.md`）
+- 例外：代码树内运行时资源（如 `crates/hermes-cli/src/skills/**/SKILL.md`）
 
 违规处理：移入 `docs/` 或删除 + 写 `docs/records/` 记录。
 

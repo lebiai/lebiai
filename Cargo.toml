@@ -20,7 +20,6 @@ members = [
 version = "0.1.1"
 edition = "2021"
 rust-version = "1.78"
-license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 authors = ["老码小张 <1595819400@qq.com>"]
 
 [workspace.dependencies]

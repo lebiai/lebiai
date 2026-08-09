@@ -58,7 +58,7 @@ Slogan：**越用越像你的手感。**
 - **禁止**在根目录新增任何其他 `*.md`
 - **所有其他说明文档**必须放在 [`docs/`](./docs/)（见 [`docs/README.md`](./docs/README.md)）
 - 变更台账：[`docs/records/`](./docs/records/)
-- 非文档例外：`LICENSE`；代码内嵌运行时 `SKILL.md` 等资源
+- 非文档例外：代码内嵌运行时 `SKILL.md` 等资源
 
 发现根目录出现多余 md → **移入 `docs/` 或删除**，并写台账。
 

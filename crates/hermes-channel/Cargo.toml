@@ -3,7 +3,6 @@ name = "hermes-channel"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
 authors.workspace = true
 description = "Shared chat-channel driver (WeChat/Feishu/Telegram) for Hermes: Channel trait, ServeCtx, serve_inbound, context assembly"
 

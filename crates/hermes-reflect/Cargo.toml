@@ -3,7 +3,6 @@ name = "hermes-reflect"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
 authors.workspace = true
 description = "Reflection pipeline: distill sessions into skill / memory candidates"
 

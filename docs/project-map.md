@@ -147,7 +147,6 @@ clone / 下载二进制（或 Docker 镜像）
 | README-HONESTY | ✅ 已处理（本审查内）：README「reflection at session end」改为「/reflect 手动 + roadmap」；架构图补 `hermes-server`/`hermes-telegram`；File Layout 补 `server.token`/`telegram.toml` |
 | MOBILE-E2E | Flutter 多模态/语音/推送的真机端到端验证（需 APNs/FCM 凭证 + 设备） |
 | WS-RELIAB | 微信长轮询断线重连与超时的压力验证 |
-| LICENSE-CHK | PolyForm Noncommercial 边界文档化（商业授权联系渠道已在 README） |
 | TOKEN-STORAGE | 移动端 token 明文存 `shared_preferences` | ⬜ 已实施（`20260803-token-secure-storage`）：token 迁入 `flutter_secure_storage`（Keychain/Keystore）+ Android minSdk 23 + macOS entitlement；**待 Flutter 环境验收**（本机无 Flutter SDK） |
 
 ### P2 · 非主路径

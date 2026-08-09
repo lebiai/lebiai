@@ -32,6 +32,7 @@ docs/records/YYYYMMDD-短横线-英文或拼音-slug.md
 | 编号 | 标题 | 状态 | 日期 |
 
 |------|------|------|------|
+| [20260809-remove-license](./20260809-remove-license.md) | **删除全部执照（LICENSE）内容**（LICENSE 文件 · README 章节 · Cargo 字段 · 各文档引用；保留技能元数据字段） | **已验收** | 2026-08-09 |
 | [20260809-readme-user-facing-rewrite](./20260809-readme-user-facing-rewrite.md) | **README 重写为纯用户向介绍**（是什么/场景/手感/隐私/三步使用/FAQ；删除全部开发者内容） | **已验收**（文档） | 2026-08-09 |
 | [20260809-provider-preset-selector](./20260809-provider-preset-selector.md) | **模型服务预设化：选服务商 + 只填 API Key + 保存即热切换**（PROVIDER_PRESETS 单一事实源 · 设置页下拉预设 · GUI/server RwLock 热切换 · 去「重启生效」） | **已验收**（工程全绿 · 设置页目视已验证 · 真实对话热切换待复测） | 2026-08-09 |
 | [20260809-default-deepseek-help-ux](./20260809-default-deepseek-help-ux.md) | **默认 DeepSeek + API Key 教程折叠 + 界面去术语**（provider 四件套 · 帮助卡片点击展开 · i18n 大白话） | **已验收**（工程全绿 · 用户目视确认中） | 2026-08-09 |

@@ -34,7 +34,7 @@
 「对话」是**共事界面**，不是闲聊场。成功标准是用户愿意回来、觉得「它懂我还敢跟我较真」，
 不是「模型又升级了」。
 
-目标用户：**个人用户与开发者**（非商业场景，见 [LICENSE](./LICENSE) PolyForm Noncommercial）。
+目标用户：**个人用户与开发者**。
 
 **体感公式（工程层）：**
 
@@ -159,7 +159,7 @@
 - 一律放在 `docs/`（含变更台账 `docs/records/`）
 - 索引见 `docs/README.md`
 
-非「说明文档」例外：`LICENSE`；代码内嵌运行时资源（如 `crates/hermes-cli/src/skills/**/SKILL.md`）。
+非「说明文档」例外：代码内嵌运行时资源（如 `crates/hermes-cli/src/skills/**/SKILL.md`）。
 
 ---
 

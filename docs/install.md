@@ -94,4 +94,4 @@
 
 - 产品定位与原则：[`../PRODUCT_PRINCIPLES.md`](../PRODUCT_PRINCIPLES.md)（P0）
 - 开发文档索引：[`docs/README.md`](./README.md)
-- 问题反馈 / 商业授权：见 [`../README.md`](../README.md) 文末联系方式。
+- 问题反馈：见 [`../README.md`](../README.md)。

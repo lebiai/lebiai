@@ -3,7 +3,6 @@ name = "hermes-gui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
 authors.workspace = true
 description = "lebi-AI desktop GUI (Tauri 2.x desktop app)"
 

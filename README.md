@@ -49,9 +49,3 @@
 ## 反馈与支持
 
 使用中遇到问题或有想法，欢迎到 [GitHub Issues](https://github.com/lebiai/lebiai/issues) 告诉我们。
-
-## 许可证
-
-本项目采用 **PolyForm 非商业许可证 1.0.0**：个人学习、研究、业余使用免费；未经书面授权不得用于商业用途。全文见 [LICENSE](./LICENSE)。
-
-- **商业授权联系**：老码小张 · [1595819400@qq.com](mailto:1595819400@qq.com)
