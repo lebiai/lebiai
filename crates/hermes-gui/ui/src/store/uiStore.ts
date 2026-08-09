@@ -27,9 +27,6 @@ interface UiState {
   /** null = not loaded yet */
   hasApiKey: boolean | null;
   setHasApiKey: (v: boolean) => void;
-  /** Session-local dismiss of the setup banner */
-  setupBannerDismissed: boolean;
-  dismissSetupBanner: () => void;
   /** Request full-screen onboarding (Settings replay). */
   onboardingRequestId: number;
   requestOnboarding: () => void;
@@ -71,8 +68,6 @@ export const useUiStore = create<UiState>((set) => ({
   },
   hasApiKey: null,
   setHasApiKey: (v) => set({ hasApiKey: v }),
-  setupBannerDismissed: false,
-  dismissSetupBanner: () => set({ setupBannerDismissed: true }),
   onboardingRequestId: 0,
   requestOnboarding: () =>
     set((s) => ({ onboardingRequestId: s.onboardingRequestId + 1 })),

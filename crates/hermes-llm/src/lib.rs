@@ -61,7 +61,11 @@ pub fn humanize_error(raw: &str) -> String {
 fn extract_http_status(raw: &str) -> Option<u16> {
     // Engine format: "HTTP 401: ..." / "http error 429 ..." / "status 503"
     let re = [
-        "http ", "http error ", "http error: ", "status ", "status: ",
+        "http ",
+        "http error ",
+        "http error: ",
+        "status ",
+        "status: ",
     ];
     let lower = raw.to_ascii_lowercase();
     for prefix in re {

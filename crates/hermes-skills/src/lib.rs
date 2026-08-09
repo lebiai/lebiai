@@ -1,5 +1,6 @@
 //! hermes-skills: skill domain (parse, store, match).
 
+pub mod bundled;
 pub mod install;
 pub mod relevance;
 pub mod skill;

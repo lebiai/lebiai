@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
 
 use hermes_core::{clear_data_dir_pointer, data_root, write_data_dir_pointer};
 
@@ -55,32 +56,56 @@ pub fn data_dir_migrate(
         return Err(GuiError::Config("新位置与当前数据目录相同".into()));
     }
     if current.starts_with(&target) || target.starts_with(&current) {
-        return Err(GuiError::Config("新位置不能是当前数据目录的子目录或父目录".into()));
+        return Err(GuiError::Config(
+            "新位置不能是当前数据目录的子目录或父目录".into(),
+        ));
     }
     if target.join("config.toml").exists() {
         return Err(GuiError::Config(
             "目标目录已包含 lebi-AI 数据，请换一个空目录".into(),
         ));
     }
-    if target.exists() && target.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false) {
+    if target.exists()
+        && target
+            .read_dir()
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false)
+    {
         return Err(GuiError::Config("目标目录非空，请选择空目录".into()));
     }
 
-    copy_dir_all(&current, &target).map_err(|e| {
-        GuiError::Config(format!("复制数据失败（{e}）；原数据未受影响，请重试"))
-    })?;
+    copy_dir_all(&current, &target)
+        .map_err(|e| GuiError::Config(format!("复制数据失败（{e}）；原数据未受影响，请重试")))?;
     if dir_file_count(&current) != dir_file_count(&target) {
         return Err(GuiError::Config(
             "复制校验未通过，已回滚指针；原数据保持完好，请重试".into(),
         ));
     }
-    write_data_dir_pointer(&target).map_err(|e| GuiError::Config(format!("记录新位置失败：{e}")))?;
+    write_data_dir_pointer(&target)
+        .map_err(|e| GuiError::Config(format!("记录新位置失败：{e}")))?;
 
     Ok(DataDirView {
         data_root: target.to_string_lossy().into_owned(),
         workspace_root: state.workspace_root(),
         user_chosen: true,
     })
+}
+
+/// Open the system folder picker and return the chosen absolute path.
+/// Returns None when the user cancels.
+#[tauri::command]
+pub async fn data_dir_pick(app: AppHandle) -> Result<Option<String>, GuiError> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<std::path::PathBuf>>();
+    app.dialog()
+        .file()
+        .set_title("选择 lebi-AI 数据目录")
+        .pick_folder(move |folder| {
+            let _ = tx.send(folder.and_then(|f| f.into_path().ok()));
+        });
+    match rx.await {
+        Ok(folder) => Ok(folder.map(|p| p.to_string_lossy().into_owned())),
+        Err(_) => Err(GuiError::Config("目录选择窗口已关闭，请重试".into())),
+    }
 }
 
 #[tauri::command]

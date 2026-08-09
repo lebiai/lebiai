@@ -713,14 +713,18 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LlmProvider for ScriptedProvider {
-        async fn complete(&self, _req: CompletionRequest) -> hermes_core::Result<CompletionResponse> {
+        async fn complete(
+            &self,
+            _req: CompletionRequest,
+        ) -> hermes_core::Result<CompletionResponse> {
             self.next()
         }
 
         async fn stream(
             &self,
             _req: CompletionRequest,
-        ) -> hermes_core::Result<futures::stream::BoxStream<'static, CoreResult<StreamEvent>>> {
+        ) -> hermes_core::Result<futures::stream::BoxStream<'static, CoreResult<StreamEvent>>>
+        {
             let resp = self.next()?;
             let mut evs: Vec<CoreResult<StreamEvent>> = Vec::new();
             for (i, block) in resp.content.iter().enumerate() {
@@ -785,7 +789,9 @@ mod tests {
                     content: "approved-executed".into(),
                     is_error: false,
                 }),
-                other => Err(hermes_core::Error::ToolHost(format!("unknown test tool {other}"))),
+                other => Err(hermes_core::Error::ToolHost(format!(
+                    "unknown test tool {other}"
+                ))),
             }
         }
     }
@@ -875,7 +881,6 @@ mod tests {
             .join("")
     }
 
-    
     #[test]
     fn run_turn_pure_text_round_trip() {
         let provider = ScriptedProvider::new(vec![text_resp("hello world")]);
@@ -883,7 +888,9 @@ mod tests {
 
         assert_eq!(out.new_messages.len(), 1);
         assert_eq!(text_of(&out.new_messages[0]), "hello world");
-        assert!(evs.iter().any(|e| matches!(e, TurnEvent::TextDelta(t) if t == "hello world")));
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, TurnEvent::TextDelta(t) if t == "hello world")));
         assert!(evs.iter().any(|e| matches!(
             e,
             TurnEvent::Usage {
@@ -893,7 +900,9 @@ mod tests {
             }
         )));
         assert!(evs.iter().any(|e| matches!(e, TurnEvent::Done)));
-        assert!(!evs.iter().any(|e| matches!(e, TurnEvent::ToolUseStart { .. })));
+        assert!(!evs
+            .iter()
+            .any(|e| matches!(e, TurnEvent::ToolUseStart { .. })));
     }
 
     #[test]
@@ -928,7 +937,9 @@ mod tests {
             e,
             TurnEvent::ToolUseResult { content, is_error: false, .. } if content.starts_with("echo:")
         )));
-        assert!(evs.iter().any(|e| matches!(e, TurnEvent::TextDelta(t) if t == "done after tool")));
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, TurnEvent::TextDelta(t) if t == "done after tool")));
         assert!(evs.iter().any(|e| matches!(e, TurnEvent::Done)));
         // Tool result must have been fed back into a user message.
         let last = out.new_messages.last().unwrap();
@@ -966,7 +977,9 @@ mod tests {
         let _ = approver.await;
         let evs = Arc::try_unwrap(collected).unwrap().into_inner().unwrap();
 
-        assert!(evs.iter().any(|e| matches!(e, TurnEvent::ToolConfirmPending { .. })));
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, TurnEvent::ToolConfirmPending { .. })));
         assert!(evs.iter().any(|e| matches!(
             e,
             TurnEvent::ToolUseResult { content, is_error: false, .. } if content == "approved-executed"
@@ -1005,7 +1018,9 @@ mod tests {
         let _ = denier.await;
         let evs = Arc::try_unwrap(collected).unwrap().into_inner().unwrap();
 
-        assert!(evs.iter().any(|e| matches!(e, TurnEvent::ToolConfirmPending { .. })));
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, TurnEvent::ToolConfirmPending { .. })));
         assert!(evs.iter().any(|e| matches!(
             e,
             TurnEvent::ToolUseResult { content, is_error: true, .. } if content.contains("denied")

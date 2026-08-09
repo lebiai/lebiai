@@ -23,7 +23,6 @@ import { StreamingBubble } from "./StreamingBubble";
 import { ConfirmModal } from "./ConfirmModal";
 import { ProposedSkillModal } from "./ProposedSkillModal";
 import { WelcomeScenes } from "./WelcomeScenes";
-import { SetupBanner } from "./SetupBanner";
 import { MicroReviewModal } from "../reflect/MicroReviewModal";
 
 /** Enable windowing when the transcript is long enough to matter. */
@@ -265,8 +264,6 @@ export function ChatView() {
             })}
         </span>
       </header>
-
-      <SetupBanner />
 
       {/* key forces light re-enter when switching / new chat — not a blocking loader */}
       <div

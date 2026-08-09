@@ -1,7 +1,7 @@
 use serde::Serialize;
 use tauri::State;
 
-use hermes_skills::{SkillFrontmatter, SkillStore};
+use hermes_skills::{SkillFrontmatter, SkillStore, BUNDLED_SKILLS};
 
 use crate::error::GuiError;
 use crate::state::AppState;
@@ -14,6 +14,7 @@ pub struct SkillItem {
     pub triggers: Vec<String>,
     pub scope: String,
     pub body: String,
+    pub builtin: bool,
 }
 
 fn to_item(s: &hermes_skills::LoadedSkill) -> SkillItem {
@@ -23,6 +24,7 @@ fn to_item(s: &hermes_skills::LoadedSkill) -> SkillItem {
         triggers: s.frontmatter.triggers.clone(),
         scope: format!("{:?}", s.scope),
         body: s.body.clone(),
+        builtin: BUNDLED_SKILLS.contains(&s.frontmatter.name.as_str()),
     }
 }
 
@@ -82,6 +84,11 @@ pub fn delete_skill(
     name: String,
     scope: String,
 ) -> Result<bool, GuiError> {
+    if BUNDLED_SKILLS.contains(&name.as_str()) {
+        return Err(GuiError::Internal(format!(
+            "skill {name:?} is bundled with the app and auto-reinstalls at launch"
+        )));
+    }
     state
         .skill_store
         .delete(parse_scope(&scope), &name)

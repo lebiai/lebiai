@@ -17,8 +17,8 @@ use hermes_memory::{
     Source as MemorySource,
 };
 use hermes_reflect::{
-    deferred_load, reflect, CandidateKind, ConflictCandidate, DeferredCandidate,
-    MemoryCandidate, ReflectionOutput, SkillCandidate,
+    deferred_load, reflect, CandidateKind, ConflictCandidate, DeferredCandidate, MemoryCandidate,
+    ReflectionOutput, SkillCandidate,
 };
 use hermes_skills::{FsSkillStore, Scope as SkillScope, SkillFrontmatter, SkillStore};
 use tokio::io::{AsyncBufReadExt, BufReader, Lines, Stdin};
@@ -662,10 +662,7 @@ async fn review_deferred(
     eprintln!();
     eprintln!(
         "{}",
-        crate::commands::style::paint(
-            "1;36",
-            "== Deferred candidates from previous sessions =="
-        )
+        crate::commands::style::paint("1;36", "== Deferred candidates from previous sessions ==")
     );
     eprintln!("({} item(s) awaiting your decision)", deferred.len());
 

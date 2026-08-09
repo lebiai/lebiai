@@ -23,6 +23,7 @@ fn main() {
         .expect("failed to initialize app state");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::chat::send_message,
@@ -52,6 +53,7 @@ fn main() {
             commands::config::open_api_key_guide,
             commands::data_dir::data_dir_get,
             commands::data_dir::data_dir_migrate,
+            commands::data_dir::data_dir_pick,
             commands::data_dir::data_dir_reset,
             commands::reflect::run_reflection,
             commands::reflect::run_session_end_reflection,

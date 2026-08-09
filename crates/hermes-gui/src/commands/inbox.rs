@@ -2,8 +2,7 @@
 
 use hermes_memory::{MemoryFrontmatter, MemoryStore, Scope, Source};
 use hermes_reflect::{
-    log_append, ActionTaken, CandidateKind, InboxItem, InboxPayload, InboxSource,
-    ReflectLogEntry,
+    log_append, ActionTaken, CandidateKind, InboxItem, InboxPayload, InboxSource, ReflectLogEntry,
 };
 use hermes_skills::{SkillFrontmatter, SkillStore};
 use serde::Serialize;

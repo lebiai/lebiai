@@ -25,4 +25,3 @@ pub trait ToolHost: Send + Sync {
     async fn list_tools(&self) -> Result<Vec<ToolSpec>>;
     async fn call(&self, name: &str, args: serde_json::Value) -> Result<ToolCallOutcome>;
 }
-

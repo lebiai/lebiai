@@ -151,5 +151,4 @@ mod tests {
         let index = build_palace_index_simple(&[]);
         assert!(index.contains("Empty"));
     }
-
 }

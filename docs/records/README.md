@@ -32,6 +32,9 @@ docs/records/YYYYMMDD-短横线-英文或拼音-slug.md
 | 编号 | 标题 | 状态 | 日期 |
 
 |------|------|------|------|
+| [20260809-gui-polish-round3](./20260809-gui-polish-round3.md) | **GUI 产品化第三轮**（零打扰 Key 提示 · 内置技能开箱非空 · 统一下拉 · 欢迎仪式精简 · 设置中心化 · 原生目录选择器） | **已验收**（用户确认打包） | 2026-08-09 |
+| [20260809-release-v1.0](./20260809-release-v1.0.md) | **v1.0.0 正式发布**（版本统一 1.0.0 · 用户向发布说明 · Release 自动挂载 dmg/exe） | **已实施**（CI 产物待确认） | 2026-08-09 |
+| [20260809-displayname-sync](./20260809-displayname-sync.md) | **称呼全链路同步修复**（欢迎页填写的称呼 → 侧栏/设置问候/欢迎页一致 · 结构化字段 + 前端单一数据源 · 跳过路径也保存） | **已验收** | 2026-08-09 |
 | [20260809-productization-round2](./20260809-productization-round2.md) | **产品化第二轮**（数据位置迁移 · Key 已配置态 · 称呼显示 · 设置分组 · 欢迎仪式内嵌配置 · 错误用户化） | **已验收**（工程全绿 · GUI 目视待复测） | 2026-08-09 |
 | [20260809-default-language-zh](./20260809-default-language-zh.md) | **默认语言改为中文**（模板/默认函数/前端初始态/兜底全链路 zh-CN，可切英文） | **已验收** | 2026-08-09 |
 | [20260809-windows-markitdown-bundle](./20260809-windows-markitdown-bundle.md) | **Windows 捆绑 MarkItDown**（embed python 自包含 sidecar · tauri.windows.conf.json · cmd /C spawn · 文档导入开箱即用） | **已实施**（本机绿 · Windows 实跑待 CI） | 2026-08-09 |

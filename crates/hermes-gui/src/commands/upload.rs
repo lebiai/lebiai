@@ -32,7 +32,11 @@ fn converter_cfg(app: &AppHandle) -> ConverterPathConfig {
 fn resolve_bundled_markitdown(app: &AppHandle) -> Option<PathBuf> {
     // Windows ships a `.cmd` wrapper (runs the bundled embeddable Python);
     // macOS/Linux ship a bash wrapper named `markitdown`.
-    let file_name = if cfg!(windows) { "markitdown.cmd" } else { "markitdown" };
+    let file_name = if cfg!(windows) {
+        "markitdown.cmd"
+    } else {
+        "markitdown"
+    };
 
     // 1) Packaged app: Resources/markitdown-sidecar/markitdown[.cmd]
     if let Ok(resource_dir) = app.path().resource_dir() {

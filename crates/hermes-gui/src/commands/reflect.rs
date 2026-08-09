@@ -1,6 +1,6 @@
 use hermes_core::{ContentBlock, Role, Session};
 use hermes_memory::{Confidence, FsMemoryStore, MemoryFrontmatter, MemoryStore, Scope, Source};
-use hermes_reflect::{log_append, ActionTaken, CandidateKind, ReflectionOutput, ReflectLogEntry};
+use hermes_reflect::{log_append, ActionTaken, CandidateKind, ReflectLogEntry, ReflectionOutput};
 use hermes_skills::{SkillFrontmatter, SkillStore};
 use serde::Serialize;
 use tauri::State;

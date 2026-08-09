@@ -37,9 +37,7 @@ pub async fn run(
         Arc::new(FsMemoryStore::standard().map_err(|e| anyhow::anyhow!("memory store: {e}"))?);
     let skill_store_arc: Arc<FsSkillStore> =
         Arc::new(FsSkillStore::standard().map_err(|e| anyhow::anyhow!("skill store: {e}"))?);
-    super::chat::auto_install_palace_skill(skill_store_arc.as_ref());
-    super::chat::auto_install_skill_creator_skill(skill_store_arc.as_ref());
-    super::chat::auto_install_find_skills_skill(skill_store_arc.as_ref());
+    hermes_skills::bundled::auto_install_bundled(skill_store_arc.as_ref());
 
     // Wire up `subagent` so an autonomous goal can spawn child contexts (skill
     // evaluation, blind comparison, grader subagents — see skill-creator).

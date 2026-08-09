@@ -6,7 +6,7 @@ always_active: false
 
 # Skill Creator
 
-_Adapted from [anthropics/skills/skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator) (Apache 2.0 — see `LICENSE.txt`). The runtime primitives are rewired for Hermes:_
+_Adapted from [anthropics/skills/skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator). The runtime primitives are rewired for Hermes:_
 
 - _`subagent` tool replaces upstream's `claude -p` for spawning fresh child contexts (eval runs, graders, comparators)._
 - _`skill_create(extra_files=...)` replaces upstream's directory-write packaging — one tool call writes the whole multi-file bundle atomically._
@@ -407,4 +407,3 @@ Bundled with this skill (read via `skill_read_file("skill-creator", "<path>")`):
 - `agents/comparator.md` — system prompt for blind A/B comparison of two outputs.
 - `agents/analyzer.md` — system prompt for synthesizing a multi-eval comparator run into a "what's actually better" summary.
 - `references/schemas.md` — JSON schemas for `evals.json`, grader output, comparator output, and the workspace layout.
-- `LICENSE.txt` — Apache 2.0 license from upstream anthropics/skills (governs the verbatim files above).

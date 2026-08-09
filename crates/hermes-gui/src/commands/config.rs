@@ -120,7 +120,12 @@ pub fn get_config(state: State<'_, AppState>) -> Result<ConfigView, GuiError> {
         .map(|preset| {
             let section = cfg.providers.get(preset.key);
             let (model, max_tokens, base_url, api_key) = match section {
-                Some(s) => (s.model.clone(), s.max_tokens, s.base_url.clone(), s.api_key.clone()),
+                Some(s) => (
+                    s.model.clone(),
+                    s.max_tokens,
+                    s.base_url.clone(),
+                    s.api_key.clone(),
+                ),
                 None => (
                     preset.model.to_string(),
                     preset.max_tokens,

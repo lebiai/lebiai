@@ -41,7 +41,10 @@ pub async fn run() -> Result<()> {
     for (i, p) in PROVIDER_PRESETS.iter().enumerate() {
         eprintln!("  {}) {}", i + 1, p.label);
     }
-    let choice = prompt_line(&format!("Provider [1-{}] (default 1): ", PROVIDER_PRESETS.len()))?;
+    let choice = prompt_line(&format!(
+        "Provider [1-{}] (default 1): ",
+        PROVIDER_PRESETS.len()
+    ))?;
     let idx = choice
         .trim()
         .parse::<usize>()

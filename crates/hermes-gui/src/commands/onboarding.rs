@@ -83,6 +83,12 @@ pub fn onboarding_seed_set(
     }
     let mut fm = MemoryFrontmatter::new(Source::User, Confidence::High, tags, "general".into());
     fm.pinned = true;
+    // Structured name (single source for the UI); the body stays human-readable
+    // for the engine's pinned-memory context.
+    fm.extra.insert(
+        serde_yaml::Value::String("display_name".into()),
+        serde_yaml::Value::String(name.clone()),
+    );
     state
         .memory_store
         .put(Scope::User, fm.clone(), &body)
@@ -108,14 +114,16 @@ pub fn onboarding_seed_get(
     let Some(mem) = find_seed(&state) else {
         return Ok(None);
     };
+    // Prefer the structured field; fall back to legacy bodies written before
+    // it existed (parse up to the first closing bracket — bodies end with 「。」).
     let name = mem
-        .body
-        .lines()
-        .next()
-        .and_then(|l| l.strip_prefix("用户自称「"))
-        .and_then(|l| l.strip_suffix('」'))
-        .unwrap_or_default()
-        .to_string();
+        .frontmatter
+        .extra
+        .get("display_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| display_name_from_body(&mem.body));
     let mut scenarios: Vec<String> = mem
         .frontmatter
         .tags
@@ -128,4 +136,46 @@ pub fn onboarding_seed_get(
         display_name: name,
         scenarios,
     }))
+}
+
+/// Legacy seed bodies embed the name as `用户自称「…」…`; read up to the
+/// first closing bracket (bodies may end with a period or a scenario clause).
+fn display_name_from_body(body: &str) -> String {
+    body.lines()
+        .next()
+        .and_then(|l| l.strip_prefix("用户自称「"))
+        .and_then(|rest| rest.split('」').next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_name_from_body;
+
+    #[test]
+    fn parses_name_only_body() {
+        assert_eq!(display_name_from_body("用户自称「张强」。"), "张强");
+    }
+
+    #[test]
+    fn parses_name_with_scenario_clause() {
+        assert_eq!(
+            display_name_from_body("用户自称「张强」，主要在写东西这类事上需要搭档帮忙。"),
+            "张强"
+        );
+    }
+
+    #[test]
+    fn empty_for_scenarios_only_body() {
+        assert_eq!(
+            display_name_from_body("用户的工作场景：写东西、查资料。"),
+            ""
+        );
+    }
+
+    #[test]
+    fn empty_for_unknown_body() {
+        assert_eq!(display_name_from_body("今天天气不错。"), "");
+    }
 }

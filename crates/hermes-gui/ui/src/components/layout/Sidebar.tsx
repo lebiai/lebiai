@@ -79,16 +79,12 @@ export function Sidebar() {
   const language = useUiStore((s) => s.language);
   const displayName = useUiStore((s) => s.displayName);
   const providerLabel = useUiStore((s) => s.providerLabel);
-  const setDisplayName = useUiStore((s) => s.setDisplayName);
   const busy = isStreaming || sessionEnd?.status === "review";
   const [inboxCount, setInboxCount] = useState(0);
 
   useEffect(() => {
     void refreshProviderLabel();
-    invoke<{ displayName: string } | null>("onboarding_seed_get")
-      .then((seed) => setDisplayName(seed?.displayName?.trim() || null))
-      .catch(() => undefined);
-  }, [setDisplayName]);
+  }, []);
 
   useEffect(() => {
     const load = () => {

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Trash2, Plus, Pencil, Save, X, Zap } from "lucide-react";
+import { Trash2, Plus, Pencil, Save, X, Zap, Sparkles } from "lucide-react";
 import { useUiStore } from "../../store/uiStore";
 import { Button, EmptyState, ui } from "../common/ui";
+import { Select } from "../common/Select";
 import { ConfirmPopover } from "../common/ConfirmPopover";
 import { toast } from "../../utils/toast";
 
@@ -12,6 +13,7 @@ interface SkillItem {
   triggers: string[];
   scope: string;
   body: string;
+  builtin: boolean;
 }
 
 type Mode = "view" | "edit" | "create";
@@ -45,6 +47,8 @@ function toDraft(s: SkillItem): DraftSkill {
 export function SkillPanel() {
   const t = useUiStore((state) => state.t);
   const [skills, setSkills] = useState<SkillItem[]>([]);
+  const [builtinSkills, setBuiltinSkills] = useState<SkillItem[]>([]);
+  const [userSkills, setUserSkills] = useState<SkillItem[]>([]);
   const [selected, setSelected] = useState<SkillItem | null>(null);
   const [mode, setMode] = useState<Mode>("view");
   const [draft, setDraft] = useState<DraftSkill>(EMPTY_DRAFT);
@@ -55,6 +59,8 @@ export function SkillPanel() {
   const fetchSkills = async () => {
     const items = await invoke<SkillItem[]>("list_skills");
     setSkills(items);
+    setBuiltinSkills(items.filter((s) => s.builtin));
+    setUserSkills(items.filter((s) => !s.builtin));
   };
 
   useEffect(() => {
@@ -152,7 +158,80 @@ export function SkillPanel() {
             <Plus size={16} />
           </button>
         </header>
-        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+        <div className="flex-1 overflow-y-auto p-2 space-y-3">
+          {builtinSkills.length > 0 && (
+            <div className="space-y-0.5">
+              <p className="px-2 pt-0.5 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-app-fg-tertiary">
+                <Sparkles size={11} />
+                {t("skills.builtin")}
+              </p>
+              {builtinSkills.map((skill) => (
+                <div
+                  key={skill.name}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm ${
+                    selected?.name === skill.name && mode === "view"
+                      ? ui.sessionActive
+                      : ui.sessionIdle
+                  }`}
+                  onClick={() => select(skill)}
+                >
+                  <span className="truncate flex-1 font-mono">{skill.name}</span>
+                  <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-md bg-app-muted dark:bg-slate-800 text-app-fg-tertiary">
+                    {t("skills.builtin")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="space-y-0.5">
+            <p className="px-2 pt-0.5 text-[10px] font-medium uppercase tracking-wider text-app-fg-tertiary">
+              {t("skills.mine")}
+            </p>
+            {userSkills.length === 0 ? (
+              <p className="px-2 py-1.5 text-xs text-app-fg-tertiary leading-relaxed">
+                {t("skills.mineEmpty")}
+              </p>
+            ) : (
+              userSkills.map((skill) => {
+                const key = `${skill.scope}/${skill.name}`;
+                return (
+                  <div
+                    key={key}
+                    className={`group relative flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm ${
+                      selected?.name === skill.name && mode === "view"
+                        ? ui.sessionActive
+                        : ui.sessionIdle
+                    }`}
+                    onClick={() => select(skill)}
+                  >
+                    <span className="truncate flex-1 font-mono">{skill.name}</span>
+                    <span className="text-[10px] uppercase text-app-fg-tertiary">
+                      {displayScope(skill.scope, t).slice(0, 1)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDelete(key);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-1 hover:text-app-danger"
+                      title={t("skills.delete")}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                    <ConfirmPopover
+                      open={confirmDelete === key}
+                      message={t("skills.deleteConfirm")}
+                      onCancel={() => setConfirmDelete(null)}
+                      onConfirm={() => void handleDelete(skill.name, skill.scope)}
+                    />
+                  </div>
+                );
+              })
+            )}
+          </div>
+
           {skills.length === 0 && (
             <EmptyState
               icon={<Zap size={22} strokeWidth={1.75} />}
@@ -166,42 +245,6 @@ export function SkillPanel() {
               }
             />
           )}
-          {skills.map((skill) => {
-            const key = `${skill.scope}/${skill.name}`;
-            return (
-              <div
-                key={key}
-                className={`group relative flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm ${
-                  selected?.name === skill.name && mode === "view"
-                    ? ui.sessionActive
-                    : ui.sessionIdle
-                }`}
-                onClick={() => select(skill)}
-              >
-                <span className="truncate flex-1 font-mono">{skill.name}</span>
-                <span className="text-[10px] uppercase text-app-fg-tertiary">
-                  {displayScope(skill.scope, t).slice(0, 1)}
-                </span>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setConfirmDelete(key);
-                  }}
-                  className="opacity-0 group-hover:opacity-100 p-1 hover:text-app-danger"
-                  title={t("skills.delete")}
-                >
-                  <Trash2 size={12} />
-                </button>
-                <ConfirmPopover
-                  open={confirmDelete === key}
-                  message={t("skills.deleteConfirm")}
-                  onCancel={() => setConfirmDelete(null)}
-                  onConfirm={() => void handleDelete(skill.name, skill.scope)}
-                />
-              </div>
-            );
-          })}
         </div>
       </div>
 
@@ -210,20 +253,33 @@ export function SkillPanel() {
           <div className="space-y-4 max-w-3xl">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <h3 className="text-lg font-semibold font-mono truncate text-app-fg dark:text-slate-100">
-                  {selected.name}
-                </h3>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-lg font-semibold font-mono truncate text-app-fg dark:text-slate-100">
+                    {selected.name}
+                  </h3>
+                  {selected.builtin && (
+                    <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-md bg-app-muted dark:bg-slate-800 text-app-fg-tertiary">
+                      {t("skills.builtin")}
+                    </span>
+                  )}
+                </div>
                 <p className="text-sm text-app-fg-secondary mt-1">{selected.description}</p>
               </div>
-              <Button size="sm" variant="secondary" onClick={startEdit}>
-                <Pencil size={12} />
-                {t("skills.edit")}
-              </Button>
+              {!selected.builtin && (
+                <Button size="sm" variant="secondary" onClick={startEdit}>
+                  <Pencil size={12} />
+                  {t("skills.edit")}
+                </Button>
+              )}
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs text-app-fg-tertiary">
-                {displayScope(selected.scope, t)}
-              </span>
+              {selected.builtin ? (
+                <span className="text-xs text-app-fg-tertiary">{t("skills.builtinHint")}</span>
+              ) : (
+                <span className="text-xs text-app-fg-tertiary">
+                  {displayScope(selected.scope, t)}
+                </span>
+              )}
               {selected.triggers.map((tr) => (
                 <span
                   key={tr}
@@ -351,15 +407,15 @@ function SkillEditor({
         <label className="block text-xs uppercase tracking-wide text-app-fg-secondary">
           {t("skills.scope")}
         </label>
-        <select
+        <Select
           value={draft.scope}
-          onChange={(e) => set("scope", e.target.value)}
+          onChange={(v) => set("scope", v)}
           disabled={mode === "edit"}
-          className={`${ui.input} disabled:opacity-60`}
-        >
-          <option value="User">{t("skills.userScopeOption")}</option>
-          <option value="Project">{t("skills.projectScopeOption")}</option>
-        </select>
+          options={[
+            { value: "User", label: t("skills.userScopeOption") },
+            { value: "Project", label: t("skills.projectScopeOption") },
+          ]}
+        />
       </div>
 
       <div className="space-y-1">

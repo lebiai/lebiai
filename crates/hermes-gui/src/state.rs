@@ -153,6 +153,9 @@ impl AppState {
         });
 
         let skill_store: Arc<FsSkillStore> = Arc::new(FsSkillStore::new(base.join("skills"), None));
+        // Same engine contract as the CLI: bundled meta-skills auto-install
+        // at startup so every entry surface sees the same skill set.
+        hermes_skills::bundled::auto_install_bundled(&skill_store);
         let memory_store: Arc<FsMemoryStore> =
             Arc::new(FsMemoryStore::new(base.join("memories"), None));
 

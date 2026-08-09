@@ -61,17 +61,27 @@ export function WelcomeScenes({
 }) {
   const t = useUiStore((s) => s.t);
   const returnKey = returnGreetingKey();
+  // Name comes from the global store (synced by onboarding/settings writes);
+  // scenarios are still fetched so the seed stays the single source.
+  const displayName = useUiStore((s) => s.displayName);
   const [seedScenarios, setSeedScenarios] = useState<string[] | null>(null);
-  const [displayName, setDisplayName] = useState<string>("");
 
   useEffect(() => {
+    let alive = true;
     invoke<{ displayName: string; scenarios: string[] } | null>("onboarding_seed_get")
       .then((seed) => {
+        if (!alive) return;
         setSeedScenarios(seed?.scenarios ?? []);
-        setDisplayName(seed?.displayName?.trim() ?? "");
       })
-      .catch(() => setSeedScenarios([]));
-  }, []);
+      .catch(() => {
+        if (alive) setSeedScenarios([]);
+      });
+    return () => {
+      alive = false;
+    };
+    // Refetch when the name changes (e.g. right after onboarding finishes) so
+    // the scenario order catches up with the just-written seed.
+  }, [displayName]);
 
   const scenarios =
     seedScenarios === null

@@ -14,6 +14,7 @@ import { useUiStore } from "../../store/uiStore";
 import { useNavStore } from "../../store/navStore";
 import { markOnboardingDone } from "../../utils/onboarding";
 import { Button, ui } from "../common/ui";
+import { Select } from "../common/Select";
 import { AmbientStage } from "../motion/AmbientStage";
 import type { TranslationKey } from "../../i18n";
 
@@ -83,6 +84,15 @@ export function OnboardingRitual({ onDone }: { onDone: () => void }) {
     }
   };
 
+  /** One primary action: save the key (if provided) then start working. */
+  const saveKeyAndStart = async () => {
+    if (saving) return;
+    if (keyInput.trim()) {
+      await saveKeyInline();
+    }
+    await finishWithSeed(false);
+  };
+
   const toggleScenario = (tag: string) => {
     setScenarios((prev) =>
       prev.includes(tag) ? prev.filter((s) => s !== tag) : [...prev, tag],
@@ -106,6 +116,8 @@ export function OnboardingRitual({ onDone }: { onDone: () => void }) {
         displayName: name.trim(),
         scenarios,
       });
+      // Live-sync so sidebar / welcome / settings greeting show it instantly.
+      useUiStore.getState().setDisplayName(name.trim() || null);
     } catch (e) {
       console.error("onboarding_seed_set failed", e);
     }
@@ -256,39 +268,22 @@ export function OnboardingRitual({ onDone }: { onDone: () => void }) {
                     <p className="text-xs text-app-fg-tertiary dark:text-slate-500 leading-relaxed">
                       {t("onboarding.keyHint")}
                     </p>
-                    <div>
-                      <label className="block text-xs text-app-fg-secondary mb-1">
-                        {t("settings.providerSelect")}
-                      </label>
-                      <select
-                        value={providerKey}
-                        onChange={(e) => setProviderKey(e.target.value)}
-                        className={ui.input}
-                      >
-                        {providers.map((p) => (
-                          <option key={p.key} value={p.key}>
-                            {t(`provider.${p.key}` as TranslationKey)}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="password"
-                        value={keyInput}
-                        onChange={(e) => setKeyInput(e.target.value)}
-                        placeholder={t("settings.apiKeyPlaceholderEmpty")}
-                        className={ui.input}
-                      />
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={saveKeyInline}
-                        disabled={savingKey || !keyInput.trim()}
-                      >
-                        {savingKey ? t("settings.saving") : t("onboarding.keySave")}
-                      </Button>
-                    </div>
+                    <Select
+                      label={t("settings.providerSelect")}
+                      value={providerKey}
+                      onChange={setProviderKey}
+                      options={providers.map((p) => ({
+                        value: p.key,
+                        label: t(`provider.${p.key}` as TranslationKey),
+                      }))}
+                    />
+                    <input
+                      type="password"
+                      value={keyInput}
+                      onChange={(e) => setKeyInput(e.target.value)}
+                      placeholder={t("settings.apiKeyPlaceholderEmpty")}
+                      className={ui.input}
+                    />
                     {keySaved && (
                       <p className="text-xs text-emerald-700 dark:text-emerald-300">
                         {t("onboarding.keySaved")}
@@ -299,8 +294,13 @@ export function OnboardingRitual({ onDone }: { onDone: () => void }) {
 
                 <div className="flex flex-col gap-2.5 pt-1">
                   {hasApiKey === false ? (
-                    <Button variant="primary" className="w-full btn-press" onClick={() => finishWithSeed(true)} disabled={saving}>
-                      {t("onboarding.ctaKey")}
+                    <Button
+                      variant="primary"
+                      className="w-full btn-press"
+                      onClick={() => void saveKeyAndStart()}
+                      disabled={saving || savingKey || !keyInput.trim()}
+                    >
+                      {savingKey || saving ? t("settings.saving") : t("onboarding.keySave")}
                     </Button>
                   ) : hasApiKey === null ? (
                     <Button variant="primary" className="w-full" disabled>
@@ -314,15 +314,13 @@ export function OnboardingRitual({ onDone }: { onDone: () => void }) {
                   {hasApiKey === false && (
                     <button
                       type="button"
-                      onClick={() => finish(true)}
-                      className="text-xs text-app-fg-tertiary hover:text-app-fg-secondary underline underline-offset-2"
+                      disabled={saving}
+                      onClick={() => void finishWithSeed(true)}
+                      className="text-xs text-app-fg-tertiary hover:text-app-fg-secondary underline underline-offset-2 disabled:opacity-60"
                     >
                       {t("onboarding.ctaKeyHelp")}
                     </button>
                   )}
-                  <Button variant="ghost" className="text-app-fg-tertiary" onClick={() => finish(false)} disabled={saving}>
-                    {t("onboarding.ctaBrowse")}
-                  </Button>
                 </div>
               </div>
             )}
@@ -347,13 +345,7 @@ export function OnboardingRitual({ onDone }: { onDone: () => void }) {
                 <ArrowRight size={13} />
               </Button>
             ) : (
-              <button
-                type="button"
-                onClick={() => finish(false)}
-                className="text-xs text-app-fg-tertiary hover:text-app-fg-secondary"
-              >
-                {t("onboarding.skip")}
-              </button>
+              <span />
             )}
           </div>
         </div>

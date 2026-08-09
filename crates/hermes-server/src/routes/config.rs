@@ -9,8 +9,8 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use toml_edit::{value, DocumentMut, Item, Table};
 
-use hermes_llm::{Config, PROVIDER_PRESETS};
 use hermes_core::{clear_data_dir_pointer, data_root, write_data_dir_pointer};
+use hermes_llm::{Config, PROVIDER_PRESETS};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -72,7 +72,12 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Result<Json<Confi
         .map(|preset| {
             let section = cfg.providers.get(preset.key);
             let (model, max_tokens, base_url, api_key) = match section {
-                Some(s) => (s.model.clone(), s.max_tokens, s.base_url.clone(), s.api_key.clone()),
+                Some(s) => (
+                    s.model.clone(),
+                    s.max_tokens,
+                    s.base_url.clone(),
+                    s.api_key.clone(),
+                ),
                 None => (
                     preset.model.to_string(),
                     preset.max_tokens,
@@ -281,7 +286,9 @@ pub async fn data_dir_migrate(
     }
     let target = std::path::PathBuf::from(&raw);
     if !target.is_absolute() {
-        return Err(ApiError::Config(format!("请选择绝对路径（当前输入：{raw}）")));
+        return Err(ApiError::Config(format!(
+            "请选择绝对路径（当前输入：{raw}）"
+        )));
     }
     let current = data_root();
     if target == current {
@@ -297,7 +304,12 @@ pub async fn data_dir_migrate(
             "目标目录已包含 lebi-AI 数据，请换一个空目录".into(),
         ));
     }
-    if target.exists() && target.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false) {
+    if target.exists()
+        && target
+            .read_dir()
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false)
+    {
         return Err(ApiError::Config("目标目录非空，请选择空目录".into()));
     }
 
@@ -308,7 +320,8 @@ pub async fn data_dir_migrate(
             "复制校验未通过，已回滚指针；原数据保持完好，请重试".into(),
         ));
     }
-    write_data_dir_pointer(&target).map_err(|e| ApiError::Config(format!("记录新位置失败：{e}")))?;
+    write_data_dir_pointer(&target)
+        .map_err(|e| ApiError::Config(format!("记录新位置失败：{e}")))?;
 
     Ok(Json(DataDirView {
         data_root: target.to_string_lossy().into_owned(),

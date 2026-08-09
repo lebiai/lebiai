@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Pin, PinOff, Trash2, Plus, Search, Brain } from "lucide-react";
 import { useUiStore } from "../../store/uiStore";
 import { Button, EmptyState, ui } from "../common/ui";
+import { Select } from "../common/Select";
 import { ConfirmPopover } from "../common/ConfirmPopover";
 import { toast } from "../../utils/toast";
 import { notifyRemembered } from "../../utils/remembered";
@@ -217,14 +218,15 @@ export function MemoryPanel() {
               />
             </div>
             <div className="flex items-center gap-4 flex-wrap">
-              <select
+              <Select
                 value={newScope}
-                onChange={(e) => setNewScope(e.target.value)}
-                className={ui.input}
-              >
-                <option value="User">{t("scope.user")}</option>
-                <option value="Project">{t("scope.project")}</option>
-              </select>
+                onChange={setNewScope}
+                options={[
+                  { value: "User", label: t("scope.user") },
+                  { value: "Project", label: t("scope.project") },
+                ]}
+                className="w-36"
+              />
               <label className="flex items-center gap-2 text-sm text-app-fg dark:text-slate-200">
                 <input
                   type="checkbox"

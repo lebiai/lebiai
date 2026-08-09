@@ -64,6 +64,17 @@ export default function App() {
       });
   }, [fetchSessions, setLanguage, setTheme, setHasApiKey]);
 
+  // Single frontend source for the display name: read the onboarding seed
+  // once at boot into uiStore; onboarding/settings writes sync it live.
+  useEffect(() => {
+    const setDisplayName = useUiStore.getState().setDisplayName;
+    invoke<{ displayName: string; scenarios: string[] } | null>(
+      "onboarding_seed_get",
+    )
+      .then((seed) => setDisplayName(seed?.displayName?.trim() || null))
+      .catch(() => setDisplayName(null));
+  }, []);
+
   useEffect(() => bindSystemThemeWatcher(), []);
 
   // Micro-reflection is a global app event (not the turn stream Channel).
