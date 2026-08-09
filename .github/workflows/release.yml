@@ -99,12 +99,18 @@ jobs:
         with:
           name: lebi-ai-windows-nsis
           path: dist
+      # action-gh-release 的 update 路径不会补正文，overwrite 入参也已废弃（被忽略）。
+      # 先删旧 Release 再全新创建，保证 body_path 每次注入最新发布说明。
+      - name: Clear stale release
+        run: gh release delete "$RELEASE_TAG" --yes || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
           body_path: docs/release-notes.md
           files: dist/**/*
-          overwrite: true
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
