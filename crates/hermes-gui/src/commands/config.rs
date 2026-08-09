@@ -27,6 +27,9 @@ pub struct ConfigView {
     pub permissions_allow: Vec<String>,
     pub permissions_deny: Vec<String>,
     pub workspace_root: String,
+    /// Product data root (where config/sessions/memories live). Movable via
+    /// `data_dir_migrate`; independent from the app install location.
+    pub data_dir: String,
     pub ui_language: String,
     /// GUI theme: system | light | dark.
     pub ui_theme: String,
@@ -148,6 +151,7 @@ pub fn get_config(state: State<'_, AppState>) -> Result<ConfigView, GuiError> {
         permissions_allow: cfg.permissions.allow.clone(),
         permissions_deny: cfg.permissions.deny.clone(),
         workspace_root: cfg.workspace.root.to_string_lossy().into_owned(),
+        data_dir: hermes_core::data_root().to_string_lossy().into_owned(),
         ui_language: cfg.ui.language.clone(),
         ui_theme: cfg.ui.theme.clone(),
         persist_thinking: cfg.ui.persist_thinking,
@@ -166,6 +170,9 @@ pub struct ConfigUpdate {
     /// Only written when `Some(...)` and non-empty; otherwise the existing
     /// on-disk value is preserved (UI shows a masked placeholder).
     pub api_key: Option<String>,
+    /// Explicitly remove the on-disk API key for the active provider.
+    #[serde(default)]
+    pub clear_api_key: bool,
     pub reflect_min_turns: Option<usize>,
     pub reflect_auto_accept_memories: Option<bool>,
     pub context_model_limit: Option<usize>,
@@ -218,6 +225,9 @@ pub fn update_config(state: State<'_, AppState>, update: ConfigUpdate) -> Result
             if !api_key.trim().is_empty() {
                 provider_entry["api_key"] = value(api_key);
             }
+        }
+        if update.clear_api_key {
+            provider_entry["api_key"] = value("");
         }
     }
 

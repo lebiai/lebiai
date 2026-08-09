@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
 import {
   normalizeLanguage,
   translate,
@@ -11,6 +12,12 @@ interface UiState {
   language: Language;
   setLanguage: (language: string) => void;
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
+  /** User's display name from the onboarding seed (null = unknown). */
+  displayName: string | null;
+  setDisplayName: (name: string | null) => void;
+  /** Short label like “DeepSeek · deepseek-v4-flash” for the sidebar footer. */
+  providerLabel: string | null;
+  setProviderLabel: (label: string | null) => void;
   /** One-shot fill for the chat composer (e.g. Welcome example cards). */
   composerPrefill: string | null;
   setComposerPrefill: (text: string) => void;
@@ -43,12 +50,16 @@ const makeTranslator =
 let memoryHighlightTimer: number | null = null;
 
 export const useUiStore = create<UiState>((set) => ({
-  language: "en-US",
+  language: "zh-CN",
   setLanguage: (language) => {
     const normalized = normalizeLanguage(language);
     set({ language: normalized, t: makeTranslator(normalized) });
   },
-  t: makeTranslator("en-US"),
+  t: makeTranslator("zh-CN"),
+  displayName: null,
+  setDisplayName: (name) => set({ displayName: name }),
+  providerLabel: null,
+  setProviderLabel: (label) => set({ providerLabel: label }),
   composerPrefill: null,
   setComposerPrefill: (text) => set({ composerPrefill: text }),
   clearComposerPrefill: () => set({ composerPrefill: null }),
@@ -85,6 +96,21 @@ export const useUiStore = create<UiState>((set) => ({
     set({ highlightMemoryId: null });
   },
 }));
+
+/** Refresh the “provider · model” label shown in the sidebar footer. */
+export async function refreshProviderLabel() {
+  try {
+    const c = await invoke<{ defaultProvider: string; model: string }>("get_config");
+    const t = useUiStore.getState().t;
+    useUiStore
+      .getState()
+      .setProviderLabel(
+        `${t(`provider.${c.defaultProvider}` as TranslationKey)} · ${c.model}`,
+      );
+  } catch {
+    /* non-fatal */
+  }
+}
 
 /** Re-apply theme when OS preference changes (only if theme === system). */
 export function bindSystemThemeWatcher() {

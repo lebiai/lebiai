@@ -235,7 +235,7 @@ impl Default for UiConfig {
 }
 
 fn default_ui_language() -> String {
-    "en-US".to_string()
+    "zh-CN".to_string()
 }
 
 fn default_ui_theme() -> String {
@@ -465,7 +465,7 @@ allow = []
 deny = []
 
 [ui]
-language = "en-US"
+language = "zh-CN"
 theme = "system"
 persist_thinking = false
 
@@ -593,7 +593,7 @@ mod tests {
         assert!(cfg.active_provider().is_ok());
         assert_eq!(cfg.reflect.min_turns, 3);
         assert_eq!(cfg.context.model_limit, 128_000);
-        assert_eq!(cfg.ui.language, "en-US");
+        assert_eq!(cfg.ui.language, "zh-CN");
         assert_eq!(cfg.ui.theme, "system");
         assert!(!cfg.ui.persist_thinking);
         assert_eq!(cfg.limits.max_tool_rounds, 25);

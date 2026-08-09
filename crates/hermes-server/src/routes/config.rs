@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{value, DocumentMut, Item, Table};
 
 use hermes_llm::{Config, PROVIDER_PRESETS};
+use hermes_core::{clear_data_dir_pointer, data_root, write_data_dir_pointer};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -32,6 +33,8 @@ pub struct ConfigView {
     pub permissions_allow: Vec<String>,
     pub permissions_deny: Vec<String>,
     pub workspace_root: String,
+    /// Product data root — movable via `data_dir_migrate` (1:1 with GUI).
+    pub data_dir: String,
     pub ui_language: String,
     pub ui_theme: String,
     pub persist_thinking: bool,
@@ -100,6 +103,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Result<Json<Confi
         permissions_allow: cfg.permissions.allow.clone(),
         permissions_deny: cfg.permissions.deny.clone(),
         workspace_root: cfg.workspace.root.to_string_lossy().into_owned(),
+        data_dir: hermes_core::data_root().to_string_lossy().into_owned(),
         ui_language: cfg.ui.language.clone(),
         ui_theme: cfg.ui.theme.clone(),
         persist_thinking: cfg.ui.persist_thinking,
@@ -118,6 +122,9 @@ pub struct ConfigUpdate {
     /// Only written when `Some(...)` and non-empty; otherwise the on-disk
     /// value is preserved (UI shows a masked placeholder).
     pub api_key: Option<String>,
+    /// Explicitly remove the on-disk API key for the active provider.
+    #[serde(default)]
+    pub clear_api_key: bool,
     pub reflect_min_turns: Option<usize>,
     pub reflect_auto_accept_memories: Option<bool>,
     pub context_model_limit: Option<usize>,
@@ -171,6 +178,9 @@ pub async fn update_config(
             if !api_key.trim().is_empty() {
                 provider_entry["api_key"] = value(api_key);
             }
+        }
+        if update.clear_api_key {
+            provider_entry["api_key"] = value("");
         }
     }
 
@@ -233,6 +243,124 @@ pub async fn update_config(
     *state.config.write().unwrap() = fresh;
     *state.provider.write().unwrap() = provider;
     Ok(Json(()))
+}
+
+// ---------------------------------------------------------------------------
+// Data location (1:1 with `hermes-gui/src/commands/data_dir.rs`)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DataDirView {
+    pub data_root: String,
+    pub workspace_root: String,
+    pub user_chosen: bool,
+}
+
+fn current_view(state: &AppState) -> DataDirView {
+    DataDirView {
+        data_root: data_root().to_string_lossy().into_owned(),
+        workspace_root: state.workspace_root(),
+        user_chosen: false,
+    }
+}
+
+pub async fn data_dir_get(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<DataDirView>, ApiError> {
+    Ok(Json(current_view(&state)))
+}
+
+pub async fn data_dir_migrate(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<DataDirMigrateRequest>,
+) -> Result<Json<DataDirView>, ApiError> {
+    let raw = req.target.trim().to_string();
+    if raw.is_empty() {
+        return Err(ApiError::Config("empty target directory".into()));
+    }
+    let target = std::path::PathBuf::from(&raw);
+    if !target.is_absolute() {
+        return Err(ApiError::Config(format!("请选择绝对路径（当前输入：{raw}）")));
+    }
+    let current = data_root();
+    if target == current {
+        return Err(ApiError::Config("新位置与当前数据目录相同".into()));
+    }
+    if current.starts_with(&target) || target.starts_with(&current) {
+        return Err(ApiError::Config(
+            "新位置不能是当前数据目录的子目录或父目录".into(),
+        ));
+    }
+    if target.join("config.toml").exists() {
+        return Err(ApiError::Config(
+            "目标目录已包含 lebi-AI 数据，请换一个空目录".into(),
+        ));
+    }
+    if target.exists() && target.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false) {
+        return Err(ApiError::Config("目标目录非空，请选择空目录".into()));
+    }
+
+    copy_dir_all(&current, &target)
+        .map_err(|e| ApiError::Config(format!("复制数据失败（{e}）；原数据未受影响，请重试")))?;
+    if dir_file_count(&current) != dir_file_count(&target) {
+        return Err(ApiError::Config(
+            "复制校验未通过，已回滚指针；原数据保持完好，请重试".into(),
+        ));
+    }
+    write_data_dir_pointer(&target).map_err(|e| ApiError::Config(format!("记录新位置失败：{e}")))?;
+
+    Ok(Json(DataDirView {
+        data_root: target.to_string_lossy().into_owned(),
+        workspace_root: state.workspace_root(),
+        user_chosen: true,
+    }))
+}
+
+pub async fn data_dir_reset(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<DataDirView>, ApiError> {
+    clear_data_dir_pointer().map_err(|e| ApiError::Config(format!("重置失败：{e}")))?;
+    Ok(Json(current_view(&state)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataDirMigrateRequest {
+    pub target: String,
+}
+
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let to = dst.join(entry.file_name());
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &to)?;
+        } else {
+            std::fs::copy(entry.path(), &to)?;
+        }
+    }
+    Ok(())
+}
+
+fn dir_file_count(p: &std::path::Path) -> usize {
+    let mut n = 0;
+    let Ok(entries) = std::fs::read_dir(p) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let Ok(ty) = entry.file_type() else {
+            continue;
+        };
+        if ty.is_dir() {
+            n += dir_file_count(&entry.path());
+        } else {
+            n += 1;
+        }
+    }
+    n
 }
 
 fn ensure_table<'a>(parent: &'a mut Table, key: &str) -> &'a mut Table {

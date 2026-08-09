@@ -19,6 +19,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../../store/chatStore";
 import { useNavStore, type Panel } from "../../store/navStore";
 import { useUiStore } from "../../store/uiStore";
+import { refreshProviderLabel } from "../../store/uiStore";
 import type { TranslationKey } from "../../i18n";
 import type { SessionSummary } from "../../types";
 import { Button, ui } from "../common/ui";
@@ -76,8 +77,18 @@ export function Sidebar() {
   const { activePanel, setPanel } = useNavStore();
   const t = useUiStore((s) => s.t);
   const language = useUiStore((s) => s.language);
+  const displayName = useUiStore((s) => s.displayName);
+  const providerLabel = useUiStore((s) => s.providerLabel);
+  const setDisplayName = useUiStore((s) => s.setDisplayName);
   const busy = isStreaming || sessionEnd?.status === "review";
   const [inboxCount, setInboxCount] = useState(0);
+
+  useEffect(() => {
+    void refreshProviderLabel();
+    invoke<{ displayName: string } | null>("onboarding_seed_get")
+      .then((seed) => setDisplayName(seed?.displayName?.trim() || null))
+      .catch(() => undefined);
+  }, [setDisplayName]);
 
   useEffect(() => {
     const load = () => {
@@ -401,6 +412,22 @@ export function Sidebar() {
             advancedNav.map(({ panel, icon, labelKey }) => navButton(panel, icon, labelKey))}
         </div>
       </nav>
+
+      <div className="shrink-0 border-t border-app-border dark:border-slate-800 px-3 py-2.5">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-full bg-app-primary-soft dark:bg-blue-950/60 text-app-primary dark:text-blue-300 flex items-center justify-center text-sm font-semibold shrink-0">
+            {displayName ? displayName[0].toUpperCase() : "乐"}
+          </div>
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-app-fg dark:text-slate-100 truncate">
+              {displayName || t("sidebar.userGuest")}
+            </div>
+            <div className="text-[10px] text-app-fg-tertiary dark:text-slate-500 truncate">
+              {providerLabel}
+            </div>
+          </div>
+        </div>
+      </div>
     </aside>
   );
 }

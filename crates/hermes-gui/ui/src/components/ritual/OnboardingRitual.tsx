@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -13,8 +13,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { useUiStore } from "../../store/uiStore";
 import { useNavStore } from "../../store/navStore";
 import { markOnboardingDone } from "../../utils/onboarding";
-import { Button } from "../common/ui";
+import { Button, ui } from "../common/ui";
 import { AmbientStage } from "../motion/AmbientStage";
+import type { TranslationKey } from "../../i18n";
 
 const SCENES = [
   { tag: "write", icon: PenLine, titleKey: "onboarding.sceneWrite.title" },
@@ -41,6 +42,46 @@ export function OnboardingRitual({ onDone }: { onDone: () => void }) {
   const [name, setName] = useState("");
   const [exiting, setExiting] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Inline model setup (step 2, only when no key yet)
+  const [providers, setProviders] = useState<
+    { key: string; hasApiKey: boolean }[]
+  >([]);
+  const [providerKey, setProviderKey] = useState("");
+  const [keyInput, setKeyInput] = useState("");
+  const [savingKey, setSavingKey] = useState(false);
+  const [keySaved, setKeySaved] = useState(false);
+
+  useEffect(() => {
+    void invoke<{
+      defaultProvider: string;
+      providers: { key: string; hasApiKey: boolean }[];
+    }>("get_config")
+      .then((c) => {
+        setProviders(c.providers);
+        setProviderKey(c.defaultProvider);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const saveKeyInline = async () => {
+    if (savingKey || !keyInput.trim()) return;
+    setSavingKey(true);
+    setKeySaved(false);
+    try {
+      await invoke("update_config", {
+        update: {
+          defaultProvider: providerKey,
+          apiKey: keyInput.trim(),
+        },
+      });
+      useUiStore.getState().setHasApiKey(true);
+      setKeySaved(true);
+    } catch (e) {
+      console.error("save key failed", e);
+    } finally {
+      setSavingKey(false);
+    }
+  };
 
   const toggleScenario = (tag: string) => {
     setScenarios((prev) =>
@@ -206,6 +247,56 @@ export function OnboardingRitual({ onDone }: { onDone: () => void }) {
                     ? t("onboarding.savedFeedback")
                     : t("onboarding.subtitle")}
                 </p>
+
+                {hasApiKey === false && (
+                  <div className="text-left rounded-2xl border border-app-border/80 dark:border-slate-700/70 bg-app-bg/60 dark:bg-slate-950/50 p-4 space-y-3">
+                    <p className="text-sm font-medium text-app-fg dark:text-slate-100">
+                      {t("onboarding.keyTitle")}
+                    </p>
+                    <p className="text-xs text-app-fg-tertiary dark:text-slate-500 leading-relaxed">
+                      {t("onboarding.keyHint")}
+                    </p>
+                    <div>
+                      <label className="block text-xs text-app-fg-secondary mb-1">
+                        {t("settings.providerSelect")}
+                      </label>
+                      <select
+                        value={providerKey}
+                        onChange={(e) => setProviderKey(e.target.value)}
+                        className={ui.input}
+                      >
+                        {providers.map((p) => (
+                          <option key={p.key} value={p.key}>
+                            {t(`provider.${p.key}` as TranslationKey)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="password"
+                        value={keyInput}
+                        onChange={(e) => setKeyInput(e.target.value)}
+                        placeholder={t("settings.apiKeyPlaceholderEmpty")}
+                        className={ui.input}
+                      />
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={saveKeyInline}
+                        disabled={savingKey || !keyInput.trim()}
+                      >
+                        {savingKey ? t("settings.saving") : t("onboarding.keySave")}
+                      </Button>
+                    </div>
+                    {keySaved && (
+                      <p className="text-xs text-emerald-700 dark:text-emerald-300">
+                        {t("onboarding.keySaved")}
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <div className="flex flex-col gap-2.5 pt-1">
                   {hasApiKey === false ? (
                     <Button variant="primary" className="w-full btn-press" onClick={() => finishWithSeed(true)} disabled={saving}>

@@ -356,7 +356,9 @@ async fn handle_send(
                     input_tokens,
                     output_tokens,
                 },
-                TurnEvent::Error(message) => ChatStreamEvent::Error { message },
+                TurnEvent::Error(message) => ChatStreamEvent::Error {
+                    message: hermes_llm::humanize_error(&message),
+                },
                 TurnEvent::Cancelled => ChatStreamEvent::Error {
                     // Server protocol reuses Error for stop; clients may map "cancelled".
                     message: "cancelled".into(),

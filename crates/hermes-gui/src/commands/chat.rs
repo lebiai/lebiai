@@ -302,7 +302,9 @@ async fn begin_turn(
                 });
             }
             TurnEvent::Error(message) => {
-                let _ = evt.send(ChatStreamEvent::Error { message });
+                let _ = evt.send(ChatStreamEvent::Error {
+                    message: hermes_llm::humanize_error(&message),
+                });
             }
             TurnEvent::Cancelled => {
                 let _ = evt.send(ChatStreamEvent::Cancelled);

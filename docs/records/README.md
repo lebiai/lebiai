@@ -32,6 +32,8 @@ docs/records/YYYYMMDD-短横线-英文或拼音-slug.md
 | 编号 | 标题 | 状态 | 日期 |
 
 |------|------|------|------|
+| [20260809-productization-round2](./20260809-productization-round2.md) | **产品化第二轮**（数据位置迁移 · Key 已配置态 · 称呼显示 · 设置分组 · 欢迎仪式内嵌配置 · 错误用户化） | **已验收**（工程全绿 · GUI 目视待复测） | 2026-08-09 |
+| [20260809-default-language-zh](./20260809-default-language-zh.md) | **默认语言改为中文**（模板/默认函数/前端初始态/兜底全链路 zh-CN，可切英文） | **已验收** | 2026-08-09 |
 | [20260809-windows-markitdown-bundle](./20260809-windows-markitdown-bundle.md) | **Windows 捆绑 MarkItDown**（embed python 自包含 sidecar · tauri.windows.conf.json · cmd /C spawn · 文档导入开箱即用） | **已实施**（本机绿 · Windows 实跑待 CI） | 2026-08-09 |
 | [20260809-remove-license](./20260809-remove-license.md) | **删除全部执照（LICENSE）内容**（LICENSE 文件 · README 章节 · Cargo 字段 · 各文档引用；保留技能元数据字段） | **已验收** | 2026-08-09 |
 | [20260809-readme-user-facing-rewrite](./20260809-readme-user-facing-rewrite.md) | **README 重写为纯用户向介绍**（是什么/场景/手感/隐私/三步使用/FAQ；删除全部开发者内容） | **已验收**（文档） | 2026-08-09 |

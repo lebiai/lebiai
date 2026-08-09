@@ -62,6 +62,9 @@ pub fn build(state: Arc<AppState>, token: Arc<String>) -> Router {
             "/api/v1/config",
             get(config::get_config).put(config::update_config),
         )
+        .route("/api/v1/data-dir", get(config::data_dir_get))
+        .route("/api/v1/data-dir/migrate", post(config::data_dir_migrate))
+        .route("/api/v1/data-dir/reset", post(config::data_dir_reset))
         // mcp
         .route("/api/v1/mcp/tools", get(mcp::list_mcp_tools))
         .route("/api/v1/mcp/servers", get(mcp::list_mcp_servers))

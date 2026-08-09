@@ -1,7 +1,16 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Save, RefreshCw, Plus, X, ChevronDown } from "lucide-react";
+import {
+  Save,
+  RefreshCw,
+  Plus,
+  X,
+  ChevronDown,
+  CheckCircle2,
+  FolderOpen,
+} from "lucide-react";
 import { useUiStore } from "../../store/uiStore";
+import { refreshProviderLabel } from "../../store/uiStore";
 import type { Language, TranslationKey } from "../../i18n";
 import type { ThemeMode } from "../../utils/theme";
 import { Button, ui } from "../common/ui";
@@ -22,6 +31,7 @@ interface ConfigView {
   permissionsAllow: string[];
   permissionsDeny: string[];
   workspaceRoot: string;
+  dataDir: string;
   uiLanguage: Language;
   uiTheme: ThemeMode;
   persistThinking: boolean;
@@ -81,10 +91,24 @@ export function SettingsPanel() {
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [powerOpen, setPowerOpen] = useState(false);
+  // Account: display name
+  const [displayNameDraft, setDisplayNameDraft] = useState("");
+  const [seedScenarios, setSeedScenarios] = useState<string[]>([]);
+  const [nameSaving, setNameSaving] = useState(false);
+  // Account: data location
+  const [dataDirTarget, setDataDirTarget] = useState("");
+  const [migrating, setMigrating] = useState(false);
+  const [migratedHint, setMigratedHint] = useState(false);
+  // Model: key editing state
+  const [editingKey, setEditingKey] = useState(false);
+  const [clearingKey, setClearingKey] = useState(false);
+
   const t = useUiStore((s) => s.t);
   const setLanguage = useUiStore((s) => s.setLanguage);
   const setTheme = useUiStore((s) => s.setTheme);
   const setHasApiKey = useUiStore((s) => s.setHasApiKey);
+  const setDisplayName = useUiStore((s) => s.setDisplayName);
   const requestOnboarding = useUiStore((s) => s.requestOnboarding);
 
   const load = async () => {
@@ -98,6 +122,16 @@ export function SettingsPanel() {
       setError(null);
     } catch (e) {
       setError(String(e));
+    }
+    try {
+      const seed = await invoke<{ displayName: string; scenarios: string[] } | null>(
+        "onboarding_seed_get",
+      );
+      setDisplayNameDraft(seed?.displayName ?? "");
+      setSeedScenarios(seed?.scenarios ?? []);
+      setDisplayName(seed?.displayName?.trim() || null);
+    } catch {
+      /* non-fatal */
     }
   };
 
@@ -129,10 +163,18 @@ export function SettingsPanel() {
           }
         : f
     );
+    setEditingKey(false);
   };
 
   const selectedProvider =
     config?.providers.find((p) => p.key === form?.provider) ?? config?.providers[0] ?? null;
+
+  const reloadAfterWrite = async () => {
+    const reloaded = await invoke<ConfigView>("get_config");
+    setConfig(reloaded);
+    setForm(toForm(reloaded));
+    setHasApiKey(!!reloaded.hasApiKey);
+  };
 
   const save = async () => {
     if (!form) return;
@@ -151,7 +193,6 @@ export function SettingsPanel() {
       if (!Number.isFinite(ctxLimit) || ctxLimit <= 0) {
         throw new Error(t("settings.error.contextLimit"));
       }
-      // Explicit boolean so IPC never drops the field.
       const persistThinking = form.persistThinking === true;
       await invoke("update_config", {
         update: {
@@ -170,14 +211,12 @@ export function SettingsPanel() {
           persistThinking,
         },
       });
+      await reloadAfterWrite();
+      void refreshProviderLabel();
       setSavedAt(Date.now());
       setLanguage(form.uiLanguage);
       setTheme(form.uiTheme);
-      // Re-read from disk so checkbox reflects what was actually written.
-      const reloaded = await invoke<ConfigView>("get_config");
-      setConfig(reloaded);
-      setForm(toForm(reloaded));
-      setHasApiKey(!!reloaded.hasApiKey);
+      setEditingKey(false);
       toast.success(t("toast.settingsSaved"));
     } catch (e) {
       const msg = String(e instanceof Error ? e.message : e);
@@ -185,6 +224,75 @@ export function SettingsPanel() {
       toast.error(msg);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveDisplayName = async () => {
+    setNameSaving(true);
+    try {
+      await invoke("onboarding_seed_set", {
+        displayName: displayNameDraft.trim(),
+        scenarios: seedScenarios,
+      });
+      setDisplayName(displayNameDraft.trim() || null);
+      toast.success(t("toast.displayNameSaved"));
+    } catch (e) {
+      toast.error(String(e instanceof Error ? e.message : e));
+    } finally {
+      setNameSaving(false);
+    }
+  };
+
+  const clearKey = async () => {
+    if (!form) return;
+    setClearingKey(true);
+    setError(null);
+    try {
+      await invoke("update_config", {
+        update: { defaultProvider: form.provider, clearApiKey: true },
+      });
+      await reloadAfterWrite();
+      void refreshProviderLabel();
+      setEditingKey(false);
+      toast.success(t("toast.keyCleared"));
+    } catch (e) {
+      const msg = String(e instanceof Error ? e.message : e);
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setClearingKey(false);
+    }
+  };
+
+  const migrateDataDir = async () => {
+    setMigrating(true);
+    setError(null);
+    setMigratedHint(false);
+    try {
+      const view = await invoke<{ dataRoot: string }>("data_dir_migrate", {
+        target: dataDirTarget,
+      });
+      setConfig((c) => (c ? { ...c, dataDir: view.dataRoot } : c));
+      setMigratedHint(true);
+      toast.success(t("toast.dataDirMigrated"));
+    } catch (e) {
+      const msg = String(e instanceof Error ? e.message : e);
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setMigrating(false);
+    }
+  };
+
+  const resetDataDir = async () => {
+    try {
+      await invoke("data_dir_reset");
+      await load();
+      toast.success(t("toast.dataDirMigrated"));
+    } catch (e) {
+      const msg = String(e instanceof Error ? e.message : e);
+      setError(msg);
+      toast.error(msg);
     }
   };
 
@@ -233,8 +341,205 @@ export function SettingsPanel() {
           </p>
         )}
 
+        {/* ── 账户：称呼 + 数据位置 ─────────────────────────────── */}
+        <section className={`${ui.card} p-4 space-y-4`}>
+          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
+            {t("settings.account")}
+          </h3>
+
+          <div>
+            <label className="block text-xs text-app-fg-secondary mb-1">
+              {t("settings.displayName")}
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                value={displayNameDraft}
+                onChange={(e) => setDisplayNameDraft(e.target.value)}
+                placeholder={
+                  displayNameDraft
+                    ? undefined
+                    : t("settings.displayNamePlaceholder")
+                }
+                className={`${ui.input} font-normal`}
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={saveDisplayName}
+                disabled={nameSaving}
+              >
+                {nameSaving ? t("settings.saving") : t("settings.save")}
+              </Button>
+            </div>
+            <p className="text-xs text-app-fg-tertiary mt-1.5">
+              {t("settings.displayNameHint")}
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <label className="block text-xs text-app-fg-secondary">
+              {t("settings.dataLocation")}
+            </label>
+            <div className="px-3 py-2 text-sm rounded-xl border border-app-border dark:border-slate-700 bg-app-muted/50 dark:bg-slate-800/60 font-mono break-all text-app-fg dark:text-slate-200">
+              {config.dataDir}
+            </div>
+            <p className="text-xs text-app-fg-tertiary leading-relaxed">
+              {t("settings.dataDirHint")}
+            </p>
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                value={dataDirTarget}
+                onChange={(e) => setDataDirTarget(e.target.value)}
+                placeholder={t("settings.dataDirTargetPlaceholder")}
+                className={`${ui.input} font-mono`}
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={migrateDataDir}
+                disabled={migrating || !dataDirTarget.trim()}
+              >
+                <FolderOpen size={13} />
+                {t("settings.dataDirChoose")}
+              </Button>
+            </div>
+            {migrating && (
+              <p className="text-xs text-app-fg-secondary">{t("settings.dataDirMigrating")}</p>
+            )}
+            {migratedHint && (
+              <p className="text-xs text-emerald-700 dark:text-emerald-300">
+                {t("settings.dataDirRestartHint")}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={resetDataDir}
+              className="text-xs text-app-fg-tertiary hover:text-app-fg-secondary underline underline-offset-2"
+            >
+              {t("settings.dataDirReset")}
+            </button>
+          </div>
+        </section>
+
         <WechatConnectCard />
 
+        {/* ── 模型服务：服务商 + Key 状态 ───────────────────────── */}
+        <section className={`${ui.card} p-4 space-y-3`}>
+          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
+            {t("settings.provider")}
+          </h3>
+          {selectedProvider && (
+            <>
+              <SelectField
+                label={t("settings.providerSelect")}
+                value={form.provider}
+                onChange={switchProvider}
+                options={config.providers.map((p) => ({
+                  value: p.key,
+                  label: t(`provider.${p.key}` as TranslationKey),
+                }))}
+              />
+              <p className="text-xs text-app-fg-tertiary">{t("settings.providerHint")}</p>
+
+              {selectedProvider.hasApiKey && !editingKey ? (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-emerald-200 dark:border-emerald-800/70 bg-emerald-50/60 dark:bg-emerald-950/30 px-3 py-2.5">
+                  <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+                    <CheckCircle2 size={14} />
+                    {t("settings.keyConfigured")}
+                  </span>
+                  <span className="text-xs font-mono text-app-fg-secondary dark:text-slate-400">
+                    {t("settings.apiKeyMasked", { key: selectedProvider.apiKeyMasked })}
+                  </span>
+                  <span className="flex items-center gap-2 ml-auto">
+                    <button
+                      type="button"
+                      onClick={() => setEditingKey(true)}
+                      className="text-xs text-app-primary dark:text-blue-300 hover:underline"
+                    >
+                      {t("settings.changeKey")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearKey}
+                      disabled={clearingKey}
+                      className="text-xs text-app-danger hover:underline disabled:opacity-50"
+                    >
+                      {t("settings.clearKey")}
+                    </button>
+                  </span>
+                </div>
+              ) : (
+                <>
+                  <TextField
+                    label={t("settings.apiKey")}
+                    value={form.apiKey}
+                    onChange={(v) => update("apiKey", v)}
+                    placeholder={
+                      selectedProvider.hasApiKey
+                        ? t("settings.apiKeyPlaceholder", {
+                            key: selectedProvider.apiKeyMasked,
+                          })
+                        : t("settings.apiKeyPlaceholderEmpty")
+                    }
+                    type="password"
+                  />
+                  {!selectedProvider.hasApiKey && (
+                    <p className="text-xs text-amber-700 dark:text-amber-300">
+                      {t("settings.apiKeyMissing", {
+                        name: t(
+                          `provider.${selectedProvider.key}` as TranslationKey,
+                        ),
+                      })}
+                    </p>
+                  )}
+                  {!selectedProvider.hasApiKey && (
+                    <ApiKeyHelp provider={selectedProvider.key} />
+                  )}
+                  {selectedProvider.hasApiKey && editingKey && (
+                    <p className="text-xs text-app-fg-tertiary">
+                      {t("settings.apiKeyHelpStep3")}
+                    </p>
+                  )}
+                </>
+              )}
+
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setAdvancedOpen((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs text-app-fg-secondary hover:text-app-fg"
+                >
+                  <ChevronDown
+                    size={13}
+                    className={`transition-transform duration-[var(--motion-fast)] ${
+                      advancedOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                  {t("settings.advanced")}
+                </button>
+                {advancedOpen && (
+                  <div className="grid grid-cols-2 gap-4 pt-2">
+                    <TextField label={t("settings.model")} value={form.model} onChange={(v) => update("model", v)} />
+                    <TextField
+                      label={t("settings.maxTokens")}
+                      value={form.maxTokens}
+                      onChange={(v) => update("maxTokens", v)}
+                      type="number"
+                    />
+                    <TextField
+                      label={t("settings.baseUrl")}
+                      value={form.baseUrl}
+                      onChange={(v) => update("baseUrl", v)}
+                      className="col-span-2"
+                    />
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </section>
+
+        {/* ── 界面 ──────────────────────────────────────────────── */}
         <section className={`${ui.card} p-4 space-y-3`}>
           <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
             {t("settings.interface")}
@@ -278,160 +583,98 @@ export function SettingsPanel() {
           </label>
         </section>
 
+        {/* ── 高级（折叠）───────────────────────────────────────── */}
         <section className={`${ui.card} p-4 space-y-3`}>
-          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
-            {t("settings.ritual")}
-          </h3>
-          <p className="text-xs text-app-fg-tertiary leading-relaxed">
-            {t("settings.replayOnboardingHint")}
-          </p>
-          <Button
-            size="sm"
-            variant="accent"
-            onClick={() => {
-              resetOnboarding();
-              requestOnboarding();
-              toast.success(t("toast.replayOnboarding"));
-            }}
+          <button
+            type="button"
+            onClick={() => setPowerOpen((v) => !v)}
+            className="flex items-center gap-1.5 text-xs font-medium text-app-fg-secondary uppercase tracking-wide hover:text-app-fg"
           >
-            {t("settings.replayOnboardingNow")}
-          </Button>
-        </section>
-
-        <section className={`${ui.card} p-4 space-y-3`}>
-          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
-            {t("settings.provider")}
-          </h3>
-          {selectedProvider && (
-            <>
-              <SelectField
-                label={t("settings.providerSelect")}
-                value={form.provider}
-                onChange={switchProvider}
-                options={config.providers.map((p) => ({
-                  value: p.key,
-                  label: t(`provider.${p.key}` as TranslationKey),
-                }))}
-              />
-              <p className="text-xs text-app-fg-tertiary">{t("settings.providerHint")}</p>
-              <TextField
-                label={t("settings.apiKey")}
-                value={form.apiKey}
-                onChange={(v) => update("apiKey", v)}
-                placeholder={
-                  selectedProvider.hasApiKey
-                    ? t("settings.apiKeyPlaceholder", { key: selectedProvider.apiKeyMasked })
-                    : t("settings.apiKeyPlaceholderEmpty")
-                }
-                type="password"
-              />
-              {!selectedProvider.hasApiKey && (
-                <p className="text-xs text-amber-700 dark:text-amber-300">
-                  {t("settings.apiKeyMissing", { name: t(`provider.${selectedProvider.key}` as TranslationKey) })}
+            <ChevronDown
+              size={13}
+              className={`transition-transform duration-[var(--motion-fast)] ${
+                powerOpen ? "rotate-180" : ""
+              }`}
+            />
+            {t("settings.advancedTitle")}
+          </button>
+          {powerOpen && (
+            <div className="space-y-5 pt-1">
+              <div className="space-y-3">
+                <h4 className="text-xs font-medium text-app-fg-secondary">
+                  {t("settings.ritual")}
+                </h4>
+                <p className="text-xs text-app-fg-tertiary leading-relaxed">
+                  {t("settings.replayOnboardingHint")}
                 </p>
-              )}
-              {!selectedProvider.hasApiKey && <ApiKeyHelp provider={selectedProvider.key} />}
-
-              <div>
-                <button
-                  type="button"
-                  onClick={() => setAdvancedOpen((v) => !v)}
-                  className="flex items-center gap-1.5 text-xs text-app-fg-secondary hover:text-app-fg"
+                <Button
+                  size="sm"
+                  variant="accent"
+                  onClick={() => {
+                    resetOnboarding();
+                    requestOnboarding();
+                    toast.success(t("toast.replayOnboarding"));
+                  }}
                 >
-                  <ChevronDown
-                    size={13}
-                    className={`transition-transform duration-[var(--motion-fast)] ${
-                      advancedOpen ? "rotate-180" : ""
-                    }`}
-                  />
-                  {t("settings.advanced")}
-                </button>
-                {advancedOpen && (
-                  <div className="grid grid-cols-2 gap-4 pt-2">
-                    <TextField label={t("settings.model")} value={form.model} onChange={(v) => update("model", v)} />
-                    <TextField
-                      label={t("settings.maxTokens")}
-                      value={form.maxTokens}
-                      onChange={(v) => update("maxTokens", v)}
-                      type="number"
-                    />
-                    <TextField
-                      label={t("settings.baseUrl")}
-                      value={form.baseUrl}
-                      onChange={(v) => update("baseUrl", v)}
-                      className="col-span-2"
-                    />
-                  </div>
-                )}
+                  {t("settings.replayOnboardingNow")}
+                </Button>
               </div>
-            </>
-          )}
-        </section>
 
-        <section className={`${ui.card} p-4 space-y-3`}>
-          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
-            {t("settings.reflection")}
-          </h3>
-          <div className="grid grid-cols-2 gap-4">
-            <TextField
-              label={t("settings.minTurns")}
-              value={form.reflectMinTurns}
-              onChange={(v) => update("reflectMinTurns", v)}
-              type="number"
-            />
-            <div className="flex items-end pb-1">
-              <label className="flex items-center gap-2 text-sm text-app-fg dark:text-slate-200">
-                <input
-                  type="checkbox"
-                  checked={form.reflectAutoAcceptMemories}
-                  onChange={(e) => update("reflectAutoAcceptMemories", e.target.checked)}
-                  className="rounded border-app-border"
+              <div className="grid grid-cols-2 gap-4">
+                <TextField
+                  label={t("settings.minTurns")}
+                  value={form.reflectMinTurns}
+                  onChange={(v) => update("reflectMinTurns", v)}
+                  type="number"
                 />
-                {t("settings.autoAcceptMemories")}
-              </label>
+                <div className="flex items-end pb-1">
+                  <label className="flex items-center gap-2 text-sm text-app-fg dark:text-slate-200">
+                    <input
+                      type="checkbox"
+                      checked={form.reflectAutoAcceptMemories}
+                      onChange={(e) =>
+                        update("reflectAutoAcceptMemories", e.target.checked)
+                      }
+                      className="rounded border-app-border"
+                    />
+                    {t("settings.autoAcceptMemories")}
+                  </label>
+                </div>
+              </div>
+
+              <TextField
+                label={t("settings.modelLimit")}
+                value={form.contextModelLimit}
+                onChange={(v) => update("contextModelLimit", v)}
+                type="number"
+              />
+
+              <div className="space-y-2">
+                <p className="text-xs text-app-fg-secondary">
+                  {t("settings.toolPermissions")}
+                </p>
+                <p className="text-xs text-app-fg-tertiary">{t("settings.permissionHelp")}</p>
+                <RuleList
+                  label={t("settings.allow")}
+                  tone="green"
+                  rules={form.permissionsAllow}
+                  onChange={(rules) => update("permissionsAllow", rules)}
+                />
+                <RuleList
+                  label={t("settings.deny")}
+                  tone="red"
+                  rules={form.permissionsDeny}
+                  onChange={(rules) => update("permissionsDeny", rules)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs text-app-fg-secondary">{t("settings.workspace")}</p>
+                <ReadOnlyField label={t("settings.root")} value={config.workspaceRoot} />
+                <p className="text-[11px] text-app-fg-tertiary">{t("settings.workspaceHelp")}</p>
+              </div>
             </div>
-          </div>
-        </section>
-
-        <section className={`${ui.card} p-4 space-y-3`}>
-          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
-            {t("settings.context")}
-          </h3>
-          <div className="grid grid-cols-2 gap-4">
-            <TextField
-              label={t("settings.modelLimit")}
-              value={form.contextModelLimit}
-              onChange={(v) => update("contextModelLimit", v)}
-              type="number"
-            />
-          </div>
-        </section>
-
-        <section className={`${ui.card} p-4 space-y-3`}>
-          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
-            {t("settings.toolPermissions")}
-          </h3>
-          <p className="text-xs text-app-fg-tertiary">{t("settings.permissionHelp")}</p>
-          <RuleList
-            label={t("settings.allow")}
-            tone="green"
-            rules={form.permissionsAllow}
-            onChange={(rules) => update("permissionsAllow", rules)}
-          />
-          <RuleList
-            label={t("settings.deny")}
-            tone="red"
-            rules={form.permissionsDeny}
-            onChange={(rules) => update("permissionsDeny", rules)}
-          />
-        </section>
-
-        <section className={`${ui.card} p-4 space-y-2`}>
-          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
-            {t("settings.workspace")}
-          </h3>
-          <ReadOnlyField label={t("settings.root")} value={config.workspaceRoot} />
-          <p className="text-[11px] text-app-fg-tertiary">{t("settings.workspaceHelp")}</p>
+          )}
         </section>
       </div>
     </div>
@@ -508,7 +751,6 @@ interface RuleListProps {
 
 function RuleList({ label, tone, rules, onChange }: RuleListProps) {
   const [draft, setDraft] = useState("");
-  const t = useUiStore((s) => s.t);
   const colors =
     tone === "green"
       ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300"
@@ -525,52 +767,41 @@ function RuleList({ label, tone, rules, onChange }: RuleListProps) {
     setDraft("");
   };
 
-  const remove = (rule: string) => onChange(rules.filter((r) => r !== rule));
-
   return (
-    <div>
-      <label className="block text-xs text-app-fg-secondary mb-1">{label}</label>
-      <div className="space-y-1.5">
-        {rules.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {rules.map((r) => (
-              <span
-                key={r}
-                className={`inline-flex items-center gap-1 text-xs font-mono px-2 py-0.5 rounded-lg ${colors}`}
-              >
-                {r}
-                <button
-                  type="button"
-                  onClick={() => remove(r)}
-                  className="opacity-60 hover:opacity-100"
-                  title={t("settings.remove")}
-                >
-                  <X size={10} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                add();
-              }
-            }}
-            placeholder={`e.g. ${tone === "green" ? "read" : "bash:rm *"}`}
-            className={`flex-1 ${ui.input} py-1.5 text-xs font-mono`}
-          />
-          <Button size="sm" variant="secondary" onClick={add} disabled={!draft.trim()}>
-            <Plus size={11} />
-            {t("settings.add")}
-          </Button>
-        </div>
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <span className={`text-xs px-2 py-0.5 rounded-full ${colors}`}>{label}</span>
+        <div className="flex-1" />
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add();
+            }
+          }}
+          className={`${ui.input} h-8 text-xs`}
+        />
+        <Button size="sm" variant="secondary" onClick={add}>
+          <Plus size={12} />
+        </Button>
       </div>
+      {rules.map((rule) => (
+        <div
+          key={rule}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-app-muted/50 dark:bg-slate-800/60 text-xs font-mono"
+        >
+          <span className="flex-1 truncate">{rule}</span>
+          <button
+            type="button"
+            onClick={() => onChange(rules.filter((r) => r !== rule))}
+            className="text-app-fg-tertiary hover:text-app-danger"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      ))}
     </div>
   );
 }

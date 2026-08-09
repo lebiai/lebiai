@@ -19,7 +19,11 @@ import {
   useChatStore,
 } from "./store/chatStore";
 import { useNavStore } from "./store/navStore";
-import { bindSystemThemeWatcher, useUiStore } from "./store/uiStore";
+import {
+  bindSystemThemeWatcher,
+  refreshProviderLabel,
+  useUiStore,
+} from "./store/uiStore";
 import { applyTheme } from "./utils/theme";
 import { isOnboardingDone } from "./utils/onboarding";
 import { toast } from "./utils/toast";
@@ -51,9 +55,10 @@ export default function App() {
         setLanguage(config.uiLanguage);
         setTheme(config.uiTheme ?? "system");
         setHasApiKey(!!config.hasApiKey);
+        void refreshProviderLabel();
       })
       .catch(() => {
-        setLanguage("en-US");
+        setLanguage("zh-CN");
         setTheme("system");
         setHasApiKey(false);
       });

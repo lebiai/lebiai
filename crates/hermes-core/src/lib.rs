@@ -20,7 +20,8 @@ pub mod workspace_hygiene;
 pub use error::{Error, Result};
 pub use message::{ContentBlock, ImageSource, Message, Role};
 pub use paths::{
-    data_path, data_root, ensure_data_root, maybe_migrate_data_root, project_data_dirname,
+    clear_data_dir_pointer, data_path, data_root, data_dir_pointer_path, ensure_data_root,
+    maybe_migrate_data_root, project_data_dirname, write_data_dir_pointer,
     DEFAULT_DATA_DIRNAME, ENV_DATA_DIR, LEGACY_DATA_DIRNAME, WORKSPACE_OUTPUTS_DIR,
 };
 pub use provider::{

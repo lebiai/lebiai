@@ -1,6 +1,6 @@
 export type Language = "en-US" | "zh-CN";
 
-const DEFAULT_LANGUAGE: Language = "en-US";
+const DEFAULT_LANGUAGE: Language = "zh-CN";
 
 const dictionaries = {
   "en-US": {
@@ -244,6 +244,36 @@ const dictionaries = {
     "settings.apiKeyOpen": "Get an API key from {name}",
     "settings.apiKeyHelpNotice":
       "An API key works like a password: never share it or paste it into code. Providers bill per usage — most offer a free quota to start.",
+    "settings.account": "Account",
+    "settings.displayName": "Your name",
+    "settings.displayNameHint":
+      "Shown on the welcome screen and sidebar. You can change it anytime.",
+    "settings.displayNamePlaceholder": "e.g. Alex",
+    "settings.displayNameEmpty": "Not set yet",
+    "settings.dataLocation": "Data location",
+    "settings.dataDirHint":
+      "Your conversations, memories and skills live here — independent of where the app is installed. Back up this folder to keep your data.",
+    "settings.dataDirChoose": "Change location",
+    "settings.dataDirTargetPlaceholder": "e.g. D:\\lebi-ai",
+    "settings.dataDirMigrating": "Copying your data… this may take a moment.",
+    "settings.dataDirRestartHint": "Restart the app for the new location to take effect.",
+    "settings.dataDirReset": "Back to default",
+    "settings.keyConfigured": "Configured",
+    "settings.keyNotConfigured": "Not configured",
+    "settings.changeKey": "Change key",
+    "settings.clearKey": "Remove key",
+    "settings.apiKeyMasked": "current: {key}",
+    "settings.advancedTitle": "Advanced",
+    "sidebar.userGuest": "My buddy",
+    "welcome.titleWithName": "{name}, what do you want to move forward today?",
+    "toast.keyCleared": "API key removed — saved on this device.",
+    "toast.dataDirMigrated": "Data copied to the new location — restart the app to take effect.",
+    "toast.displayNameSaved": "Name saved.",
+    "onboarding.keyTitle": "Connect your model",
+    "onboarding.keyHint":
+      "Pick a provider (DeepSeek is pre-selected — easy to top up in China), paste your API key and Save. No key? You can skip and do it in Settings.",
+    "onboarding.keySave": "Save key",
+    "onboarding.keySaved": "Configured ✓ — you can start right away.",
     "setup.apiKeyTitle": "Set up your API key",
     "setup.apiKeyBody":
       "lebi-AI needs a provider API key to work with you. Open Settings to add it (saved only on this device).",
@@ -646,6 +676,35 @@ const dictionaries = {
     "settings.apiKeyOpen": "去 {name} 官网获取 API Key",
     "settings.apiKeyHelpNotice":
       "API Key 相当于密码：不要发给别人、不要贴进代码；服务商按用量计费，多数平台有免费额度。",
+    "settings.account": "账户",
+    "settings.displayName": "你的称呼",
+    "settings.displayNameHint": "显示在欢迎页和侧边栏，随时可以改。",
+    "settings.displayNamePlaceholder": "例如：小张",
+    "settings.displayNameEmpty": "还没设置称呼",
+    "settings.dataLocation": "数据位置",
+    "settings.dataDirHint":
+      "对话记录、记忆、技能都存在这里，与应用安装位置无关；备份这个文件夹即可带走全部数据。",
+    "settings.dataDirChoose": "更改位置",
+    "settings.dataDirTargetPlaceholder": "例如 D:\\lebi-ai",
+    "settings.dataDirMigrating": "正在复制数据，请稍候……",
+    "settings.dataDirRestartHint": "重启应用后，新位置生效。",
+    "settings.dataDirReset": "恢复默认位置",
+    "settings.keyConfigured": "已配置",
+    "settings.keyNotConfigured": "未配置",
+    "settings.changeKey": "更换 Key",
+    "settings.clearKey": "清除 Key",
+    "settings.apiKeyMasked": "当前：{key}",
+    "settings.advancedTitle": "高级",
+    "sidebar.userGuest": "我的搭子",
+    "welcome.titleWithName": "{name}，今天想先推进哪件事？",
+    "toast.keyCleared": "API Key 已清除，已保存到本机。",
+    "toast.dataDirMigrated": "数据已复制到新位置，重启应用后生效。",
+    "toast.displayNameSaved": "称呼已保存。",
+    "onboarding.keyTitle": "连接你的模型",
+    "onboarding.keyHint":
+      "选一家服务商（已默认 DeepSeek，国内支付宝即可充值），粘贴 API Key 点保存。没有 Key 也可以跳过，稍后在设置里配置。",
+    "onboarding.keySave": "保存 Key",
+    "onboarding.keySaved": "已配置 ✓，可以开始对话了。",
     "setup.apiKeyTitle": "请配置 API Key",
     "setup.apiKeyBody":
       "与 乐彼AI 共事需要模型服务的 API Key。请到设置中填写（只保存在本机）。",
@@ -813,7 +872,9 @@ export type TranslationKey =
 export function normalizeLanguage(
   language: string | null | undefined,
 ): Language {
-  return language === "zh-CN" ? "zh-CN" : DEFAULT_LANGUAGE;
+  return language === "zh-CN" || language === "en-US"
+    ? language
+    : DEFAULT_LANGUAGE;
 }
 
 export function translate(

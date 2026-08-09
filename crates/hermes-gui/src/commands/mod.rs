@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod config;
+pub mod data_dir;
 pub mod inbox;
 pub mod mcp;
 pub mod memory;

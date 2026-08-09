@@ -30,13 +30,76 @@ pub fn project_data_dirname() -> &'static str {
     DEFAULT_DATA_DIRNAME
 }
 
+/// System-level pointer file remembering a user-chosen data root
+/// (Settings → data location migration). Lives **outside** the data root so it
+/// survives the move itself. Windows: `%APPDATA%\lebi-ai\data-dir.txt`;
+/// macOS: `~/Library/Application Support/lebi-ai/data-dir.txt`; Linux:
+/// `$XDG_CONFIG_HOME/lebi-ai/data-dir.txt`.
+pub fn data_dir_pointer_path() -> PathBuf {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|h| h.join("AppData").join("Roaming")))
+            .unwrap_or_default()
+    } else if cfg!(target_os = "macos") {
+        dirs::home_dir()
+            .map(|h| h.join("Library").join("Application Support"))
+            .unwrap_or_default()
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+            .unwrap_or_default()
+    };
+    base.join("lebi-ai").join("data-dir.txt")
+}
+
+/// Read the pointer file; returns `Some` only when it names an existing
+/// absolute directory (a stale pointer silently falls back to defaults).
+fn read_data_dir_pointer() -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(data_dir_pointer_path()).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let pb = PathBuf::from(trimmed);
+    if pb.is_absolute() && pb.is_dir() {
+        Some(pb)
+    } else {
+        None
+    }
+}
+
+/// Persist a user-chosen data root. Callers must validate the directory
+/// (non-empty target is rejected before this is ever reached).
+pub fn write_data_dir_pointer(dir: &Path) -> std::io::Result<()> {
+    let p = data_dir_pointer_path();
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&p, dir.to_string_lossy().as_bytes())
+}
+
+/// Forget a previously chosen data root (restores env/home resolution).
+pub fn clear_data_dir_pointer() -> std::io::Result<()> {
+    match std::fs::remove_file(data_dir_pointer_path()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Resolve the product data root (never fails).
 ///
-/// 1. `LEBI_DATA_DIR` if non-empty
-/// 2. else legacy `HERMES_DATA_DIR` if non-empty
-/// 3. else `$HOME/{DEFAULT_DATA_DIRNAME}`
-/// 4. else `./{DEFAULT_DATA_DIRNAME}` if `$HOME` is missing
+/// 1. User-chosen data root (pointer file, set via Settings migration)
+/// 2. `LEBI_DATA_DIR` if non-empty
+/// 3. legacy `HERMES_DATA_DIR` if non-empty
+/// 4. `$HOME/{DEFAULT_DATA_DIRNAME}`
+/// 5. `./{DEFAULT_DATA_DIRNAME}` if `$HOME` is missing
 pub fn data_root() -> PathBuf {
+    if let Some(chosen) = read_data_dir_pointer() {
+        return chosen;
+    }
     if let Some(root) = env_root(ENV_DATA_DIR).or_else(|| env_root(LEGACY_ENV_DATA_DIR)) {
         return root;
     }

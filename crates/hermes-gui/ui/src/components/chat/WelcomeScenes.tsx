@@ -62,10 +62,14 @@ export function WelcomeScenes({
   const t = useUiStore((s) => s.t);
   const returnKey = returnGreetingKey();
   const [seedScenarios, setSeedScenarios] = useState<string[] | null>(null);
+  const [displayName, setDisplayName] = useState<string>("");
 
   useEffect(() => {
     invoke<{ displayName: string; scenarios: string[] } | null>("onboarding_seed_get")
-      .then((seed) => setSeedScenarios(seed?.scenarios ?? []))
+      .then((seed) => {
+        setSeedScenarios(seed?.scenarios ?? []);
+        setDisplayName(seed?.displayName?.trim() ?? "");
+      })
       .catch(() => setSeedScenarios([]));
   }, []);
 
@@ -95,7 +99,9 @@ export function WelcomeScenes({
         )}
 
         <h1 className="text-xl sm:text-[1.65rem] font-semibold text-app-fg dark:text-white text-center tracking-tight leading-snug">
-          {t("welcome.title")}
+          {displayName
+            ? t("welcome.titleWithName", { name: displayName })
+            : t("welcome.title")}
         </h1>
         <p className="text-sm text-app-fg-secondary dark:text-slate-400 text-center mt-2.5 mb-8 leading-relaxed max-w-lg mx-auto">
           {t("welcome.subtitle")}
