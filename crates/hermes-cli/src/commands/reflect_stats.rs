@@ -23,7 +23,7 @@ pub fn run(last: usize) -> Result<()> {
         println!();
         println!(
             "⚠ acceptance rate below {:.0}% — the reflection prompt may be \
-             over-proposing. Consider editing built-in/reflect/SKILL.md to be \
+             over-proposing. Consider editing crates/hermes-reflect/src/prompt.rs to be \
              more conservative, or adjust [reflect].min_turns.",
             LOW_ACCEPTANCE_THRESHOLD * 100.0
         );

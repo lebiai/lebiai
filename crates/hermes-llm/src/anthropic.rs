@@ -10,45 +10,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
 use hermes_core::{
-    Capabilities, CompletionRequest, CompletionResponse, ContentBlock, Error, LlmProvider,
-    Message, Result, StopReason, StreamEvent, ToolSpec, Usage,
+    Capabilities, CompletionRequest, CompletionResponse, ContentBlock, Error, LlmProvider, Message,
+    Result, StopReason, StreamEvent, ToolSpec, Usage,
 };
 use serde::{Deserialize, Serialize};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-/// Maximum HTTP retry attempts for transient failures (5xx / 429 / network).
-/// Total attempts = 1 + RETRY_ATTEMPTS.
-const RETRY_ATTEMPTS: usize = 3;
-
-/// Returns true for transient HTTP statuses that warrant a retry.
-fn is_retriable_status(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
-}
-
-/// Backoff for attempt `n` (0-based): 500ms, 1500ms, 4500ms — plus small jitter.
-fn backoff_delay(attempt: usize) -> Duration {
-    let base_ms = 500_u64 * 3u64.pow(attempt as u32);
-    // jitter: 0..=base_ms/4, derived deterministically from current nanos.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0);
-    let jitter = nanos % (base_ms / 4).max(1);
-    Duration::from_millis(base_ms + jitter)
-}
-
-/// Parse Retry-After header if present. Returns seconds.
-fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
-    resp.headers()
-        .get(reqwest::header::RETRY_AFTER)?
-        .to_str()
-        .ok()?
-        .trim()
-        .parse::<u64>()
-        .ok()
-        .map(Duration::from_secs)
-}
+use crate::retry::{backoff_delay, is_retriable_status, parse_retry_after, RETRY_ATTEMPTS};
 
 /// Concrete Anthropic-protocol provider. Cheap to clone.
 #[derive(Clone)]
@@ -74,7 +43,7 @@ impl AnthropicProvider {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(300))
-            .user_agent(format!("small-rust-hermes/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("lebi-ai/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| Error::Provider(format!("building http client: {e}")))?;
 
@@ -207,7 +176,8 @@ impl AnthropicProvider {
                         return Ok(resp);
                     }
                     if is_retriable_status(status) && attempt < RETRY_ATTEMPTS {
-                        let delay = parse_retry_after(&resp).unwrap_or_else(|| backoff_delay(attempt));
+                        let delay =
+                            parse_retry_after(&resp).unwrap_or_else(|| backoff_delay(attempt));
                         let text = resp.text().await.unwrap_or_default();
                         tracing::warn!(
                             attempt,
@@ -377,7 +347,14 @@ fn parse_sse_stream(
                     // EOF — flush whatever line is buffered, then emit Final.
                     if !s.line_buf.is_empty() {
                         let line_buf = std::mem::take(&mut s.line_buf);
-                        process_lines(&line_buf, &mut s.current_event, &mut s.pending, &mut s.blocks, &mut s.usage, &mut s.stop_reason);
+                        process_lines(
+                            &line_buf,
+                            &mut s.current_event,
+                            &mut s.pending,
+                            &mut s.blocks,
+                            &mut s.usage,
+                            &mut s.stop_reason,
+                        );
                     }
                     s.pending.push_back(Ok(StreamEvent::Final(build_response(
                         std::mem::take(&mut s.blocks),
@@ -480,7 +457,10 @@ fn dispatch_event(
         "content_block_start" => {
             let index = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
             let cb = v.get("content_block");
-            let block_type = cb.and_then(|b| b.get("type")).and_then(|t| t.as_str()).unwrap_or("");
+            let block_type = cb
+                .and_then(|b| b.get("type"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("");
             match block_type {
                 "text" => {
                     ensure_block(blocks, index, BlockBuilder::Text(String::new()));
@@ -525,7 +505,10 @@ fn dispatch_event(
         "content_block_delta" => {
             let index = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
             let delta = v.get("delta");
-            let dt = delta.and_then(|d| d.get("type")).and_then(|t| t.as_str()).unwrap_or("");
+            let dt = delta
+                .and_then(|d| d.get("type"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("");
             match dt {
                 "text_delta" => {
                     let text = delta
@@ -626,14 +609,8 @@ fn ensure_block(blocks: &mut Vec<BlockBuilder>, index: usize, init: BlockBuilder
 
 fn parse_usage(v: &serde_json::Value) -> Usage {
     Usage {
-        input_tokens: v
-            .get("input_tokens")
-            .and_then(|n| n.as_u64())
-            .unwrap_or(0) as u32,
-        output_tokens: v
-            .get("output_tokens")
-            .and_then(|n| n.as_u64())
-            .unwrap_or(0) as u32,
+        input_tokens: v.get("input_tokens").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+        output_tokens: v.get("output_tokens").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
         cache_read_tokens: v
             .get("cache_read_input_tokens")
             .and_then(|n| n.as_u64())
@@ -748,12 +725,15 @@ impl From<AnthropicResponse> for CompletionResponse {
             Some("stop_sequence") => StopReason::StopSequence,
             _ => StopReason::Other,
         };
-        let usage = r.usage.map(|u| Usage {
-            input_tokens: u.input_tokens,
-            output_tokens: u.output_tokens,
-            cache_read_tokens: u.cache_read_input_tokens,
-            cache_creation_tokens: u.cache_creation_input_tokens,
-        }).unwrap_or_default();
+        let usage = r
+            .usage
+            .map(|u| Usage {
+                input_tokens: u.input_tokens,
+                output_tokens: u.output_tokens,
+                cache_read_tokens: u.cache_read_input_tokens,
+                cache_creation_tokens: u.cache_creation_input_tokens,
+            })
+            .unwrap_or_default();
 
         CompletionResponse {
             content: r.content,
@@ -781,9 +761,13 @@ mod tests {
     #[test]
     fn retriable_classification() {
         assert!(is_retriable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
-        assert!(is_retriable_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(is_retriable_status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
         assert!(is_retriable_status(reqwest::StatusCode::BAD_GATEWAY));
-        assert!(is_retriable_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(is_retriable_status(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        ));
         assert!(!is_retriable_status(reqwest::StatusCode::BAD_REQUEST));
         assert!(!is_retriable_status(reqwest::StatusCode::UNAUTHORIZED));
         assert!(!is_retriable_status(reqwest::StatusCode::NOT_FOUND));

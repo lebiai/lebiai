@@ -200,10 +200,7 @@ mod tests {
 
     #[test]
     fn check_allow_bash_git() {
-        let checker = PermissionChecker::new(
-            &["bash:git *".to_string()],
-            &[],
-        );
+        let checker = PermissionChecker::new(&["bash:git *".to_string()], &[]);
         assert_eq!(
             checker.check("bash", &serde_json::json!({"command": "git status"})),
             Permission::Allow
@@ -216,10 +213,7 @@ mod tests {
 
     #[test]
     fn check_allow_edit_rs() {
-        let checker = PermissionChecker::new(
-            &["edit:*.rs".to_string()],
-            &[],
-        );
+        let checker = PermissionChecker::new(&["edit:*.rs".to_string()], &[]);
         assert_eq!(
             checker.check("edit", &serde_json::json!({"file_path": "/foo/bar.rs"})),
             Permission::Allow
@@ -246,7 +240,10 @@ mod tests {
             &["bash:git push *".to_string()],
         );
         assert_eq!(
-            checker.check("bash", &serde_json::json!({"command": "git push origin main"})),
+            checker.check(
+                "bash",
+                &serde_json::json!({"command": "git push origin main"})
+            ),
             Permission::Deny
         );
         assert_eq!(
@@ -266,10 +263,7 @@ mod tests {
 
     #[test]
     fn check_mcp_tool_matching() {
-        let checker = PermissionChecker::new(
-            &["mcp:github__*".to_string()],
-            &[],
-        );
+        let checker = PermissionChecker::new(&["mcp:github__*".to_string()], &[]);
         // MCP tool name is used as the key arg
         assert_eq!(
             checker.check("github__create_issue", &serde_json::json!({})),
@@ -287,10 +281,7 @@ mod tests {
 
     #[test]
     fn check_deny_rm_rf() {
-        let checker = PermissionChecker::new(
-            &[],
-            &["bash:rm -rf *".to_string()],
-        );
+        let checker = PermissionChecker::new(&[], &["bash:rm -rf *".to_string()]);
         assert_eq!(
             checker.check("bash", &serde_json::json!({"command": "rm -rf /tmp/thing"})),
             Permission::Deny

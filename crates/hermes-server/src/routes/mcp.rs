@@ -16,7 +16,9 @@ pub struct McpToolItem {
     pub description: String,
 }
 
-pub async fn list_mcp_tools(State(state): State<Arc<AppState>>) -> Result<Json<Vec<McpToolItem>>, ApiError> {
+pub async fn list_mcp_tools(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<McpToolItem>>, ApiError> {
     let tools = state.tools.lock().await;
     Ok(Json(
         tools
@@ -38,8 +40,7 @@ pub struct McpServerInfo {
 }
 
 pub async fn list_mcp_servers() -> Result<Json<Vec<McpServerInfo>>, ApiError> {
-    let cfg = hermes_mcp::McpConfig::load_default()
-        .map_err(|e| ApiError::Config(e.to_string()))?;
+    let cfg = hermes_mcp::McpConfig::load_default().map_err(|e| ApiError::Config(e.to_string()))?;
     Ok(Json(
         cfg.servers
             .iter()

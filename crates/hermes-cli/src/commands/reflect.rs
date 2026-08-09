@@ -13,11 +13,12 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use hermes_core::{LlmProvider, Session};
 use hermes_memory::{
-    FsMemoryStore, LoadedMemory, MemoryFrontmatter, MemoryStore,
-    Scope as MemoryScope, Source as MemorySource,
+    FsMemoryStore, LoadedMemory, MemoryFrontmatter, MemoryStore, Scope as MemoryScope,
+    Source as MemorySource,
 };
 use hermes_reflect::{
-    reflect, ConflictCandidate, MemoryCandidate, ReflectionOutput, SkillCandidate,
+    deferred_load, reflect, CandidateKind, ConflictCandidate, DeferredCandidate,
+    MemoryCandidate, ReflectionOutput, SkillCandidate,
 };
 use hermes_skills::{FsSkillStore, Scope as SkillScope, SkillFrontmatter, SkillStore};
 use tokio::io::{AsyncBufReadExt, BufReader, Lines, Stdin};
@@ -45,13 +46,8 @@ enum ConflictAction {
     Skip,
 }
 
-#[allow(dead_code)]
-pub async fn run_after_chat(provider: &dyn LlmProvider, session: &Session) -> Result<()> {
-    run_with_min_turns(provider, session, 0).await
-}
-
-/// Like [`run_after_chat`] but skips silently when the session has fewer
-/// than `min_turns` user messages. Use this for the quit-driven path.
+/// Run full reflection, but skip silently when the session has fewer than
+/// `min_turns` user messages. Use this for the quit-driven (session-end) path.
 pub async fn run_with_min_turns(
     provider: &dyn LlmProvider,
     session: &Session,
@@ -63,8 +59,12 @@ pub async fn run_with_min_turns(
     let user_turns = session
         .messages
         .iter()
-        .filter(|m| matches!(m.role, hermes_core::Role::User)
-            && m.content.iter().any(|b| matches!(b, hermes_core::ContentBlock::Text { .. })))
+        .filter(|m| {
+            matches!(m.role, hermes_core::Role::User)
+                && m.content
+                    .iter()
+                    .any(|b| matches!(b, hermes_core::ContentBlock::Text { .. }))
+        })
         .count();
     if user_turns < min_turns {
         tracing::info!(
@@ -78,10 +78,9 @@ pub async fn run_with_min_turns(
     eprintln!();
     eprintln!("(reflecting on session...)");
 
-    let skill_store = FsSkillStore::standard()
-        .map_err(|e| anyhow::anyhow!("skill store: {e}"))?;
-    let memory_store = FsMemoryStore::standard()
-        .map_err(|e| anyhow::anyhow!("memory store: {e}"))?;
+    let skill_store = FsSkillStore::standard().map_err(|e| anyhow::anyhow!("skill store: {e}"))?;
+    let memory_store =
+        FsMemoryStore::standard().map_err(|e| anyhow::anyhow!("memory store: {e}"))?;
     let active_skills = skill_store
         .list()
         .map_err(|e| anyhow::anyhow!("listing skills: {e}"))?;
@@ -94,6 +93,11 @@ pub async fn run_with_min_turns(
         .cloned()
         .map(|m| (m.frontmatter.id.clone(), m))
         .collect();
+
+    // Re-evaluate deferred candidates from previous sessions before running
+    // reflection for this one (P0 第一条: candidates must go through human
+    // approval — a deferred queue with no consumer would never be reviewed).
+    review_deferred(&session.meta.id, &skill_store, &memory_store).await?;
 
     let output = reflect(provider, session, &active_skills, &active_memories)
         .await
@@ -123,7 +127,10 @@ pub async fn run_with_min_turns(
                 Err(e) => eprintln!("  ✗ failed to persist: {e:#}"),
             },
             Some(Action::Reject) => eprintln!("  (rejected)"),
-            Some(Action::Defer) => eprintln!("  (deferred — appears next session)"),
+            Some(Action::Defer) => {
+                hermes_reflect::deferred_save(DeferredCandidate::Skill(c.clone()));
+                eprintln!("  (deferred — will appear next session)");
+            }
             None => {
                 eprintln!("  (stdin closed; skipping remaining candidates)");
                 log_action(
@@ -219,7 +226,10 @@ pub async fn run_with_min_turns(
                 Err(e) => eprintln!("  ✗ failed to persist: {e:#}"),
             },
             Some(Action::Reject) => eprintln!("  (rejected)"),
-            Some(Action::Defer) => eprintln!("  (deferred)"),
+            Some(Action::Defer) => {
+                hermes_reflect::deferred_save(DeferredCandidate::Memory(c.clone()));
+                eprintln!("  (deferred — will appear next session)");
+            }
             None => {
                 eprintln!("  (stdin closed; skipping remaining candidates)");
                 log_action(
@@ -272,7 +282,10 @@ pub async fn run_with_min_turns(
                                 Err(e) => eprintln!("    ✗ delete failed: {e:#}"),
                             }
                         } else {
-                            eprintln!("    (memory {} not found — may have been hallucinated)", c.with);
+                            eprintln!(
+                                "    (memory {} not found — may have been hallucinated)",
+                                c.with
+                            );
                         }
                         break;
                     }
@@ -414,7 +427,11 @@ async fn prompt_conflict(
         );
     }
     eprintln!("  NEW fact: {}", new.fact);
-    eprintln!("           scope: {:?}, tags: {}", new.scope, new.tags.join(", "));
+    eprintln!(
+        "           scope: {:?}, tags: {}",
+        new.scope,
+        new.tags.join(", ")
+    );
     eprintln!();
     loop {
         eprint!(
@@ -555,7 +572,10 @@ pub(crate) async fn review_proposed_skill(
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
 
-    eprintln!("\n{}", crate::commands::style::paint("1;36", "== Proposed skill (from agent) =="));
+    eprintln!(
+        "\n{}",
+        crate::commands::style::paint("1;36", "== Proposed skill (from agent) ==")
+    );
     let outcome = prompt_skill(c, 1, 1, &mut reader).await?;
     match outcome {
         Some(Action::Accept) => match persist_skill(skill_store, c) {
@@ -563,7 +583,10 @@ pub(crate) async fn review_proposed_skill(
             Err(e) => eprintln!("  ✗ failed to persist: {e:#}"),
         },
         Some(Action::Reject) => eprintln!("  (rejected)"),
-        Some(Action::Defer) => eprintln!("  (deferred — appears next session)"),
+        Some(Action::Defer) => {
+            hermes_reflect::deferred_save(DeferredCandidate::Skill(c.clone()));
+            eprintln!("  (deferred — will appear next session)");
+        }
         None => eprintln!("  (stdin closed; skipping)"),
     }
     if let Some(act) = outcome {
@@ -589,7 +612,16 @@ pub(crate) async fn review_proposed_skill(
 /// candidate carries. Reused by `hermes distill` to write the survivor of a
 /// cluster (its `supersedes` lists the other members' ids).
 pub(crate) fn persist_memory(store: &FsMemoryStore, c: &MemoryCandidate) -> Result<PathBuf> {
-    let mut fm = MemoryFrontmatter::new(MemorySource::Reflection, c.confidence, c.tags.clone(), "general".to_string());
+    let zone = {
+        let z = c.zone.trim();
+        if z.is_empty() {
+            "general".to_string()
+        } else {
+            z.to_string()
+        }
+    };
+    let mut fm =
+        MemoryFrontmatter::new(MemorySource::Reflection, c.confidence, c.tags.clone(), zone);
     fm.supersedes = c.supersedes.clone();
     let scope = c.scope;
     // Fall back to User scope if Project was requested but no project
@@ -605,6 +637,122 @@ pub(crate) fn persist_memory(store: &FsMemoryStore, c: &MemoryCandidate) -> Resu
         }
         other => other.map_err(|e| anyhow::anyhow!("{e}")),
     }
+}
+
+/// Load deferred candidates (from micro-reflection or deferred decisions in
+/// earlier sessions) and present them through the same approval gate. Clears
+/// the queue when the user has reviewed everything (or stdin closed — the
+/// file stays for the next session).
+async fn review_deferred(
+    session_id: &str,
+    skill_store: &FsSkillStore,
+    memory_store: &FsMemoryStore,
+) -> Result<()> {
+    let deferred = match deferred_load() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error=%e, "loading deferred candidates failed");
+            return Ok(());
+        }
+    };
+    if deferred.is_empty() {
+        return Ok(());
+    }
+
+    eprintln!();
+    eprintln!(
+        "{}",
+        crate::commands::style::paint(
+            "1;36",
+            "== Deferred candidates from previous sessions =="
+        )
+    );
+    eprintln!("({} item(s) awaiting your decision)", deferred.len());
+
+    let stdin = tokio::io::stdin();
+    let mut reader = BufReader::new(stdin).lines();
+
+    let mut skills_done = 0usize;
+    let mut memories_done = 0usize;
+    let mut keep: Vec<DeferredCandidate> = Vec::new();
+    for (i, item) in deferred.iter().enumerate() {
+        let (kind, label, action) = match item {
+            DeferredCandidate::Skill(c) => {
+                let outcome = prompt_skill(c, i + 1, deferred.len(), &mut reader).await?;
+                let label = c.name.clone();
+                let act = match outcome {
+                    Some(Action::Accept) => {
+                        match persist_skill(skill_store, c) {
+                            Ok(path) => {
+                                eprintln!("  ✓ wrote {}", path.display());
+                                skills_done += 1;
+                            }
+                            Err(e) => eprintln!("  ✗ failed to persist: {e:#}"),
+                        }
+                        Some(Action::Accept)
+                    }
+                    Some(Action::Reject) => {
+                        eprintln!("  (rejected)");
+                        Some(Action::Reject)
+                    }
+                    Some(Action::Defer) => {
+                        eprintln!("  (kept deferred)");
+                        keep.push(DeferredCandidate::Skill(c.clone()));
+                        Some(Action::Defer)
+                    }
+                    None => {
+                        eprintln!("  (stdin closed; queue kept for next session)");
+                        return Ok(());
+                    }
+                };
+                (CandidateKind::Skill, label, act)
+            }
+            DeferredCandidate::Memory(c) => {
+                let outcome = prompt_memory(c, i + 1, deferred.len(), &mut reader).await?;
+                let label = c.fact.lines().next().unwrap_or("").to_string();
+                let act = match outcome {
+                    Some(Action::Accept) => {
+                        match persist_memory(memory_store, c) {
+                            Ok(path) => {
+                                eprintln!("  ✓ wrote {}", path.display());
+                                memories_done += 1;
+                            }
+                            Err(e) => eprintln!("  ✗ failed to persist: {e:#}"),
+                        }
+                        Some(Action::Accept)
+                    }
+                    Some(Action::Reject) => {
+                        eprintln!("  (rejected)");
+                        Some(Action::Reject)
+                    }
+                    Some(Action::Defer) => {
+                        eprintln!("  (kept deferred)");
+                        keep.push(DeferredCandidate::Memory(c.clone()));
+                        Some(Action::Defer)
+                    }
+                    None => {
+                        eprintln!("  (stdin closed; queue kept for next session)");
+                        return Ok(());
+                    }
+                };
+                (CandidateKind::Memory, label, act)
+            }
+        };
+        if let Some(a) = action {
+            log_action(session_id, kind, &label, map_action(a));
+        }
+    }
+
+    // Rebuild the queue from items the user deferred again; items that were
+    // accepted/rejected leave the file. (stdin closed → file untouched.)
+    if let Err(e) = hermes_reflect::deferred_clear() {
+        tracing::warn!(error=%e, "clearing deferred queue failed");
+    }
+    for item in keep {
+        hermes_reflect::deferred_save(item);
+    }
+    eprintln!("deferred review done — skills: {skills_done}, memories: {memories_done}");
+    Ok(())
 }
 
 fn map_action(a: Action) -> hermes_reflect::ActionTaken {

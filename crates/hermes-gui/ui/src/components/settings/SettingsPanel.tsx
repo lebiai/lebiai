@@ -1,15 +1,21 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Save, RefreshCw, Plus, X } from "lucide-react";
+import { Save, RefreshCw, Plus, X, ChevronDown } from "lucide-react";
 import { useUiStore } from "../../store/uiStore";
-import type { Language } from "../../i18n";
+import type { Language, TranslationKey } from "../../i18n";
+import type { ThemeMode } from "../../utils/theme";
+import { Button, ui } from "../common/ui";
+import { toast } from "../../utils/toast";
+import { resetOnboarding } from "../../utils/onboarding";
+import { WechatConnectCard } from "./WechatConnectCard";
+import { ApiKeyHelp } from "./ApiKeyHelp";
 
 interface ConfigView {
   defaultProvider: string;
   model: string;
   maxTokens: number;
-  apiKeyMasked: string;
   baseUrl: string;
+  providers: ProviderOption[];
   reflectMinTurns: number;
   reflectAutoAcceptMemories: boolean;
   contextModelLimit: number;
@@ -17,9 +23,22 @@ interface ConfigView {
   permissionsDeny: string[];
   workspaceRoot: string;
   uiLanguage: Language;
+  uiTheme: ThemeMode;
+  persistThinking: boolean;
+  hasApiKey: boolean;
+}
+
+interface ProviderOption {
+  key: string;
+  model: string;
+  maxTokens: number;
+  baseUrl: string;
+  apiKeyMasked: string;
+  hasApiKey: boolean;
 }
 
 interface Form {
+  provider: string;
   model: string;
   maxTokens: string;
   baseUrl: string;
@@ -30,10 +49,13 @@ interface Form {
   permissionsAllow: string[];
   permissionsDeny: string[];
   uiLanguage: Language;
+  uiTheme: ThemeMode;
+  persistThinking: boolean;
 }
 
 function toForm(c: ConfigView): Form {
   return {
+    provider: c.defaultProvider,
     model: c.model,
     maxTokens: String(c.maxTokens),
     baseUrl: c.baseUrl,
@@ -44,6 +66,11 @@ function toForm(c: ConfigView): Form {
     permissionsAllow: [...c.permissionsAllow],
     permissionsDeny: [...c.permissionsDeny],
     uiLanguage: c.uiLanguage === "zh-CN" ? "zh-CN" : "en-US",
+    uiTheme:
+      c.uiTheme === "light" || c.uiTheme === "dark" || c.uiTheme === "system"
+        ? c.uiTheme
+        : "system",
+    persistThinking: !!c.persistThinking,
   };
 }
 
@@ -53,8 +80,12 @@ export function SettingsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const t = useUiStore((s) => s.t);
   const setLanguage = useUiStore((s) => s.setLanguage);
+  const setTheme = useUiStore((s) => s.setTheme);
+  const setHasApiKey = useUiStore((s) => s.setHasApiKey);
+  const requestOnboarding = useUiStore((s) => s.requestOnboarding);
 
   const load = async () => {
     try {
@@ -62,6 +93,8 @@ export function SettingsPanel() {
       setConfig(c);
       setForm(toForm(c));
       setLanguage(c.uiLanguage);
+      setTheme(c.uiTheme ?? "system");
+      setHasApiKey(!!c.hasApiKey);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -74,7 +107,32 @@ export function SettingsPanel() {
 
   const update = <K extends keyof Form>(k: K, v: Form[K]) => {
     setForm((f) => (f ? { ...f, [k]: v } : f));
+    if (k === "uiTheme" && typeof v === "string") {
+      setTheme(v);
+    }
   };
+
+  /** Selecting a provider pre-fills its preset values; the user only types
+   *  the API key. Per-provider on-disk values (custom model, key) are kept. */
+  const switchProvider = (key: string) => {
+    const opt = config?.providers.find((p) => p.key === key);
+    if (!opt) return;
+    setForm((f) =>
+      f
+        ? {
+            ...f,
+            provider: key,
+            model: opt.model,
+            maxTokens: String(opt.maxTokens),
+            baseUrl: opt.baseUrl,
+            apiKey: "",
+          }
+        : f
+    );
+  };
+
+  const selectedProvider =
+    config?.providers.find((p) => p.key === form?.provider) ?? config?.providers[0] ?? null;
 
   const save = async () => {
     if (!form) return;
@@ -93,8 +151,11 @@ export function SettingsPanel() {
       if (!Number.isFinite(ctxLimit) || ctxLimit <= 0) {
         throw new Error(t("settings.error.contextLimit"));
       }
+      // Explicit boolean so IPC never drops the field.
+      const persistThinking = form.persistThinking === true;
       await invoke("update_config", {
         update: {
+          defaultProvider: form.provider,
           model: form.model,
           maxTokens,
           baseUrl: form.baseUrl,
@@ -105,13 +166,23 @@ export function SettingsPanel() {
           permissionsAllow: form.permissionsAllow,
           permissionsDeny: form.permissionsDeny,
           uiLanguage: form.uiLanguage,
+          uiTheme: form.uiTheme,
+          persistThinking,
         },
       });
       setSavedAt(Date.now());
       setLanguage(form.uiLanguage);
-      update("apiKey", "");
+      setTheme(form.uiTheme);
+      // Re-read from disk so checkbox reflects what was actually written.
+      const reloaded = await invoke<ConfigView>("get_config");
+      setConfig(reloaded);
+      setForm(toForm(reloaded));
+      setHasApiKey(!!reloaded.hasApiKey);
+      toast.success(t("toast.settingsSaved"));
     } catch (e) {
-      setError(String(e instanceof Error ? e.message : e));
+      const msg = String(e instanceof Error ? e.message : e);
+      setError(msg);
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
@@ -120,56 +191,52 @@ export function SettingsPanel() {
   if (error && !config) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <p className="text-sm text-red-500">{error}</p>
+        <p className="text-sm text-app-danger">{error}</p>
       </div>
     );
   }
   if (!config || !form) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <p className="text-sm text-gray-500">{t("settings.loading")}</p>
+        <p className="text-sm text-app-fg-secondary">{t("settings.loading")}</p>
       </div>
     );
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div className={`flex-1 overflow-y-auto ${ui.page}`}>
       <div className="max-w-2xl mx-auto p-6 space-y-6">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">{t("settings.title")}</h2>
+          <h2 className="text-lg font-semibold text-app-fg dark:text-slate-100">
+            {t("settings.title")}
+          </h2>
           <div className="flex items-center gap-2">
-            <button
-              onClick={load}
-              className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800"
-              title={t("settings.reloadTitle")}
-            >
+            <Button size="sm" variant="secondary" onClick={load} title={t("settings.reloadTitle")}>
               <RefreshCw size={12} />
               {t("settings.reload")}
-            </button>
-            <button
-              onClick={save}
-              disabled={saving}
-              className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-            >
+            </Button>
+            <Button size="sm" onClick={save} disabled={saving}>
               <Save size={12} />
               {saving ? t("settings.saving") : t("settings.save")}
-            </button>
+            </Button>
           </div>
         </div>
 
         {error && (
-          <p className="text-sm text-red-500 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded px-3 py-2">
+          <p className="text-sm text-red-600 dark:text-red-300 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl px-3 py-2">
             {error}
           </p>
         )}
         {savedAt && !error && (
-          <p className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2">
+          <p className="text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded-xl px-3 py-2">
             {t("settings.saved")}
           </p>
         )}
 
-        <section className="space-y-3">
-          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+        <WechatConnectCard />
+
+        <section className={`${ui.card} p-4 space-y-3`}>
+          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
             {t("settings.interface")}
           </h3>
           <div className="grid grid-cols-2 gap-4">
@@ -182,41 +249,129 @@ export function SettingsPanel() {
                 { value: "zh-CN", label: "简体中文" },
               ]}
             />
+            <SelectField
+              label={t("settings.theme")}
+              value={form.uiTheme}
+              onChange={(v) => update("uiTheme", v as ThemeMode)}
+              options={[
+                { value: "system", label: t("settings.themeSystem") },
+                { value: "light", label: t("settings.themeLight") },
+                { value: "dark", label: t("settings.themeDark") },
+              ]}
+            />
           </div>
-          <p className="text-xs text-gray-400">{t("settings.languageHint")}</p>
+          <p className="text-xs text-app-fg-tertiary">{t("settings.languageHint")}</p>
+          <p className="text-xs text-app-fg-tertiary">{t("settings.themeHint")}</p>
+          <label className="flex items-start gap-2 text-sm text-app-fg dark:text-slate-200 pt-1">
+            <input
+              type="checkbox"
+              className="mt-0.5 rounded border-app-border"
+              checked={form.persistThinking}
+              onChange={(e) => update("persistThinking", e.target.checked)}
+            />
+            <span>
+              <span className="font-medium">{t("settings.persistThinking")}</span>
+              <span className="block text-xs text-app-fg-tertiary mt-0.5">
+                {t("settings.persistThinkingHint")}
+              </span>
+            </span>
+          </label>
         </section>
 
-        <section className="space-y-3">
-          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-            {t("settings.provider")} — {config.defaultProvider}
+        <section className={`${ui.card} p-4 space-y-3`}>
+          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
+            {t("settings.ritual")}
           </h3>
-          <div className="grid grid-cols-2 gap-4">
-            <TextField label={t("settings.model")} value={form.model} onChange={(v) => update("model", v)} />
-            <TextField
-              label={t("settings.maxTokens")}
-              value={form.maxTokens}
-              onChange={(v) => update("maxTokens", v)}
-              type="number"
-            />
-            <TextField
-              label={t("settings.baseUrl")}
-              value={form.baseUrl}
-              onChange={(v) => update("baseUrl", v)}
-              className="col-span-2"
-            />
-            <TextField
-              label={t("settings.apiKey")}
-              value={form.apiKey}
-              onChange={(v) => update("apiKey", v)}
-              placeholder={t("settings.apiKeyPlaceholder", { key: config.apiKeyMasked })}
-              type="password"
-              className="col-span-2"
-            />
-          </div>
+          <p className="text-xs text-app-fg-tertiary leading-relaxed">
+            {t("settings.replayOnboardingHint")}
+          </p>
+          <Button
+            size="sm"
+            variant="accent"
+            onClick={() => {
+              resetOnboarding();
+              requestOnboarding();
+              toast.success(t("toast.replayOnboarding"));
+            }}
+          >
+            {t("settings.replayOnboardingNow")}
+          </Button>
         </section>
 
-        <section className="space-y-3">
-          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t("settings.reflection")}</h3>
+        <section className={`${ui.card} p-4 space-y-3`}>
+          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
+            {t("settings.provider")}
+          </h3>
+          {selectedProvider && (
+            <>
+              <SelectField
+                label={t("settings.providerSelect")}
+                value={form.provider}
+                onChange={switchProvider}
+                options={config.providers.map((p) => ({
+                  value: p.key,
+                  label: t(`provider.${p.key}` as TranslationKey),
+                }))}
+              />
+              <p className="text-xs text-app-fg-tertiary">{t("settings.providerHint")}</p>
+              <TextField
+                label={t("settings.apiKey")}
+                value={form.apiKey}
+                onChange={(v) => update("apiKey", v)}
+                placeholder={
+                  selectedProvider.hasApiKey
+                    ? t("settings.apiKeyPlaceholder", { key: selectedProvider.apiKeyMasked })
+                    : t("settings.apiKeyPlaceholderEmpty")
+                }
+                type="password"
+              />
+              {!selectedProvider.hasApiKey && (
+                <p className="text-xs text-amber-700 dark:text-amber-300">
+                  {t("settings.apiKeyMissing", { name: t(`provider.${selectedProvider.key}` as TranslationKey) })}
+                </p>
+              )}
+              {!selectedProvider.hasApiKey && <ApiKeyHelp provider={selectedProvider.key} />}
+
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setAdvancedOpen((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs text-app-fg-secondary hover:text-app-fg"
+                >
+                  <ChevronDown
+                    size={13}
+                    className={`transition-transform duration-[var(--motion-fast)] ${
+                      advancedOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                  {t("settings.advanced")}
+                </button>
+                {advancedOpen && (
+                  <div className="grid grid-cols-2 gap-4 pt-2">
+                    <TextField label={t("settings.model")} value={form.model} onChange={(v) => update("model", v)} />
+                    <TextField
+                      label={t("settings.maxTokens")}
+                      value={form.maxTokens}
+                      onChange={(v) => update("maxTokens", v)}
+                      type="number"
+                    />
+                    <TextField
+                      label={t("settings.baseUrl")}
+                      value={form.baseUrl}
+                      onChange={(v) => update("baseUrl", v)}
+                      className="col-span-2"
+                    />
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </section>
+
+        <section className={`${ui.card} p-4 space-y-3`}>
+          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
+            {t("settings.reflection")}
+          </h3>
           <div className="grid grid-cols-2 gap-4">
             <TextField
               label={t("settings.minTurns")}
@@ -225,11 +380,12 @@ export function SettingsPanel() {
               type="number"
             />
             <div className="flex items-end pb-1">
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-sm text-app-fg dark:text-slate-200">
                 <input
                   type="checkbox"
                   checked={form.reflectAutoAcceptMemories}
                   onChange={(e) => update("reflectAutoAcceptMemories", e.target.checked)}
+                  className="rounded border-app-border"
                 />
                 {t("settings.autoAcceptMemories")}
               </label>
@@ -237,8 +393,10 @@ export function SettingsPanel() {
           </div>
         </section>
 
-        <section className="space-y-3">
-          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t("settings.context")}</h3>
+        <section className={`${ui.card} p-4 space-y-3`}>
+          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
+            {t("settings.context")}
+          </h3>
           <div className="grid grid-cols-2 gap-4">
             <TextField
               label={t("settings.modelLimit")}
@@ -249,11 +407,11 @@ export function SettingsPanel() {
           </div>
         </section>
 
-        <section className="space-y-3">
-          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+        <section className={`${ui.card} p-4 space-y-3`}>
+          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
             {t("settings.toolPermissions")}
           </h3>
-          <p className="text-xs text-gray-400">{t("settings.permissionHelp")}</p>
+          <p className="text-xs text-app-fg-tertiary">{t("settings.permissionHelp")}</p>
           <RuleList
             label={t("settings.allow")}
             tone="green"
@@ -268,10 +426,12 @@ export function SettingsPanel() {
           />
         </section>
 
-        <section className="space-y-2">
-          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">{t("settings.workspace")}</h3>
+        <section className={`${ui.card} p-4 space-y-2`}>
+          <h3 className="text-xs font-medium text-app-fg-secondary uppercase tracking-wide">
+            {t("settings.workspace")}
+          </h3>
           <ReadOnlyField label={t("settings.root")} value={config.workspaceRoot} />
-          <p className="text-[11px] text-gray-400">{t("settings.workspaceHelp")}</p>
+          <p className="text-[11px] text-app-fg-tertiary">{t("settings.workspaceHelp")}</p>
         </section>
       </div>
     </div>
@@ -290,13 +450,13 @@ interface TextFieldProps {
 function TextField({ label, value, onChange, placeholder, type = "text", className = "" }: TextFieldProps) {
   return (
     <div className={className}>
-      <label className="block text-xs text-gray-500 mb-1">{label}</label>
+      <label className="block text-xs text-app-fg-secondary mb-1">{label}</label>
       <input
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+        className={`${ui.input} font-mono`}
       />
     </div>
   );
@@ -312,11 +472,11 @@ interface SelectFieldProps {
 function SelectField({ label, value, onChange, options }: SelectFieldProps) {
   return (
     <div>
-      <label className="block text-xs text-gray-500 mb-1">{label}</label>
+      <label className="block text-xs text-app-fg-secondary mb-1">{label}</label>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        className={ui.input}
       >
         {options.map((option) => (
           <option key={option.value} value={option.value}>
@@ -331,8 +491,8 @@ function SelectField({ label, value, onChange, options }: SelectFieldProps) {
 function ReadOnlyField({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <label className="block text-xs text-gray-500 mb-1">{label}</label>
-      <div className="px-3 py-1.5 text-sm rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 font-mono break-all">
+      <label className="block text-xs text-app-fg-secondary mb-1">{label}</label>
+      <div className="px-3 py-2 text-sm rounded-xl border border-app-border dark:border-slate-700 bg-app-muted/50 dark:bg-slate-800/60 font-mono break-all text-app-fg dark:text-slate-200">
         {value}
       </div>
     </div>
@@ -351,7 +511,7 @@ function RuleList({ label, tone, rules, onChange }: RuleListProps) {
   const t = useUiStore((s) => s.t);
   const colors =
     tone === "green"
-      ? "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300"
+      ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300"
       : "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300";
 
   const add = () => {
@@ -369,17 +529,18 @@ function RuleList({ label, tone, rules, onChange }: RuleListProps) {
 
   return (
     <div>
-      <label className="block text-xs text-gray-500 mb-1">{label}</label>
+      <label className="block text-xs text-app-fg-secondary mb-1">{label}</label>
       <div className="space-y-1.5">
         {rules.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {rules.map((r) => (
               <span
                 key={r}
-                className={`inline-flex items-center gap-1 text-xs font-mono px-2 py-0.5 rounded ${colors}`}
+                className={`inline-flex items-center gap-1 text-xs font-mono px-2 py-0.5 rounded-lg ${colors}`}
               >
                 {r}
                 <button
+                  type="button"
                   onClick={() => remove(r)}
                   className="opacity-60 hover:opacity-100"
                   title={t("settings.remove")}
@@ -402,16 +563,12 @@ function RuleList({ label, tone, rules, onChange }: RuleListProps) {
               }
             }}
             placeholder={`e.g. ${tone === "green" ? "read" : "bash:rm *"}`}
-            className="flex-1 px-2.5 py-1 text-xs rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className={`flex-1 ${ui.input} py-1.5 text-xs font-mono`}
           />
-          <button
-            onClick={add}
-            disabled={!draft.trim()}
-            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
-          >
+          <Button size="sm" variant="secondary" onClick={add} disabled={!draft.trim()}>
             <Plus size={11} />
             {t("settings.add")}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

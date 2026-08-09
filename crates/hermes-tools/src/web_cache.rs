@@ -77,7 +77,10 @@ mod tests {
     fn hit_within_ttl_miss_after() {
         let key = "test:hit_within_ttl".to_string();
         put(key.clone(), "value".to_string());
-        assert_eq!(get(&key, Duration::from_secs(60)), Some("value".to_string()));
+        assert_eq!(
+            get(&key, Duration::from_secs(60)),
+            Some("value".to_string())
+        );
         // Zero TTL → immediately expired.
         assert_eq!(get(&key, Duration::from_millis(0)), None);
         // Expired access evicted it.

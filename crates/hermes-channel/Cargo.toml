@@ -1,0 +1,28 @@
+[package]
+name = "hermes-channel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared chat-channel driver (WeChat/Feishu/Telegram) for Hermes: Channel trait, ServeCtx, serve_inbound, context assembly"
+
+[dependencies]
+hermes-core = { workspace = true }
+hermes-llm = { workspace = true }
+hermes-turn = { workspace = true }
+hermes-memory = { workspace = true }
+hermes-skills = { workspace = true }
+hermes-store = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+serde_yaml = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

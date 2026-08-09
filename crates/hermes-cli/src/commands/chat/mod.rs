@@ -10,26 +10,27 @@
 //!   triggers / name / description token-overlap the current user input.
 
 mod commands;
-mod system_prompt;
 mod turn;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use anyhow::{Context, Result};
-use hermes_core::{
-    ContentBlock, Role, Session, SessionEvent, SessionMeta,
-};
-use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore};
-use hermes_skills::{FsSkillStore, LoadedSkill, SkillStore};
+use anyhow::{anyhow, Context, Result};
+use hermes_channel::{ServeCtx, CHAT_TOOL_WHITELIST};
+use hermes_core::{ContentBlock, Role, Session, SessionEvent, SessionMeta, ToolSpec};
+use hermes_llm::Config;
+use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryEffectiveness, MemoryStore};
+use hermes_skills::{FsSkillStore, LoadedSkill, SkillEffectiveness, SkillStore};
 use hermes_store::SessionWriter;
 use hermes_tools::{ProposeContext, SubagentContext};
+use hermes_turn::{PermissionChecker, TurnConfig};
 
 use super::context::ContextSources;
 use super::readline::{ChatLineEditor, LineOutcome};
 use super::style;
 use super::util::{build_active_provider, build_web_ctx, load_tool_host, session_path_for};
 
-pub(crate) use system_prompt::{compose_system_prompt, inject_time_header};
+pub(crate) use hermes_channel::system_prompt::{compose_system_prompt, inject_time_header};
 
 struct SessionStats {
     turn_count: usize,
@@ -47,12 +48,10 @@ pub async fn run(
     let provider = build_active_provider(&cfg)?;
 
     let workspace_root = cfg.workspace.root.clone();
-    let memory_store_arc: Arc<dyn MemoryStore> = Arc::new(
-        FsMemoryStore::standard().map_err(|e| anyhow::anyhow!("memory store: {e}"))?,
-    );
-    let skill_store_arc: Arc<FsSkillStore> = Arc::new(
-        FsSkillStore::standard().map_err(|e| anyhow::anyhow!("skill store: {e}"))?,
-    );
+    let memory_store_arc: Arc<dyn MemoryStore> =
+        Arc::new(FsMemoryStore::standard().map_err(|e| anyhow::anyhow!("memory store: {e}"))?);
+    let skill_store_arc: Arc<FsSkillStore> =
+        Arc::new(FsSkillStore::standard().map_err(|e| anyhow::anyhow!("skill store: {e}"))?);
     auto_install_palace_skill(skill_store_arc.as_ref());
     auto_install_skill_creator_skill(skill_store_arc.as_ref());
     auto_install_find_skills_skill(skill_store_arc.as_ref());
@@ -150,8 +149,9 @@ pub async fn run(
         Some(path) => {
             let s = hermes_store::read_session(&path)
                 .map_err(|e| anyhow::anyhow!("reading session {}: {e}", path.display()))?;
-            let w = SessionWriter::open_append(&path)
-                .map_err(|e| anyhow::anyhow!("opening session {} for append: {e}", path.display()))?;
+            let w = SessionWriter::open_append(&path).map_err(|e| {
+                anyhow::anyhow!("opening session {} for append: {e}", path.display())
+            })?;
             (s, w, path, true)
         }
         None => {
@@ -209,13 +209,17 @@ pub async fn run(
     eprintln!();
 
     // Auto-compile profile on first session if memories exist but profile.md doesn't.
-    if !active_memories.is_empty()
-        && hermes_memory::load_profile().unwrap_or(None).is_none()
-    {
-        eprintln!("{}", style::dim("(compiling memory profile for the first time...)"));
+    if !active_memories.is_empty() && hermes_memory::load_profile().unwrap_or(None).is_none() {
+        eprintln!(
+            "{}",
+            style::dim("(compiling memory profile for the first time...)")
+        );
         match hermes_reflect::compile_profile(provider.as_ref(), &active_memories).await {
             Ok(profile) => match hermes_memory::save_profile(&profile) {
-                Ok(p) => eprintln!("{}", style::green(&format!("✓ profile compiled ({})", p.display()))),
+                Ok(p) => eprintln!(
+                    "{}",
+                    style::green(&format!("✓ profile compiled ({})", p.display()))
+                ),
                 Err(e) => eprintln!("{}", style::red(&format!("✗ profile save failed: {e}"))),
             },
             Err(e) => eprintln!("{}", style::red(&format!("✗ profile compile failed: {e}"))),
@@ -271,7 +275,9 @@ pub async fn run(
                 skill_store_arc.as_ref(),
                 provider.as_ref(),
                 cfg.limits,
-            ).await {
+            )
+            .await
+            {
                 break;
             }
             continue;
@@ -422,12 +428,9 @@ pub async fn run(
             }
         };
         for c in &proposed {
-            if let Err(e) = super::reflect::review_proposed_skill(
-                c,
-                &session.meta.id,
-                skill_store_arc.as_ref(),
-            )
-            .await
+            if let Err(e) =
+                super::reflect::review_proposed_skill(c, &session.meta.id, skill_store_arc.as_ref())
+                    .await
             {
                 tracing::warn!(error=%e, "review proposed skill failed");
             }
@@ -457,8 +460,7 @@ pub async fn run(
             .iter()
             .flat_map(|m| m.content.iter())
             .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-        let turn_was_substantive =
-            turn_had_tool_use || assistant_text.trim().chars().count() >= 40;
+        let turn_was_substantive = turn_had_tool_use || assistant_text.trim().chars().count() >= 40;
 
         if turn_was_substantive && !matched_skill_names.is_empty() {
             for name in &matched_skill_names {
@@ -479,11 +481,9 @@ pub async fn run(
                 });
             }
         }
-        // --- micro-reflection (background) ---
-        let turn_messages: Vec<hermes_core::Message> =
-            session.messages[turn_msg_index..].to_vec();
-        if hermes_reflect::should_micro_reflect(&turn_messages, turns_since_last_reflect) {
-            turns_since_last_reflect = 0;
+        // --- micro-reflection (background; shared pipeline) ---
+        let turn_messages: Vec<hermes_core::Message> = session.messages[turn_msg_index..].to_vec();
+        {
             let prov = provider.clone();
             let ms = memory_store_arc.clone();
             let skills_snap = all_skills.clone();
@@ -494,126 +494,86 @@ pub async fn run(
                 .auto_accept_min_confidence
                 .parse()
                 .unwrap_or(hermes_memory::Confidence::Medium);
-            // Turns where the user explicitly taught us something persist even
-            // below the confidence floor — they asked to be remembered.
-            let explicit_intent = hermes_reflect::has_explicit_intent(&turn_messages);
             let session_id = session.meta.id.clone();
+            let turns_since = turns_since_last_reflect;
             tokio::spawn(async move {
-                match hermes_reflect::micro_reflect(
-                    prov.as_ref(),
-                    &turn_messages,
-                    &skills_snap,
-                    &mems_snap,
-                )
-                .await
-                {
-                    Ok(output) if !output.is_empty() => {
-                        let conflict_ids: std::collections::HashSet<String> = output
-                            .conflicts
-                            .iter()
-                            .map(|c| c.with.clone())
-                            .collect();
-
-                        let mut any_accepted = false;
-                        for c in &output.memory_candidates {
-                            // Clear the configured confidence floor, OR be an
-                            // explicit teaching turn (then even Low persists).
-                            // Candidates that supersede/conflict still defer.
-                            let clears_floor = c.confidence >= min_confidence || explicit_intent;
-                            let eligible = auto_accept
-                                && clears_floor
-                                && c.supersedes.is_empty()
-                                && !c.supersedes.iter().any(|id| conflict_ids.contains(id));
-
-                            if eligible {
-                                let fm = hermes_memory::MemoryFrontmatter::new(
-                                    hermes_memory::Source::Reflection,
-                                    c.confidence,
-                                    c.tags.clone(),
-                                    "general".to_string(),
-                                );
-                                match ms.put(c.scope, fm, &c.fact) {
-                                    Ok(path) => {
-                                        let preview: String = c.fact.chars().take(60).collect();
-                                        eprintln!("{}", style::green(&format!("  💾 learned: {preview}")));
-                                        tracing::info!(path=%path.display(), "auto-accepted memory");
-                                        any_accepted = true;
-                                    }
-                                    Err(hermes_memory::MemoryStoreError::Conflict {
-                                        existing_id,
-                                        similarity,
-                                    }) => {
-                                        // Dedup gate rejected a near-duplicate —
-                                        // surface it so auto-learn is observable.
-                                        eprintln!(
-                                            "{}",
-                                            style::dim(&format!("  ↺ skipped (similar to {existing_id}, {:.0}%)", similarity * 100.0))
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(error=%e, "auto-accept memory failed");
-                                    }
-                                }
-                                hermes_reflect::log_append(hermes_reflect::ReflectLogEntry {
-                                    at: chrono::Utc::now(),
-                                    session_id: session_id.clone(),
-                                    kind: hermes_reflect::CandidateKind::Memory,
-                                    action: hermes_reflect::ActionTaken::AutoAccept,
-                                    label: c.fact.lines().next().unwrap_or("").to_string(),
-                                });
-                            } else {
-                                hermes_reflect::deferred_save(
-                                    hermes_reflect::DeferredCandidate::Memory(c.clone()),
-                                );
-                            }
+                let apply = hermes_reflect::MicroApplyConfig::new(
+                    session_id,
+                    auto_accept,
+                    min_confidence,
+                    false,
+                );
+                let outcome =
+                    hermes_reflect::run_micro_after_turn(hermes_reflect::MicroRunRequest {
+                        provider: prov.as_ref(),
+                        store: ms.as_ref(),
+                        turn_messages: &turn_messages,
+                        skills: &skills_snap,
+                        memories: &mems_snap,
+                        turns_since_last: turns_since,
+                        apply,
+                        recompile_on_auto_accept: true,
+                    })
+                    .await;
+                match outcome {
+                    Ok(hermes_reflect::MicroRunOutcome::Applied(applied)) => {
+                        for _ in 0..applied.skipped_near_duplicates {
+                            eprintln!("{}", style::dim("  ↺ skipped (near-duplicate memory)"));
                         }
-
-                        for c in &output.skill_candidates {
-                            hermes_reflect::deferred_save(
-                                hermes_reflect::DeferredCandidate::Skill(c.clone()),
+                        if applied.auto_accepted > 0 {
+                            if let Ok(fresh) = ms.list_active() {
+                                if let Some(last) = fresh.last() {
+                                    let preview: String = last.body.chars().take(60).collect();
+                                    eprintln!(
+                                        "{}",
+                                        style::green(&format!("  💾 learned: {preview}"))
+                                    );
+                                }
+                            }
+                            eprintln!("{}", style::dim("  📋 profile / palace refreshed"));
+                        }
+                        if applied.has_pending() {
+                            eprintln!(
+                                "{}",
+                                style::dim(&format!(
+                                    "  🪞 micro-reflect: {} memory / {} skill pending review",
+                                    applied.pending_memory_count(),
+                                    applied.pending_skill_count()
+                                ))
                             );
                         }
-
-                        // Recompile profile and palace index when new memories were auto-accepted.
-                        if any_accepted {
-                            if let Ok(fresh_mems) = ms.list_active() {
-                                match hermes_reflect::compile_profile(
-                                    prov.as_ref(),
-                                    &fresh_mems,
-                                )
-                                .await
-                                {
-                                    Ok(profile) => {
-                                        if let Err(e) = hermes_memory::save_profile(&profile) {
-                                            tracing::warn!(error=%e, "save compiled profile");
-                                        } else {
-                                            eprintln!("{}", style::dim("  📋 profile recompiled"));
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::debug!(error=%e, "background profile compile failed");
-                                    }
-                                }
-                                let idx = hermes_memory::build_palace_index_simple(&fresh_mems);
-                                if let Err(e) = hermes_memory::save_palace_index(&idx) {
-                                    tracing::warn!(error=%e, "save palace index");
-                                } else {
-                                    eprintln!("{}", style::dim("  🏛 palace index updated"));
-                                }
-                            }
-                        }
                     }
-                    Ok(_) => {}
+                    Ok(hermes_reflect::MicroRunOutcome::Empty) => {}
+                    Ok(hermes_reflect::MicroRunOutcome::Skipped) => {}
                     Err(e) => {
                         tracing::debug!(error=%e, "micro-reflection failed");
                     }
                 }
             });
-        } else {
-            turns_since_last_reflect += 1;
+            // Cooldown is updated on the main loop using the same gate
+            // (should_micro_reflect) so we stay in sync with the spawn decision.
+            if hermes_reflect::should_micro_reflect(
+                &session.messages[turn_msg_index..],
+                turns_since_last_reflect,
+            ) {
+                turns_since_last_reflect = 0;
+            } else {
+                turns_since_last_reflect += 1;
+            }
         }
 
         println!();
+    }
+
+    // Quit-driven full reflection (P0 第一条): run full reflection when the
+    // session ends. Skipped silently below `reflect.min_turns`; the explicit
+    // `/reflect` command always runs regardless. Deferred candidates from
+    // micro-reflection surface through the same approval gate. A failure here
+    // must never block session save / exit.
+    if let Err(e) =
+        super::reflect::run_with_min_turns(provider.as_ref(), &session, cfg.reflect.min_turns).await
+    {
+        tracing::warn!(error=%e, "end-of-session reflection failed");
     }
 
     eprintln!("session saved: {}", session_path.display());
@@ -799,11 +759,7 @@ fn install_bundled_skill(skill_store: &FsSkillStore, name: &str, raw: &str) {
 /// bundle source tree (via `include_str!`), so no path validation here.
 /// Failures are logged and swallowed for the same reason as
 /// [`install_bundled_skill`] — a broken bundle should not block startup.
-fn write_bundled_subfiles(
-    skill_store: &FsSkillStore,
-    name: &str,
-    subfiles: &[(&str, &str)],
-) {
+fn write_bundled_subfiles(skill_store: &FsSkillStore, name: &str, subfiles: &[(&str, &str)]) {
     use hermes_skills::{Scope as SkScope, SkillStore as _};
     let base = match skill_store.skill_dir(SkScope::User, name) {
         Ok(p) => p,
@@ -826,6 +782,127 @@ fn write_bundled_subfiles(
     }
 }
 
+/// Build the shared channel serve context from the default config (CLI
+/// wiring: provider, subagent-capable tool host, stores, whitelisted
+/// tools). Used by `wechat run` / `feishu run` / `telegram run`.
+pub(crate) async fn build_channel_ctx() -> Result<Arc<ServeCtx>> {
+    let cfg = Config::load_default().context("loading config from ~/.lebi-ai/config.toml")?;
+    let provider_cfg = cfg.active_provider()?.clone();
+    let provider = build_active_provider(&cfg)?;
+    let provider_name = provider.name().to_string();
+    let model = provider_cfg.model.clone();
+    let workspace_root = cfg.workspace.root.clone();
+
+    let memory_store_arc: Arc<dyn MemoryStore> =
+        Arc::new(FsMemoryStore::standard().map_err(|e| anyhow!("memory store: {e}"))?);
+    let skill_store_arc: Arc<FsSkillStore> =
+        Arc::new(FsSkillStore::standard().map_err(|e| anyhow!("skill store: {e}"))?);
+    auto_install_palace_skill(skill_store_arc.as_ref());
+    auto_install_skill_creator_skill(skill_store_arc.as_ref());
+    auto_install_find_skills_skill(skill_store_arc.as_ref());
+
+    let subagent_ctx = Arc::new(SubagentContext::new(
+        provider.clone(),
+        provider_cfg.model.clone(),
+        provider_cfg.max_tokens,
+        cfg.limits.max_tool_rounds,
+        PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
+        workspace_root.clone(),
+        Some(memory_store_arc.clone()),
+        Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
+    ));
+
+    let host = load_tool_host(
+        &workspace_root,
+        Some(memory_store_arc.clone()),
+        Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
+        None,
+        Some(subagent_ctx),
+        Some(build_web_ctx(&cfg, provider.clone())),
+    )
+    .await?;
+    let all_tools = host
+        .list_tools()
+        .await
+        .map_err(|e| anyhow!("listing tools: {e}"))?;
+    let tools: Vec<ToolSpec> = all_tools
+        .into_iter()
+        .filter(|t| CHAT_TOOL_WHITELIST.contains(&t.name.as_str()))
+        .collect();
+    eprintln!("✓ tools ready: {} whitelisted", tools.len());
+
+    let active_memories: Vec<LoadedMemory> = memory_store_arc
+        .list_active()
+        .map_err(|e| anyhow!("listing memories: {e}"))?;
+    let pinned_memories: Vec<LoadedMemory> = active_memories
+        .iter()
+        .filter(|m| m.frontmatter.pinned)
+        .cloned()
+        .collect();
+    let all_skills: Vec<LoadedSkill> = skill_store_arc
+        .list()
+        .map_err(|e| anyhow!("listing skills: {e}"))?;
+    let always_active_skills: Vec<LoadedSkill> = all_skills
+        .iter()
+        .filter(|s| s.frontmatter.always_active)
+        .cloned()
+        .collect();
+    let skill_effectiveness: HashMap<String, SkillEffectiveness> =
+        hermes_skills::load_effectiveness().unwrap_or_default();
+    let memory_effectiveness: HashMap<String, MemoryEffectiveness> =
+        hermes_memory::load_effectiveness().unwrap_or_default();
+
+    let palace_index: Option<String> = if active_memories.is_empty() {
+        None
+    } else {
+        match hermes_memory::load_palace_index() {
+            Ok(Some(idx)) => Some(idx),
+            _ => Some(hermes_memory::build_palace_index_simple(&active_memories)),
+        }
+    };
+    let compiled_profile: Option<String> = hermes_memory::load_profile().unwrap_or(None);
+
+    eprintln!(
+        "memory:   {} active ({} pinned) · profile {}",
+        active_memories.len(),
+        pinned_memories.len(),
+        if compiled_profile.is_some() {
+            "✓"
+        } else {
+            "—"
+        },
+    );
+    eprintln!("skills:   {} loaded", all_skills.len());
+
+    let base_system = compose_system_prompt(None, &workspace_root);
+    let base_turn_cfg = TurnConfig {
+        model: model.clone(),
+        system: None,
+        max_tokens: provider_cfg.max_tokens,
+        max_tool_rounds: cfg.limits.max_tool_rounds,
+        permissions: PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
+    };
+
+    Ok(Arc::new(ServeCtx {
+        provider,
+        host,
+        tools,
+        base_turn_cfg,
+        model,
+        provider_name,
+        base_system,
+        palace_index,
+        compiled_profile,
+        always_active_skills,
+        pinned_memories,
+        active_memories,
+        all_skills,
+        skill_effectiveness,
+        memory_effectiveness,
+        limits: cfg.limits,
+    }))
+}
+
 #[cfg(test)]
 mod bundled_skill_tests {
     //! Compile-time guards for the bundled meta-skills. If their SKILL.md
@@ -835,11 +912,14 @@ mod bundled_skill_tests {
     #[test]
     fn skill_creator_bundle_parses_and_is_not_always_active() {
         let raw = include_str!("../../skills/skill-creator/SKILL.md");
-        let (fm, body) = hermes_skills::parse_skill_doc(raw)
-            .expect("bundled skill-creator SKILL.md must parse");
+        let (fm, body) =
+            hermes_skills::parse_skill_doc(raw).expect("bundled skill-creator SKILL.md must parse");
         assert_eq!(fm.name, "skill-creator");
         assert!(!fm.description.is_empty());
-        assert!(!fm.always_active, "skill-creator should not be always_active");
+        assert!(
+            !fm.always_active,
+            "skill-creator should not be always_active"
+        );
         assert!(body.contains("Skill Creator"));
         assert!(
             body.contains("agents/grader.md"),
@@ -850,8 +930,8 @@ mod bundled_skill_tests {
     #[test]
     fn find_skills_bundle_parses_and_is_not_always_active() {
         let raw = include_str!("../../skills/find-skills/SKILL.md");
-        let (fm, body) = hermes_skills::parse_skill_doc(raw)
-            .expect("bundled find-skills SKILL.md must parse");
+        let (fm, body) =
+            hermes_skills::parse_skill_doc(raw).expect("bundled find-skills SKILL.md must parse");
         assert_eq!(fm.name, "find-skills");
         assert!(!fm.description.is_empty());
         assert!(!fm.always_active, "find-skills should not be always_active");
@@ -906,7 +986,11 @@ mod bundled_skill_tests {
             "LICENSE.txt",
         ] {
             let p = dir.join(rel);
-            assert!(p.is_file(), "expected bundled subfile {} to exist", p.display());
+            assert!(
+                p.is_file(),
+                "expected bundled subfile {} to exist",
+                p.display()
+            );
         }
     }
 

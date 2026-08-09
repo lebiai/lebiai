@@ -1,22 +1,90 @@
-import { useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import {
+  Brain,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Loader2,
+  Pencil,
+  RefreshCw,
+  XCircle,
+} from "lucide-react";
 import { useUiStore } from "../../store/uiStore";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { CheckCircle2, XCircle, ChevronDown, ChevronRight, Brain } from "lucide-react";
-import type { MessageData } from "../../types";
+import type { DisplayMessage, MessageData } from "../../types";
+import { MarkdownContent } from "../common/MarkdownContent";
+import { splitUserTextAndAttachments } from "../../utils/attachments";
+import {
+  assistantPlainText,
+  formatDurationMs,
+  userPlainText,
+} from "../../utils/displayMessages";
+import { toast } from "../../utils/toast";
+import { AttachmentCardList } from "./AttachmentCards";
 
-interface Props {
-  message: MessageData;
+export interface ToolCallView {
+  id: string;
+  name: string;
+  /** One-line summary of what the tool is doing (toolExecStart). */
+  summary?: string;
+  result?: string;
+  isError?: boolean;
 }
 
-export function MessageBubble({ message }: Props) {
-  const isUser = message.role === "user";
-  const t = useUiStore((s) => s.t);
+interface Props {
+  message: DisplayMessage | MessageData;
+  /** When set, this is the live streaming assistant turn (no bubble shell). */
+  streaming?: {
+    text: string;
+    thinking: string;
+    toolCalls: ToolCallView[];
+  };
+  /** Last assistant in the list — show regenerate. */
+  canRegenerate?: boolean;
+  onRegenerate?: () => void;
+  onEditUser?: (rawStart: number, currentText: string) => void;
+  isStreaming?: boolean;
+}
 
-  const textContent = message.content
-    .filter((b) => b.type === "text")
-    .map((b) => (b.type === "text" ? b.text : ""))
-    .join("\n");
+export function MessageBubble({
+  message,
+  streaming,
+  canRegenerate,
+  onRegenerate,
+  onEditUser,
+  isStreaming,
+}: Props) {
+  const isUser = message.role === "user";
+
+  if (streaming) {
+    return (
+      <AssistantCanvas
+        thinking={streaming.thinking}
+        tools={streaming.toolCalls}
+        text={streaming.text}
+        streaming
+        durationMs={undefined}
+        inputTokens={undefined}
+        outputTokens={undefined}
+        canRegenerate={false}
+      />
+    );
+  }
+
+  if (isUser) {
+    return (
+      <UserTurn
+        message={message}
+        onEdit={
+          onEditUser && "rawStart" in message
+            ? () => onEditUser(message.rawStart, userPlainText(message))
+            : undefined
+        }
+        disabled={!!isStreaming}
+      />
+    );
+  }
 
   const thinkingContent = message.content
     .filter((b) => b.type === "thinking")
@@ -25,107 +93,417 @@ export function MessageBubble({ message }: Props) {
 
   const toolUses = message.content.filter((b) => b.type === "toolUse");
   const toolResults = message.content.filter((b) => b.type === "toolResult");
+  const tools: ToolCallView[] = toolUses
+    .filter((b): b is Extract<typeof b, { type: "toolUse" }> => b.type === "toolUse")
+    .map((tool) => {
+      const result = toolResults.find(
+        (r) => r.type === "toolResult" && r.toolUseId === tool.id
+      );
+      return {
+        id: tool.id,
+        name: tool.name,
+        result: result?.type === "toolResult" ? result.content : undefined,
+        isError: result?.type === "toolResult" ? result.isError : false,
+      };
+    });
 
-  if (isUser) {
-    return (
-      <div className="flex justify-end">
-        <div className="max-w-[80%] px-4 py-2 rounded-2xl bg-blue-600 text-white text-sm whitespace-pre-wrap">
-          {textContent}
-        </div>
-      </div>
-    );
-  }
+  const textContent = assistantPlainText(message);
 
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[80%] space-y-2">
-        {thinkingContent && <ThinkingBlock content={thinkingContent} label={t("message.thinking")} />}
+    <AssistantCanvas
+      thinking={thinkingContent}
+      tools={tools}
+      text={textContent}
+      streaming={false}
+      durationMs={message.durationMs}
+      inputTokens={message.inputTokens}
+      outputTokens={message.outputTokens}
+      canRegenerate={!!canRegenerate && !isStreaming}
+      onRegenerate={onRegenerate}
+    />
+  );
+}
 
-        {toolUses.map((tool) => {
-          if (tool.type !== "toolUse") return null;
-          const result = toolResults.find(
-            (r) => r.type === "toolResult" && r.toolUseId === tool.id
-          );
-          return (
-            <ToolCallBlock
-              key={tool.id}
-              name={tool.name}
-              result={result?.type === "toolResult" ? result.content : undefined}
-              isError={result?.type === "toolResult" ? result.isError : false}
-              doneLabel={t("message.toolDone")}
-              failedLabel={t("message.toolFailed")}
+function UserTurn({
+  message,
+  onEdit,
+  disabled,
+}: {
+  message: MessageData;
+  onEdit?: () => void;
+  disabled?: boolean;
+}) {
+  const t = useUiStore((s) => s.t);
+  const textContent = userPlainText(message);
+  const userParsed = useMemo(
+    () => splitUserTextAndAttachments(textContent),
+    [textContent]
+  );
+  const body = userParsed.body;
+  const attachments = userParsed.attachments;
+  if (!body.trim() && attachments.length === 0) return null;
+
+  const copyBody = async () => {
+    try {
+      await navigator.clipboard.writeText(body.trim() || textContent);
+      toast.success(t("toast.copied"));
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
+  return (
+    <div className="flex justify-end group/msg">
+      <div className="max-w-[min(85%,42rem)] flex flex-col items-end gap-1.5 min-w-0">
+        {attachments.length > 0 && (
+          <AttachmentCardList items={attachments} variant="message" />
+        )}
+        {body.trim() ? (
+          <div className="px-4 py-2.5 rounded-2xl rounded-br-md bg-app-user-bubble text-white text-sm shadow-sm leading-relaxed whitespace-pre-wrap">
+            {body}
+          </div>
+        ) : null}
+        <div className="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100 transition-opacity">
+          <IconBtn label={t("common.copy")} onClick={() => void copyBody()}>
+            <Copy size={14} />
+          </IconBtn>
+          {onEdit && (
+            <IconBtn
+              label={t("message.edit")}
+              onClick={onEdit}
+              disabled={disabled}
+            >
+              <Pencil size={14} />
+            </IconBtn>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AssistantCanvas({
+  thinking,
+  tools,
+  text,
+  streaming,
+  durationMs,
+  inputTokens,
+  outputTokens,
+  canRegenerate,
+  onRegenerate,
+}: {
+  thinking: string;
+  tools: ToolCallView[];
+  text: string;
+  streaming: boolean;
+  durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  canRegenerate: boolean;
+  onRegenerate?: () => void;
+}) {
+  const t = useUiStore((s) => s.t);
+  const hasProcess = !!thinking.trim() || tools.length > 0;
+  const empty = !text && !hasProcess && streaming;
+
+  return (
+    <div className="flex justify-start group/msg">
+      <div className="w-full max-w-3xl min-w-0 space-y-2">
+        {hasProcess && (
+          <ProcessGroup
+            thinking={thinking}
+            tools={tools}
+            streaming={streaming}
+          />
+        )}
+
+        {text ? (
+          <div className="min-w-0 text-app-fg dark:text-slate-100 transition-opacity duration-[var(--motion-fast)]">
+            <MarkdownContent content={text} />
+            {streaming && (
+              <span className="inline-block w-1.5 h-4 bg-app-primary/70 animate-pulse ml-0.5 align-middle rounded-sm motion-safe-only" />
+            )}
+          </div>
+        ) : null}
+
+        {empty && (
+          <div className="flex items-center gap-2 text-sm text-app-fg-secondary dark:text-slate-400 py-1">
+            <Loader2
+              size={14}
+              className="animate-spin text-app-primary motion-safe-only"
             />
-          );
-        })}
-
-        {textContent && (
-          <div className="prose prose-sm dark:prose-invert max-w-none">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{textContent}</ReactMarkdown>
+            <span>{t("message.responding")}</span>
           </div>
         )}
+
+        {/* Footer is for the *answer* (and turn meta) — not for process-only shells.
+            Copy only when there is assistant text; otherwise thinking/tools sat above
+            a stray copy icon with nothing to copy. */}
+        {!streaming &&
+          (() => {
+            const hasText = text.trim().length > 0;
+            const hasMeta =
+              (durationMs !== undefined && durationMs > 0) ||
+              (inputTokens !== undefined && inputTokens > 0) ||
+              (outputTokens !== undefined && outputTokens > 0);
+            const showFooter = hasText || canRegenerate || hasMeta;
+            if (!showFooter) return null;
+            return (
+              <MessageFooter
+                copyText={text}
+                durationMs={durationMs}
+                inputTokens={inputTokens}
+                outputTokens={outputTokens}
+                canRegenerate={canRegenerate}
+                onRegenerate={onRegenerate}
+              />
+            );
+          })()}
       </div>
     </div>
   );
 }
 
-function ThinkingBlock({ content, label }: { content: string; label: string }) {
-  const [expanded, setExpanded] = useState(false);
+function ProcessGroup({
+  thinking,
+  tools,
+  streaming,
+}: {
+  thinking: string;
+  tools: ToolCallView[];
+  streaming: boolean;
+}) {
+  const t = useUiStore((s) => s.t);
+  // Streaming: expanded so user sees progress; finished: collapsed by default.
+  const [expanded, setExpanded] = useState(streaming);
+  const running = streaming && tools.some((tc) => tc.result === undefined);
+  const anyError = tools.some((tc) => tc.isError);
+
+  const parts: string[] = [];
+  if (thinking.trim()) {
+    parts.push(
+      streaming && !tools.length
+        ? t("message.thinking")
+        : t("message.thoughtDone")
+    );
+  }
+  if (tools.length > 0) {
+    parts.push(
+      t("message.toolsSummary", { n: String(tools.length) }) +
+        (running ? ` · ${t("message.toolRunning")}` : "")
+    );
+  }
+  const summary = parts.join(" · ");
 
   return (
-    <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+    <div className="rounded-lg border border-app-border/80 dark:border-slate-700/60 bg-app-muted/30 dark:bg-slate-800/25 overflow-hidden transition-[border-color,background-color] duration-[var(--motion-fast)]">
       <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-left hover:bg-app-muted/60 dark:hover:bg-slate-800/50 transition-colors duration-[var(--motion-fast)]"
+        aria-expanded={expanded}
       >
-        <Brain size={14} className="text-purple-400 shrink-0" />
-        <span className="font-medium text-gray-500">{label}</span>
-        {expanded
-          ? <ChevronDown size={12} className="ml-auto text-gray-400" />
-          : <ChevronRight size={12} className="ml-auto text-gray-400" />
-        }
+        {running ? (
+          <Loader2 size={13} className="animate-spin text-app-primary shrink-0 motion-safe-only" />
+        ) : anyError ? (
+          <XCircle size={13} className="text-app-danger shrink-0" />
+        ) : streaming && thinking ? (
+          <Brain size={13} className="text-app-accent shrink-0" />
+        ) : (
+          <CheckCircle2 size={13} className="text-app-success shrink-0" />
+        )}
+        <span className="font-medium text-app-fg-secondary dark:text-slate-300 truncate">
+          {summary}
+        </span>
+        <span
+          className={`ml-auto text-app-fg-tertiary shrink-0 transition-transform duration-[var(--motion-fast)] ${
+            expanded ? "rotate-0" : ""
+          }`}
+        >
+          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </span>
       </button>
-      {expanded && (
-        <div className="border-t border-gray-200 dark:border-gray-700 px-3 py-2 bg-gray-50 dark:bg-gray-800/50">
-          <pre className="text-xs whitespace-pre-wrap font-mono text-gray-500 max-h-60 overflow-y-auto">
-            {content}
-          </pre>
+      <div className="fold-panel" data-open={expanded ? "true" : "false"}>
+        <div className="fold-panel-inner">
+          <div className="border-t border-app-border/70 dark:border-slate-700/50 px-2.5 py-2 space-y-2">
+            {thinking.trim() && (
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-app-accent dark:text-violet-400 mb-1 flex items-center gap-1">
+                  <Brain size={11} />
+                  {t("message.thinking")}
+                </div>
+                <pre className="text-xs whitespace-pre-wrap font-mono text-app-fg-secondary dark:text-slate-400 max-h-48 overflow-y-auto">
+                  {streaming && thinking.length > 800
+                    ? "..." + thinking.slice(-800)
+                    : thinking}
+                </pre>
+              </div>
+            )}
+            {tools.map((tc) => (
+              <ToolRow key={tc.id} tc={tc} streaming={streaming} />
+            ))}
+          </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ToolRow({ tc, streaming }: { tc: ToolCallView; streaming: boolean }) {
+  const t = useUiStore((s) => s.t);
+  const [open, setOpen] = useState(false);
+  const isRunning = streaming && tc.result === undefined;
+
+  return (
+    <div className="rounded-md border border-app-border/60 dark:border-slate-700/50 overflow-hidden transition-[border-color] duration-[var(--motion-fast)]">
+      <button
+        type="button"
+        onClick={() => tc.result !== undefined && setOpen((o) => !o)}
+        className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-app-muted/50 dark:hover:bg-slate-800/40 transition-colors duration-[var(--motion-fast)]"
+        disabled={tc.result === undefined}
+        aria-expanded={open}
+      >
+        {isRunning ? (
+          <Loader2 size={12} className="animate-spin text-app-primary shrink-0 motion-safe-only" />
+        ) : tc.isError ? (
+          <XCircle size={12} className="text-app-danger shrink-0" />
+        ) : (
+          <CheckCircle2 size={12} className="text-app-success shrink-0" />
+        )}
+        <span className="font-mono font-medium text-app-fg dark:text-slate-200">
+          {tc.name}
+        </span>
+        {tc.summary ? (
+          <span className="text-app-fg-tertiary dark:text-slate-500 truncate text-[11px] max-w-[55%]">
+            {tc.summary}
+          </span>
+        ) : null}
+        <span
+          className={`text-[11px] transition-colors duration-[var(--motion-fast)] ${
+            tc.isError
+              ? "text-red-500"
+              : isRunning
+                ? "text-app-fg-tertiary"
+                : "text-emerald-600 dark:text-emerald-400"
+          }`}
+        >
+          {isRunning
+            ? t("message.toolRunning")
+            : tc.isError
+              ? t("message.toolFailed")
+              : t("message.toolDone")}
+        </span>
+        {tc.result !== undefined &&
+          (open ? (
+            <ChevronDown size={11} className="ml-auto text-app-fg-tertiary" />
+          ) : (
+            <ChevronRight size={11} className="ml-auto text-app-fg-tertiary" />
+          ))}
+      </button>
+      <div
+        className="fold-panel"
+        data-open={open && tc.result !== undefined ? "true" : "false"}
+      >
+        <div className="fold-panel-inner">
+          {tc.result !== undefined && (
+            <pre className="border-t border-app-border/60 dark:border-slate-700/50 px-2 py-1.5 text-xs whitespace-pre-wrap font-mono text-app-fg-secondary dark:text-slate-400 max-h-40 overflow-y-auto bg-app-surface/50 dark:bg-slate-900/40">
+              {tc.result.length > 2000
+                ? tc.result.slice(0, 2000) + "\n..."
+                : tc.result}
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MessageFooter({
+  copyText,
+  durationMs,
+  inputTokens,
+  outputTokens,
+  canRegenerate,
+  onRegenerate,
+}: {
+  copyText: string;
+  durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  canRegenerate: boolean;
+  onRegenerate?: () => void;
+}) {
+  const t = useUiStore((s) => s.t);
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    if (!copyText.trim()) return;
+    try {
+      await navigator.clipboard.writeText(copyText);
+      setCopied(true);
+      toast.success(t("toast.copied"));
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
+  const hasTokens =
+    (inputTokens !== undefined && inputTokens > 0) ||
+    (outputTokens !== undefined && outputTokens > 0);
+  const canCopy = copyText.trim().length > 0;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1 pt-0.5 text-app-fg-tertiary dark:text-slate-500">
+      {canCopy && (
+        <IconBtn label={t("common.copy")} onClick={() => void copy()}>
+          {copied ? <Check size={14} className="text-app-success" /> : <Copy size={14} />}
+        </IconBtn>
+      )}
+      {canRegenerate && onRegenerate && (
+        <IconBtn label={t("message.regenerate")} onClick={onRegenerate}>
+          <RefreshCw size={14} />
+        </IconBtn>
+      )}
+      {durationMs !== undefined && durationMs > 0 && (
+        <span className="text-[11px] tabular-nums px-1.5">
+          {t("message.duration", { time: formatDurationMs(durationMs) })}
+        </span>
+      )}
+      {hasTokens && (
+        <span className="text-[11px] tabular-nums px-1">
+          {t("message.turnUsage", {
+            input: (inputTokens ?? 0).toLocaleString(),
+            output: (outputTokens ?? 0).toLocaleString(),
+          })}
+        </span>
       )}
     </div>
   );
 }
 
-function ToolCallBlock({ name, result, isError, doneLabel, failedLabel }: { name: string; result?: string; isError: boolean; doneLabel: string; failedLabel: string }) {
-  const [expanded, setExpanded] = useState(false);
-
+function IconBtn({
+  children,
+  label,
+  onClick,
+  disabled,
+}: {
+  children: ReactNode;
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+}) {
   return (
-    <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-      <button
-        onClick={() => result && setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
-      >
-        {isError ? (
-          <XCircle size={14} className="text-red-500 shrink-0" />
-        ) : (
-          <CheckCircle2 size={14} className="text-green-500 shrink-0" />
-        )}
-        <span className="font-medium font-mono">{name}</span>
-        <span className={`text-xs ${isError ? "text-red-400" : "text-green-400"}`}>
-          {isError ? failedLabel : doneLabel}
-        </span>
-        {result && (
-          expanded
-            ? <ChevronDown size={12} className="ml-auto text-gray-400" />
-            : <ChevronRight size={12} className="ml-auto text-gray-400" />
-        )}
-      </button>
-      {expanded && result && (
-        <div className="border-t border-gray-200 dark:border-gray-700 px-3 py-2 bg-gray-50 dark:bg-gray-800/50">
-          <pre className="text-xs whitespace-pre-wrap font-mono text-gray-600 dark:text-gray-400 max-h-48 overflow-y-auto">
-            {result.length > 2000 ? result.slice(0, 2000) + "\n..." : result}
-          </pre>
-        </div>
-      )}
-    </div>
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="p-1.5 rounded-md hover:bg-app-muted dark:hover:bg-slate-800 text-app-fg-tertiary hover:text-app-fg dark:hover:text-slate-200 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+    >
+      {children}
+    </button>
   );
 }

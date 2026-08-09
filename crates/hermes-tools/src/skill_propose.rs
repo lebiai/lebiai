@@ -88,10 +88,7 @@ pub fn spec() -> ToolSpec {
     }
 }
 
-pub async fn run(
-    ctx: &ProposeContext,
-    args: serde_json::Value,
-) -> Result<ToolCallOutcome> {
+pub async fn run(ctx: &ProposeContext, args: serde_json::Value) -> Result<ToolCallOutcome> {
     let a: ProposeArgs = serde_json::from_value(args)
         .map_err(|e| hermes_core::Error::ToolHost(format!("propose_skill: bad args: {e}")))?;
 
@@ -99,10 +96,9 @@ pub async fn run(
 
     // Snapshot the recent N messages.
     let recent: Vec<Message> = {
-        let guard = ctx
-            .messages
-            .read()
-            .map_err(|e| hermes_core::Error::ToolHost(format!("propose_skill: messages lock: {e}")))?;
+        let guard = ctx.messages.read().map_err(|e| {
+            hermes_core::Error::ToolHost(format!("propose_skill: messages lock: {e}"))
+        })?;
         let total = guard.len();
         let start = total.saturating_sub(focus);
         guard[start..].to_vec()
@@ -115,13 +111,11 @@ pub async fn run(
         });
     }
 
-    let candidate = reflect_focused(
-        ctx.provider.as_ref(),
-        &recent,
-        a.hint.as_deref(),
-    )
-    .await
-    .map_err(|e| hermes_core::Error::ToolHost(format!("propose_skill: reflection failed: {e}")))?;
+    let candidate = reflect_focused(ctx.provider.as_ref(), &recent, a.hint.as_deref())
+        .await
+        .map_err(|e| {
+            hermes_core::Error::ToolHost(format!("propose_skill: reflection failed: {e}"))
+        })?;
 
     match candidate {
         Some(c) => {

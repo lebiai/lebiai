@@ -1,0 +1,2 @@
+# Placeholder so tauri `bundle.resources` glob matches before prepare runs.
+# Real payload: scripts/prepare-markitdown-bundle.sh

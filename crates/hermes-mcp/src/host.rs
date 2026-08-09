@@ -88,11 +88,7 @@ impl ToolHost for McpToolHost {
             for tool in server.tools() {
                 out.push(ToolSpec {
                     name: format!("{server_name}{SEP}{}", tool.name),
-                    description: tool
-                        .description
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_string(),
+                    description: tool.description.as_deref().unwrap_or("").to_string(),
                     input_schema: schema_to_value(&tool.input_schema),
                     requires_confirmation: true,
                 });
@@ -118,7 +114,7 @@ impl ToolHost for McpToolHost {
         let result = server
             .call(tool_name, args)
             .await
-            .map_err(|e| CoreError::ToolHost(format!("{server_name}: {e}")))?;
+            .map_err(|e| CoreError::ToolHost(format!("{server_name}: {}", error_chain(&e))))?;
 
         let content = flatten_content(&result.content);
         Ok(ToolCallOutcome {
@@ -154,4 +150,60 @@ fn flatten_content(blocks: &[Content]) -> String {
         }
     }
     buf
+}
+
+/// Format an error with its full source chain (`a: b: c`) so the LLM / user
+/// sees the root cause of an MCP failure, not just the outermost message.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut source = e.source();
+    while let Some(s) = source {
+        out.push_str(": ");
+        out.push_str(&s.to_string());
+        source = s.source();
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fmt;
+
+    #[derive(Debug)]
+    struct Leaf;
+
+    impl fmt::Display for Leaf {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "leaf cause")
+        }
+    }
+
+    impl std::error::Error for Leaf {}
+
+    #[derive(Debug)]
+    struct Mid(Leaf);
+
+    impl fmt::Display for Mid {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "mid wrap")
+        }
+    }
+
+    impl std::error::Error for Mid {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    #[test]
+    fn chain_includes_root_cause() {
+        let err = Mid(Leaf);
+        assert_eq!(error_chain(&err), "mid wrap: leaf cause");
+    }
+
+    #[test]
+    fn chain_single_layer() {
+        assert_eq!(error_chain(&Leaf), "leaf cause");
+    }
 }

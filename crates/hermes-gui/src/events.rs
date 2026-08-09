@@ -4,11 +4,18 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase", tag = "event", content = "data")]
 pub enum ChatStreamEvent {
     #[serde(rename_all = "camelCase")]
-    TextDelta { text: String },
+    TextDelta {
+        text: String,
+    },
     #[serde(rename_all = "camelCase")]
-    ThinkingDelta { text: String },
+    ThinkingDelta {
+        text: String,
+    },
     #[serde(rename_all = "camelCase")]
-    ToolUseStart { id: String, name: String },
+    ToolUseStart {
+        id: String,
+        name: String,
+    },
     #[serde(rename_all = "camelCase")]
     ToolExecStart {
         id: String,
@@ -26,6 +33,8 @@ pub enum ChatStreamEvent {
         id: String,
         tool_name: String,
         summary: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     UsageUpdate {
@@ -33,7 +42,11 @@ pub enum ChatStreamEvent {
         output_tokens: u32,
     },
     #[serde(rename_all = "camelCase")]
-    Error { message: String },
+    Error {
+        message: String,
+    },
+    /// User pressed Stop — generation interrupted cleanly.
+    Cancelled,
     #[serde(rename_all = "camelCase")]
     SkillCandidateProposed {
         name: String,
@@ -43,3 +56,6 @@ pub enum ChatStreamEvent {
     },
     Done,
 }
+
+// Micro-reflection is **not** a stream event. See `commands/micro.rs` and the
+// Tauri event `hermes://micro-reflection` (session-scoped, post-Done).

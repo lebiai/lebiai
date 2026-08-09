@@ -33,8 +33,7 @@ pub struct ChatLineEditor {
 impl ChatLineEditor {
     pub fn new() -> Result<Self> {
         let inner = Editor::<(), FileHistory>::new().context("creating rustyline editor")?;
-        let history_path = dirs::home_dir()
-            .map(|h| h.join(".small-rust-hermes").join("history"));
+        let history_path = dirs::home_dir().map(|_| hermes_core::data_path("history"));
 
         let mut this = Self {
             inner: Some(inner),

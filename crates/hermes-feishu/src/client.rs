@@ -14,18 +14,35 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
+use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex, RwLock};
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream,
-    tungstenite::Message,
-};
+use tokio_tungstenite::{tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 use crate::frame::{self, Frame};
+
+/// Feishu surface adapter for the shared channel driver
+/// (`hermes_channel::Channel`): a reply is addressed by the sender's
+/// `open_id`.
+#[async_trait]
+impl hermes_channel::Channel for FeishuClient {
+    type Reply = String;
+
+    fn name(&self) -> &str {
+        "feishu"
+    }
+
+    async fn send(&self, reply: &String, text: &str) -> Result<()> {
+        self.send_text(reply.as_str(), text)
+            .await
+            .context("feishu send_text")?;
+        Ok(())
+    }
+}
 
 // ---- constants ------------------------------------------------------------
 
@@ -251,7 +268,11 @@ impl FeishuClient {
 
     /// Start the long-connection loop. Blocks until a fatal error or the
     /// shutdown signal fires.
-    pub async fn start(&self, on_event: EventHandler, mut shutdown: mpsc::Receiver<()>) -> Result<()> {
+    pub async fn start(
+        &self,
+        on_event: EventHandler,
+        mut shutdown: mpsc::Receiver<()>,
+    ) -> Result<()> {
         loop {
             match self.connect_and_run(&on_event, &mut shutdown).await {
                 Ok(()) => {
@@ -324,19 +345,32 @@ impl FeishuClient {
             {
                 Ok(resp) => {
                     let status = resp.status();
-                    let bytes = resp.bytes().await.context("reading send-message response")?;
+                    let bytes = resp
+                        .bytes()
+                        .await
+                        .context("reading send-message response")?;
                     if !status.is_success() {
-                        let snippet = String::from_utf8_lossy(&bytes).chars().take(300).collect::<String>();
+                        let snippet = String::from_utf8_lossy(&bytes)
+                            .chars()
+                            .take(300)
+                            .collect::<String>();
                         last_err = Some(anyhow!("send-message HTTP {status}: {snippet}"));
                         continue;
                     }
-                    let sr: SendMessageResp = serde_json::from_slice(&bytes)
-                        .with_context(|| {
-                            let snippet = String::from_utf8_lossy(&bytes).chars().take(300).collect::<String>();
+                    let sr: SendMessageResp =
+                        serde_json::from_slice(&bytes).with_context(|| {
+                            let snippet = String::from_utf8_lossy(&bytes)
+                                .chars()
+                                .take(300)
+                                .collect::<String>();
                             format!("decoding send-message response: {snippet}")
                         })?;
                     if sr.code != 0 {
-                        last_err = Some(anyhow!("send-message api error code={} msg={}", sr.code, sr.msg));
+                        last_err = Some(anyhow!(
+                            "send-message api error code={} msg={}",
+                            sr.code,
+                            sr.msg
+                        ));
                         // Token expired? Force refresh on next attempt.
                         if sr.code == 99991663 || sr.code == 99991664 {
                             let mut ts = self.token_state.write().await;
@@ -538,8 +572,13 @@ impl FeishuClient {
         match msg_type {
             frame::message_type::EVENT => {
                 // Parse the event payload
-                let event: EventPayload = serde_json::from_str(&payload_str)
-                    .with_context(|| format!("parsing event payload: {}", &payload_str[..payload_str.len().min(200)]))?;
+                let event: EventPayload =
+                    serde_json::from_str(&payload_str).with_context(|| {
+                        format!(
+                            "parsing event payload: {}",
+                            &payload_str[..payload_str.len().min(200)]
+                        )
+                    })?;
 
                 // Dispatch to handler
                 on_event(event);
@@ -560,12 +599,7 @@ impl FeishuClient {
     }
 
     /// Send an ACK response frame back to the server.
-    async fn send_ack(
-        &self,
-        original: &Frame,
-        status_code: i32,
-        write: &WsSink,
-    ) -> Result<()> {
+    async fn send_ack(&self, original: &Frame, status_code: i32, write: &WsSink) -> Result<()> {
         let mut resp_frame = Frame {
             seq_id: original.seq_id,
             log_id: original.log_id,
@@ -597,11 +631,7 @@ impl FeishuClient {
     // ---- internal: bootstrap ----------------------------------------------
 
     async fn get_ws_url(&self) -> Result<String> {
-        let url = format!(
-            "{}{}",
-            self.domain.trim_end_matches('/'),
-            ENDPOINT_PATH
-        );
+        let url = format!("{}{}", self.domain.trim_end_matches('/'), ENDPOINT_PATH);
         let body = BootstrapRequest {
             app_id: self.app_id.clone(),
             app_secret: self.app_secret.clone(),
@@ -620,12 +650,18 @@ impl FeishuClient {
         let status = resp.status();
         let bytes = resp.bytes().await.context("reading endpoint response")?;
         if !status.is_success() {
-            let snippet = String::from_utf8_lossy(&bytes).chars().take(300).collect::<String>();
+            let snippet = String::from_utf8_lossy(&bytes)
+                .chars()
+                .take(300)
+                .collect::<String>();
             bail!("endpoint HTTP {status}: {snippet}");
         }
 
         let ep: EndpointResp = serde_json::from_slice(&bytes).with_context(|| {
-            let snippet = String::from_utf8_lossy(&bytes).chars().take(300).collect::<String>();
+            let snippet = String::from_utf8_lossy(&bytes)
+                .chars()
+                .take(300)
+                .collect::<String>();
             format!("decoding endpoint response: {snippet}")
         })?;
 
@@ -636,7 +672,9 @@ impl FeishuClient {
             code => bail!("飞书 endpoint 错误 code={code} msg={}", ep.msg),
         }
 
-        let data = ep.data.ok_or_else(|| anyhow!("endpoint response missing data"))?;
+        let data = ep
+            .data
+            .ok_or_else(|| anyhow!("endpoint response missing data"))?;
         if data.url.is_empty() {
             bail!("endpoint returned empty URL");
         }
@@ -664,11 +702,7 @@ impl FeishuClient {
         }
 
         // Refresh
-        let url = format!(
-            "{}{}",
-            self.domain.trim_end_matches('/'),
-            TOKEN_PATH
-        );
+        let url = format!("{}{}", self.domain.trim_end_matches('/'), TOKEN_PATH);
         let body = TokenRequest {
             app_id: self.app_id.clone(),
             app_secret: self.app_secret.clone(),
@@ -686,12 +720,18 @@ impl FeishuClient {
         let status = resp.status();
         let bytes = resp.bytes().await.context("reading token response")?;
         if !status.is_success() {
-            let snippet = String::from_utf8_lossy(&bytes).chars().take(300).collect::<String>();
+            let snippet = String::from_utf8_lossy(&bytes)
+                .chars()
+                .take(300)
+                .collect::<String>();
             bail!("token HTTP {status}: {snippet}");
         }
 
         let tr: TokenResp = serde_json::from_slice(&bytes).with_context(|| {
-            let snippet = String::from_utf8_lossy(&bytes).chars().take(300).collect::<String>();
+            let snippet = String::from_utf8_lossy(&bytes)
+                .chars()
+                .take(300)
+                .collect::<String>();
             format!("decoding token response: {snippet}")
         })?;
 

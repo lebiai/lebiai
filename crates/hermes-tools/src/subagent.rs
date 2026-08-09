@@ -21,8 +21,8 @@
 //!   That structural choice — not a check — is what prevents recursion.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use hermes_core::{
@@ -30,7 +30,7 @@ use hermes_core::{
 };
 use hermes_memory::MemoryStore;
 use hermes_skills::SkillStore;
-use hermes_turn::{PermissionChecker, TurnConfig, TurnEvent, run_turn};
+use hermes_turn::{run_turn, PermissionChecker, TurnConfig, TurnEvent};
 use serde::Deserialize;
 
 /// Wiring needed by the `subagent` tool. Construct one at startup and inject
@@ -170,7 +170,9 @@ pub async fn run(ctx: &SubagentContext, args: serde_json::Value) -> Result<ToolC
             is_error: true,
         });
     }
-    let _guard = DepthGuard { depth: ctx.depth.clone() };
+    let _guard = DepthGuard {
+        depth: ctx.depth.clone(),
+    };
 
     // Build a fresh BuiltinToolHost for the child. No propose_ctx and no
     // subagent_ctx → child literally cannot call `propose_skill` or `subagent`,
@@ -264,10 +266,7 @@ pub async fn run(ctx: &SubagentContext, args: serde_json::Value) -> Result<ToolC
         content.push('\n');
     }
     content.push_str("--- subagent telemetry ---\n");
-    content.push_str(&format!(
-        "tools_advertised: [{}]\n",
-        advertised.join(", ")
-    ));
+    content.push_str(&format!("tools_advertised: [{}]\n", advertised.join(", ")));
     content.push_str(&format!("tool_calls: {}\n", calls.len()));
     for c in &calls {
         content.push_str(&format!("  - {c}\n"));

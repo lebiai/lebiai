@@ -48,11 +48,7 @@ fn is_cjk(c: char) -> bool {
 }
 
 /// Estimate total tokens for a session + system prompt + tools.
-pub fn estimate_session_tokens(
-    system: &str,
-    session: &Session,
-    tools_json_approx: usize,
-) -> usize {
+pub fn estimate_session_tokens(system: &str, session: &Session, tools_json_approx: usize) -> usize {
     let mut total = estimate_tokens(system) + tools_json_approx;
     for msg in &session.messages {
         for block in &msg.content {
@@ -124,9 +120,7 @@ pub async fn compact_session(
     session.messages.clear();
     session.messages.push(Message {
         role: Role::User,
-        content: vec![ContentBlock::Text {
-            text: summary_text,
-        }],
+        content: vec![ContentBlock::Text { text: summary_text }],
     });
     session.messages.extend(recent);
 

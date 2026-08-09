@@ -20,6 +20,8 @@ pub enum ReflectError {
 pub type Result<T> = std::result::Result<T, ReflectError>;
 
 const REFLECT_MAX_TOKENS: u32 = 8192;
+/// Leave-session / background path: smaller budget so the call finishes sooner.
+const REFLECT_MAX_TOKENS_QUICK: u32 = 3072;
 
 /// Run one reflection pass.
 ///
@@ -33,6 +35,33 @@ pub async fn reflect(
     skills: &[LoadedSkill],
     memories: &[LoadedMemory],
 ) -> Result<ReflectionOutput> {
+    reflect_with_max_tokens(provider, session, skills, memories, REFLECT_MAX_TOKENS).await
+}
+
+/// Faster reflection for non-blocking leave-session / background jobs.
+pub async fn reflect_quick(
+    provider: &dyn LlmProvider,
+    session: &Session,
+    skills: &[LoadedSkill],
+    memories: &[LoadedMemory],
+) -> Result<ReflectionOutput> {
+    reflect_with_max_tokens(
+        provider,
+        session,
+        skills,
+        memories,
+        REFLECT_MAX_TOKENS_QUICK,
+    )
+    .await
+}
+
+async fn reflect_with_max_tokens(
+    provider: &dyn LlmProvider,
+    session: &Session,
+    skills: &[LoadedSkill],
+    memories: &[LoadedMemory],
+    max_tokens: u32,
+) -> Result<ReflectionOutput> {
     let system = system_prompt();
     let user = user_prompt(session, skills, memories);
 
@@ -41,7 +70,7 @@ pub async fn reflect(
         system: Some(system),
         messages: vec![Message::user_text(user)],
         tools: Vec::new(),
-        max_tokens: REFLECT_MAX_TOKENS,
+        max_tokens,
         // Low temperature for structured output; we want determinism over
         // creativity here.
         temperature: Some(0.2),
@@ -57,13 +86,13 @@ pub async fn reflect(
     let json_str = strip_code_fence(&text);
 
     match serde_json::from_str(json_str) {
-        Ok(out) => Ok(out),
+        Ok(out) => Ok(crate::episode::finalize_reflection_output(out)),
         Err(first_err) => {
             // Try to repair truncated JSON by closing unclosed brackets.
             if let Some(repaired) = repair_truncated_json(json_str) {
                 if let Ok(out) = serde_json::from_str(&repaired) {
                     tracing::info!("recovered truncated reflection JSON");
-                    return Ok(out);
+                    return Ok(crate::episode::finalize_reflection_output(out));
                 }
             }
             Err(ReflectError::ParseFailed {
@@ -277,7 +306,8 @@ mod tests {
 
     #[test]
     fn parses_minimal_output() {
-        let raw = r#"{"summary":"hello","skill_candidates":[],"memory_candidates":[],"conflicts":[]}"#;
+        let raw =
+            r#"{"summary":"hello","skill_candidates":[],"memory_candidates":[],"conflicts":[]}"#;
         let out: ReflectionOutput = serde_json::from_str(raw).unwrap();
         assert_eq!(out.summary, "hello");
         assert!(out.is_empty());
@@ -286,7 +316,8 @@ mod tests {
     #[test]
     fn repair_truncated_conflicts_array() {
         // Simulates the real failure: conflicts array opened but not closed
-        let truncated = r#"{"summary":"test","skill_candidates":[],"memory_candidates":[],"conflicts": [{"#;
+        let truncated =
+            r#"{"summary":"test","skill_candidates":[],"memory_candidates":[],"conflicts": [{"#;
         let repaired = repair_truncated_json(truncated).unwrap();
         let out: ReflectionOutput = serde_json::from_str(&repaired).unwrap();
         assert_eq!(out.summary, "test");
@@ -296,7 +327,8 @@ mod tests {
     #[test]
     fn repair_truncated_mid_object() {
         // Truncated in the middle of a memory candidate object
-        let truncated = r#"{"summary":"test","skill_candidates":[],"memory_candidates":[{"fact":"x"#;
+        let truncated =
+            r#"{"summary":"test","skill_candidates":[],"memory_candidates":[{"fact":"x"#;
         let repaired = repair_truncated_json(truncated).unwrap();
         let out: ReflectionOutput = serde_json::from_str(&repaired).unwrap();
         assert_eq!(out.summary, "test");
@@ -315,7 +347,8 @@ mod tests {
 
     #[test]
     fn repair_returns_none_for_balanced_json() {
-        let balanced = r#"{"summary":"x","skill_candidates":[],"memory_candidates":[],"conflicts":[]}"#;
+        let balanced =
+            r#"{"summary":"x","skill_candidates":[],"memory_candidates":[],"conflicts":[]}"#;
         assert!(repair_truncated_json(balanced).is_none());
     }
 

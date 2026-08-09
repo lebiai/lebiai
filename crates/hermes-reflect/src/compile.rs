@@ -28,16 +28,6 @@ Rules:
 - Output ONLY the index markdown, no preamble
 "##;
 
-const COMPILE_ZONE_SYSTEM: &str = r##"You are a memory curator. Given all memories from a single zone, compile them into a concise summary.
-
-Rules:
-- Use bullet points, one line per point
-- Merge overlapping or redundant memories
-- Preserve the user's language (Chinese / English as found in entries)
-- Keep the output under 300 tokens
-- Output ONLY the summary markdown, no preamble
-"##;
-
 /// Compile all active memories into a structured markdown profile.
 pub async fn compile_profile(
     provider: &dyn LlmProvider,
@@ -104,50 +94,14 @@ pub async fn compile_palace_index(
     Ok(text)
 }
 
-/// LLM-compiled zone summary for caching.
-pub async fn compile_zone_summary(
-    provider: &dyn LlmProvider,
-    zone: &str,
-    memories: &[&LoadedMemory],
-) -> Result<String, ReflectError> {
-    let mut user_prompt = format!("Summarize zone '{zone}' ({} memories):\n\n", memories.len());
-    for m in memories {
-        let conf = format!("{:?}", m.frontmatter.confidence).to_lowercase();
-        user_prompt.push_str(&format!("- ({conf}) {}\n", m.body.trim()));
-    }
-
-    let req = CompletionRequest {
-        model: String::new(),
-        system: Some(COMPILE_ZONE_SYSTEM.to_string()),
-        messages: vec![Message::user_text(user_prompt)],
-        tools: Vec::new(),
-        max_tokens: 1024,
-        temperature: Some(0.2),
-        enable_caching: false,
-    };
-
-    let resp = provider
-        .complete(req)
-        .await
-        .map_err(|e| ReflectError::Provider(e.to_string()))?;
-
-    let text = resp.text().trim().to_string();
-    if text.is_empty() {
-        return Err(ReflectError::Provider("empty zone summary from LLM".into()));
-    }
-    Ok(text)
-}
-
 fn build_compile_prompt(memories: &[LoadedMemory]) -> String {
-    let mut buf = String::from("Compile the following memory entries into a structured profile:\n\n");
+    let mut buf =
+        String::from("Compile the following memory entries into a structured profile:\n\n");
     for m in memories {
         let pin = if m.frontmatter.pinned { "pinned, " } else { "" };
         let conf = format!("{:?}", m.frontmatter.confidence).to_lowercase();
         let body = m.body.trim();
-        buf.push_str(&format!(
-            "- [{}] ({pin}{conf}) {body}\n",
-            m.frontmatter.id
-        ));
+        buf.push_str(&format!("- [{}] ({pin}{conf}) {body}\n", m.frontmatter.id));
     }
     buf
 }
@@ -159,7 +113,12 @@ mod tests {
     use std::path::PathBuf;
 
     fn mem(id: &str, pinned: bool, body: &str) -> LoadedMemory {
-        let mut fm = MemoryFrontmatter::new(Source::User, Confidence::High, vec![], "general".to_string());
+        let mut fm = MemoryFrontmatter::new(
+            Source::User,
+            Confidence::High,
+            vec![],
+            "general".to_string(),
+        );
         fm.id = id.to_string();
         fm.pinned = pinned;
         LoadedMemory {

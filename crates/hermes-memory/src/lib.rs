@@ -4,9 +4,9 @@
 //! Relevance / matching / conflict detection live one layer up in
 //! `hermes-reflect` (next iteration).
 
+pub mod distill;
 #[cfg(feature = "embed")]
 pub mod embed;
-pub mod distill;
 pub mod memory;
 pub mod palace;
 pub mod profile;
@@ -18,9 +18,8 @@ pub mod store;
 pub use embed::EmbedIndex;
 pub use memory::{Confidence, LoadedMemory, MemoryFrontmatter, Scope, Source};
 pub use palace::{
-    build_palace_index_simple, get_zone, group_by_zone, load_palace_index, load_zone_summary,
-    palace_index_path, save_palace_index, save_zone_summary, zone_cache_dir, ZONE_CORE,
-    ZONE_EPISODE, ZONE_GENERAL, ZONE_WORK,
+    build_palace_index_simple, get_zone, group_by_zone, load_palace_index, palace_index_path,
+    save_palace_index, ZONE_CORE, ZONE_EPISODE, ZONE_GENERAL, ZONE_WORK,
 };
 pub use profile::{load_profile, profile_path, save_profile};
 pub use relevance::{
@@ -33,4 +32,5 @@ pub use stats::{
 };
 pub use store::{
     standard_project_root, standard_user_root, FsMemoryStore, MemoryStore, MemoryStoreError,
+    DEFAULT_DEDUP_THRESHOLD,
 };

@@ -26,19 +26,3 @@ pub trait ToolHost: Send + Sync {
     async fn call(&self, name: &str, args: serde_json::Value) -> Result<ToolCallOutcome>;
 }
 
-/// A tool host that exposes nothing. Useful default when MCP is not
-/// configured — the chat loop still works, just without tools.
-pub struct NullToolHost;
-
-#[async_trait]
-impl ToolHost for NullToolHost {
-    async fn list_tools(&self) -> Result<Vec<ToolSpec>> {
-        Ok(Vec::new())
-    }
-
-    async fn call(&self, name: &str, _: serde_json::Value) -> Result<ToolCallOutcome> {
-        Err(crate::Error::ToolHost(format!(
-            "no tool host configured; cannot call {name:?}"
-        )))
-    }
-}

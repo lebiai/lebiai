@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build a macOS .dmg of Hermes GUI.
+# Build a macOS .dmg of the lebi-AI desktop GUI.
 #
 # Usage:    scripts/build-dmg.sh
-# Output:   target/release/bundle/dmg/Hermes_<version>_<arch>.dmg
+# Output:   target/release/bundle/dmg/lebi-AI_<version>_<arch>.dmg
 # Requires: macOS, Node + npm, `cargo install tauri-cli --version "^2.0" --locked`
 #
 # Universal (Intel + Apple Silicon) build:
@@ -42,6 +42,13 @@ fi
 
 echo "==> Building frontend (vite)"
 (cd "$UI_DIR" && npm run build)
+
+echo "==> Preparing markitdown-sidecar for app Resources"
+"$ROOT/scripts/prepare-markitdown-bundle.sh"
+if [ ! -x "$GUI_DIR/resources/markitdown-sidecar/markitdown" ]; then
+  echo "error: markitdown-sidecar missing after prepare" >&2
+  exit 1
+fi
 
 echo "==> Building DMG (this can take several minutes on first run)"
 cd "$GUI_DIR"

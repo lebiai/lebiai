@@ -29,6 +29,46 @@ impl Message {
             content: vec![ContentBlock::Text { text: text.into() }],
         }
     }
+
+    /// Drop thinking blocks (for compact session logs).
+    pub fn without_thinking(&self) -> Self {
+        Self {
+            role: self.role,
+            content: self
+                .content
+                .iter()
+                .filter(|b| !matches!(b, ContentBlock::Thinking { .. }))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Prepare a message for JSONL append.
+    pub fn for_persist(&self, persist_thinking: bool) -> Self {
+        if persist_thinking {
+            self.clone()
+        } else {
+            self.without_thinking()
+        }
+    }
+
+    /// User message with no human text (only tool results / empty) — hide in chat UI.
+    pub fn is_tool_result_only(&self) -> bool {
+        if self.role != Role::User {
+            return false;
+        }
+        let mut has_tool_result = false;
+        for b in &self.content {
+            match b {
+                ContentBlock::Text { text } if !text.trim().is_empty() => return false,
+                ContentBlock::Image { .. } => return false,
+                ContentBlock::ToolResult { .. } => has_tool_result = true,
+                ContentBlock::ToolUse { .. } | ContentBlock::Thinking { .. } => {}
+                ContentBlock::Text { .. } => {}
+            }
+        }
+        has_tool_result
+    }
 }
 
 /// A single block within a message. Mirrors the Anthropic Messages API

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "small-rust-hermes CLI binary"
+description = "lebi-AI CLI binary"
 
 [[bin]]
 name = "hermes"
@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 hermes-core = { workspace = true }
+hermes-channel = { workspace = true }
 hermes-llm = { workspace = true }
 hermes-mcp = { workspace = true }
 hermes-store = { workspace = true }

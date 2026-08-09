@@ -7,7 +7,7 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,8 +26,7 @@ pub enum MemoryEvent {
 }
 
 fn default_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("resolving $HOME")?;
-    Ok(home.join(".small-rust-hermes").join("memory-stats.jsonl"))
+    Ok(hermes_core::data_path("memory-stats.jsonl"))
 }
 
 /// Append a stat entry. Best-effort write.
@@ -122,13 +121,25 @@ mod tests {
 
     #[test]
     fn effectiveness_factor_scales() {
-        let e = MemoryEffectiveness { loaded: 10, referenced: 5, ..Default::default() };
+        let e = MemoryEffectiveness {
+            loaded: 10,
+            referenced: 5,
+            ..Default::default()
+        };
         assert!((e.factor() - 0.75).abs() < 1e-6);
 
-        let e = MemoryEffectiveness { loaded: 10, referenced: 0, ..Default::default() };
+        let e = MemoryEffectiveness {
+            loaded: 10,
+            referenced: 0,
+            ..Default::default()
+        };
         assert!((e.factor() - 0.5).abs() < 1e-6);
 
-        let e = MemoryEffectiveness { loaded: 10, referenced: 10, ..Default::default() };
+        let e = MemoryEffectiveness {
+            loaded: 10,
+            referenced: 10,
+            ..Default::default()
+        };
         assert!((e.factor() - 1.0).abs() < 1e-6);
     }
 

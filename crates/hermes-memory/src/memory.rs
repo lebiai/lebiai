@@ -13,9 +13,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
-    /// `~/.small-rust-hermes/memories/`
+    /// `~/.lebi-ai/memories/`
     User,
-    /// `./.small-rust-hermes/memories/`
+    /// `./.lebi-ai/memories/`
     Project,
 }
 

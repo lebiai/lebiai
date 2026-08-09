@@ -26,7 +26,10 @@ pub fn list(filter: Filter) -> Result<()> {
         let fact = m.body.lines().next().unwrap_or("").trim();
         println!(
             "{pin}{}  [{:?}]  {}  {}",
-            m.frontmatter.id, m.scope, m.frontmatter.created.format("%Y-%m-%d"), fact
+            m.frontmatter.id,
+            m.scope,
+            m.frontmatter.created.format("%Y-%m-%d"),
+            fact
         );
     }
     Ok(())
@@ -91,9 +94,6 @@ pub fn set_pinned(id: &str, pinned: bool) -> Result<()> {
         body: doc.body,
     };
     write_doc_atomic(&m.source_path, &new_doc).map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!(
-        "{} {id}",
-        if pinned { "pinned" } else { "unpinned" }
-    );
+    println!("{} {id}", if pinned { "pinned" } else { "unpinned" });
     Ok(())
 }

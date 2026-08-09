@@ -2,25 +2,22 @@
 //!
 //! Two subcommands:
 //!   - `login` — render a terminal QR; user scans it in WeChat; we persist
-//!     the resulting `bot_token` to `~/.small-rust-hermes/wechat.toml`.
-//!   - `run`   — long-poll the iLink Bot endpoint and reply to inbound text
-//!     messages via the shared [`serve_inbound`] driver. Each WeChat user
-//!     gets their own session JSONL under
-//!     `~/.small-rust-hermes/sessions/wechat/{user_id}/`.
+//!     the resulting `bot_token` to `~/.lebi-ai/wechat.toml`.
+//!   - `run`   — long-poll the iLink Bot endpoint via the shared
+//!     [`hermes_weixin::service::serve`] loop and reply to inbound text
+//!     messages through the shared channel driver ([`handle_text_message`]).
+//!     Each WeChat user gets their own session JSONL under
+//!     `~/.lebi-ai/sessions/wechat/{user_id}/`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow, bail};
-use async_trait::async_trait;
+use anyhow::{anyhow, Context, Result};
+use hermes_channel::{handle_text_message, UserState};
 use hermes_weixin::auth::{LoginSession, QrPollState, StoredCreds};
 use hermes_weixin::client::{Client as WxClient, DEFAULT_BASE_URL};
 use hermes_weixin::types::WeixinMessage;
-
-use super::channel::{Channel, ServeCtx, UserState, serve_inbound};
 
 // ===== login =================================================================
 
@@ -63,53 +60,6 @@ pub async fn login() -> Result<()> {
     Ok(())
 }
 
-// ===== Channel impl ==========================================================
-
-/// A WeChat reply needs to echo the inbound message's `context_token` /
-/// `client_id`, so the [`Channel::Reply`] handle is the inbound message
-/// itself (cheaply cloneable).
-#[async_trait]
-impl Channel for WxClient {
-    type Reply = WeixinMessage;
-
-    fn name(&self) -> &str {
-        "wechat"
-    }
-
-    async fn send(&self, reply: &WeixinMessage, text: &str) -> Result<()> {
-        let out = WeixinMessage::reply_text(reply, text);
-        self.send_message(out).await.context("wechat send_message")?;
-        Ok(())
-    }
-}
-
-// ===== cursor persistence ====================================================
-
-/// Path where we persist the long-poll cursor between `wechat run` invocations.
-fn cursor_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("resolving $HOME")?;
-    Ok(home.join(".small-rust-hermes").join("wechat-cursor.txt"))
-}
-
-fn read_cursor() -> String {
-    cursor_path()
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
-}
-
-fn save_cursor(buf: &str) {
-    if let Ok(p) = cursor_path() {
-        if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::write(&p, buf) {
-            tracing::warn!(error = %e, path = %p.display(), "saving cursor failed");
-        }
-    }
-}
-
 // ===== run ===================================================================
 
 pub async fn run() -> Result<()> {
@@ -135,7 +85,7 @@ pub async fn run() -> Result<()> {
     );
 
     // ----- shared serve context (provider/host/tools/memory/skills) ----
-    let ctx = ServeCtx::build().await?;
+    let ctx = super::chat::build_channel_ctx().await?;
 
     // ----- ctrl-c handling ---------------------------------------------
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -149,60 +99,30 @@ pub async fn run() -> Result<()> {
         });
     }
 
-    // ----- main loop ---------------------------------------------------
-    let mut cursor = read_cursor();
-    let mut users: HashMap<String, UserState> = HashMap::new();
-    eprintln!(
-        "📡 监听中（cursor={} bytes）。在微信里给 bot 发消息即可对话。",
-        cursor.len()
-    );
+    // ----- shared poll loop --------------------------------------------
+    let users: Arc<tokio::sync::Mutex<HashMap<String, UserState>>> =
+        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    eprintln!("📡 监听中。在微信里给 bot 发消息即可对话。");
 
-    while !shutdown.load(Ordering::SeqCst) {
-        let resp = match wx.get_updates(&cursor).await {
-            Ok(r) => r,
-            Err(e) => {
-                let msg = format!("{e:#}");
-                if msg.contains("ret=-14") || msg.contains("token expired") {
-                    bail!("token 已失效，请重新运行 `hermes wechat login`");
-                }
-                tracing::warn!(error = %msg, "getupdates failed; retrying in 3s");
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                continue;
+    let ctx_loop = ctx.clone();
+    let wx_loop = wx.clone();
+    let users_loop = users.clone();
+    hermes_weixin::service::serve(
+        &wx,
+        shutdown,
+        move |inbound: WeixinMessage, text: String| {
+            let ctx = ctx_loop.clone();
+            let wx = wx_loop.clone();
+            let users = users_loop.clone();
+            async move {
+                let from = inbound.from_user_id.clone();
+                eprintln!("📩 {from}: {text}");
+                let mut guard = users.lock().await;
+                handle_text_message(ctx.as_ref(), &wx, &mut guard, &from, text, inbound).await
             }
-        };
-        cursor = resp.get_updates_buf.clone();
-        save_cursor(&cursor);
-
-        for inbound in resp.msgs {
-            let from = inbound.from_user_id.clone();
-            if from.is_empty() {
-                continue;
-            }
-
-            let Some(text) = inbound.first_text() else {
-                // Non-text payload (image/voice/file/video). MVP: politely decline.
-                if let Err(e) = wx.send(&inbound, "目前只支持文本消息。").await {
-                    tracing::warn!(error = %e, "send (non-text refusal) failed");
-                }
-                continue;
-            };
-            let text = text.to_string();
-            eprintln!("📩 {from}: {text}");
-
-            let state = match users.get_mut(&from) {
-                Some(s) => s,
-                None => {
-                    let s = UserState::new(wx.name(), &from, ctx.model(), ctx.provider_name())?;
-                    users.insert(from.clone(), s);
-                    users.get_mut(&from).unwrap()
-                }
-            };
-
-            if let Err(e) = serve_inbound(ctx.as_ref(), &wx, state, &from, &text, inbound).await {
-                tracing::warn!(error = format!("{e:#}"), "handling inbound message failed");
-            }
-        }
-    }
+        },
+    )
+    .await?;
 
     eprintln!("✓ 已退出。cursor 已保存。");
     Ok(())

@@ -10,4 +10,7 @@ pub mod session;
 pub use frontmatter::{
     parse_doc_str, read_doc, write_doc, write_doc_atomic, FrontmatterDoc, FrontmatterError,
 };
-pub use session::{list_sessions, read_session, SessionError, SessionWriter};
+pub use session::{
+    list_sessions, purge_empty_sessions, read_session, rewrite_session, update_session_title,
+    SessionError, SessionWriter,
+};

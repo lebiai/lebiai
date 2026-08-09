@@ -1,6 +1,12 @@
 import { create } from "zustand";
 
-export type Panel = "chat" | "memory" | "skills" | "mcp" | "settings" | "reflect";
+export type Panel =
+  | "chat"
+  | "memory"
+  | "skills"
+  | "mcp"
+  | "settings"
+  | "reflect";
 
 interface NavState {
   activePanel: Panel;

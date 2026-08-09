@@ -50,7 +50,9 @@ fn parse_scope(scope: &str) -> Scope {
     }
 }
 
-pub async fn list_memories(State(state): State<Arc<AppState>>) -> Result<Json<Vec<MemoryItem>>, ApiError> {
+pub async fn list_memories(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<MemoryItem>>, ApiError> {
     let memories = state
         .memory_store
         .list_active()

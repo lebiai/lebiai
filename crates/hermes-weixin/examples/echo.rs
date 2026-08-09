@@ -4,10 +4,10 @@
 //!     cargo run -p hermes-weixin --example echo
 //!
 //! Prerequisites:
-//!     cargo run -p hermes-weixin --example login   (writes ~/.small-rust-hermes/wechat.toml)
+//!     cargo run -p hermes-weixin --example login   (writes ~/.lebi-ai/wechat.toml)
 //!
 //! Cursor checkpoint is persisted at
-//!     ~/.small-rust-hermes/wechat-cursor.txt
+//!     ~/.lebi-ai/wechat-cursor.txt
 //! so that restarts don't re-process already-seen messages.
 //!
 //! The `bot_token` is never printed.
@@ -15,7 +15,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use hermes_weixin::auth::StoredCreds;
 use hermes_weixin::client::Client;
 use hermes_weixin::types::WeixinMessage;

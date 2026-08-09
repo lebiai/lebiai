@@ -31,7 +31,7 @@ RUN apt-get update \
 
 COPY --from=builder /out-hermes /usr/local/bin/hermes
 
-# All hermes state lives under $HOME/.small-rust-hermes/. Point HOME at the
+# All lebi-AI state lives under $HOME/.lebi-ai/. Point HOME at the
 # bind-mount target so the existing `dirs::home_dir()` calls resolve there.
 ENV HOME=/data
 

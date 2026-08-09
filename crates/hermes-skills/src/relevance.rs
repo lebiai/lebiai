@@ -165,8 +165,16 @@ mod tests {
     #[test]
     fn ranks_by_token_overlap() {
         let skills = vec![
-            skill("rust-error-handling", "Switch unwrap to anyhow", &["rust", "anyhow", "unwrap"]),
-            skill("python-type-hints", "Add type hints to functions", &["python", "typing"]),
+            skill(
+                "rust-error-handling",
+                "Switch unwrap to anyhow",
+                &["rust", "anyhow", "unwrap"],
+            ),
+            skill(
+                "python-type-hints",
+                "Add type hints to functions",
+                &["python", "typing"],
+            ),
         ];
         let hits = match_for_query(&skills, "please refactor my Rust unwrap to use anyhow", 3);
         assert_eq!(hits.len(), 1);

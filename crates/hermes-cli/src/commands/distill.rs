@@ -132,6 +132,7 @@ pub async fn run(opts: &DistillOpts) -> Result<()> {
         let candidate = MemoryCandidate {
             fact: body,
             tags: survivor.frontmatter.tags.clone(),
+            zone: survivor.frontmatter.zone.clone(),
             scope: survivor.scope,
             confidence: Confidence::High, // merged from multiple corroborated sources
             rationale: format!("distilled from {} overlapping memories", c.members.len()),

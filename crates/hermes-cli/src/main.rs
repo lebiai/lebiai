@@ -1,4 +1,4 @@
-//! `hermes` CLI entry point.
+//! `hermes` CLI entry point (product: lebi-AI / 乐彼AI).
 
 mod commands;
 
@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(
     name = "hermes",
     version,
-    about = "Self-evolving agent (small-rust-hermes)"
+    about = "lebi-AI — your local work companion"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -23,7 +23,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Interactive first-run setup: choose a provider, enter your API key,
-    /// and write ~/.small-rust-hermes/config.toml.
+    /// and write ~/.lebi-ai/config.toml.
     Init,
 
     /// Check configuration & environment health (makes no changes).
@@ -52,7 +52,7 @@ enum Command {
         /// Resume a previous session by JSONL path.
         #[arg(long, value_name = "PATH", conflicts_with = "resume_last")]
         resume: Option<std::path::PathBuf>,
-        /// Resume the most recent session under ~/.small-rust-hermes/sessions/.
+        /// Resume the most recent session under ~/.lebi-ai/sessions/.
         #[arg(long, conflicts_with = "resume")]
         resume_last: bool,
     },
@@ -138,16 +138,16 @@ enum Command {
 #[derive(Subcommand, Debug)]
 enum WechatCmd {
     /// Render a terminal QR; scan it in WeChat to authorize this machine.
-    /// Persists `bot_token` to `~/.small-rust-hermes/wechat.toml` (mode 600).
+    /// Persists `bot_token` to `~/.lebi-ai/wechat.toml` (mode 600).
     Login,
-    /// Long-poll for incoming WeChat messages and reply with the Hermes model.
+    /// Long-poll for incoming WeChat messages and reply with the lebi-AI model.
     Run,
 }
 
 #[derive(Subcommand, Debug)]
 enum FeishuCmd {
     /// Validate app_id/app_secret and persist them to
-    /// `~/.small-rust-hermes/feishu.toml` (mode 600).
+    /// `~/.lebi-ai/feishu.toml` (mode 600).
     Auth,
     /// Connect to Feishu via WS long-connection and reply to messages.
     Run,
@@ -156,9 +156,9 @@ enum FeishuCmd {
 #[derive(Subcommand, Debug)]
 enum TelegramCmd {
     /// Validate the bot token (from @BotFather) and persist it to
-    /// `~/.small-rust-hermes/telegram.toml` (mode 600).
+    /// `~/.lebi-ai/telegram.toml` (mode 600).
     Auth,
-    /// Long-poll for incoming Telegram messages and reply with the Hermes model.
+    /// Long-poll for incoming Telegram messages and reply with the lebi-AI model.
     Run,
 }
 
@@ -170,9 +170,7 @@ enum SessionCmd {
         limit: usize,
     },
     /// Print a one-line summary of every turn in a session.
-    Show {
-        path: std::path::PathBuf,
-    },
+    Show { path: std::path::PathBuf },
 }
 
 #[derive(Subcommand, Debug)]
@@ -180,9 +178,7 @@ enum McpCmd {
     /// List MCP servers from mcp.json.
     List,
     /// Connect to one (or all) and list advertised tools.
-    Test {
-        server: Option<String>,
-    },
+    Test { server: Option<String> },
 }
 
 #[derive(Subcommand, Debug)]
@@ -261,6 +257,9 @@ impl From<ScopeArg> for hermes_memory::Scope {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
+    if hermes_core::maybe_migrate_data_root() {
+        tracing::info!("migrated legacy data directory to ~/.lebi-ai");
+    }
     let cli = Cli::parse();
     match cli.command {
         Command::Init => commands::init::run().await,
@@ -358,8 +357,8 @@ async fn main() -> Result<()> {
 
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
-    let filter =
-        EnvFilter::try_from_env("HERMES_LOG").unwrap_or_else(|_| EnvFilter::new("warn,hermes_cli=info"));
+    let filter = EnvFilter::try_from_env("HERMES_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("warn,hermes_cli=info"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
@@ -376,12 +375,9 @@ fn resolve_resume(explicit: Option<PathBuf>, last: bool) -> Result<Option<PathBu
         return Ok(Some(p));
     }
     if last {
-        let dir = dirs::home_dir()
-            .ok_or_else(|| anyhow!("could not resolve $HOME"))?
-            .join(".small-rust-hermes")
-            .join("sessions");
-        let mut sessions = hermes_store::list_sessions(&dir)
-            .map_err(|e| anyhow!("listing sessions: {e}"))?;
+        let dir = hermes_core::data_path("sessions");
+        let mut sessions =
+            hermes_store::list_sessions(&dir).map_err(|e| anyhow!("listing sessions: {e}"))?;
         if let Some(p) = sessions.drain(..).next() {
             return Ok(Some(p));
         }

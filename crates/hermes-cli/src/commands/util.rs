@@ -15,7 +15,7 @@ use hermes_tools::{
 };
 
 /// Build the active [`LlmProvider`] selected by `default_provider` in
-/// `~/.small-rust-hermes/config.toml`.
+/// `~/.lebi-ai/config.toml`.
 pub fn build_active_provider(cfg: &Config) -> Result<Arc<dyn LlmProvider>> {
     cfg.build_active_provider()
 }
@@ -66,15 +66,11 @@ pub fn build_web_ctx(cfg: &Config, provider: Arc<dyn LlmProvider>) -> Arc<WebToo
 
 /// Where to write a session JSONL given its metadata.
 ///
-/// Path: `~/.small-rust-hermes/sessions/<timestamp>-<short-id>.jsonl`.
+/// Path: `~/.lebi-ai/sessions/<timestamp>-<short-id>.jsonl`.
 pub fn session_path_for(meta: &SessionMeta) -> Result<PathBuf> {
-    let home = dirs::home_dir().context("resolving $HOME")?;
     let stamp = meta.created_at.format("%Y-%m-%dT%H-%M-%S");
     let short_id = &meta.id[..8.min(meta.id.len())];
-    Ok(home
-        .join(".small-rust-hermes")
-        .join("sessions")
-        .join(format!("{stamp}-{short_id}.jsonl")))
+    Ok(hermes_core::data_path("sessions").join(format!("{stamp}-{short_id}.jsonl")))
 }
 
 /// Load built-in tools + MCP tools as a composite host.
@@ -98,9 +94,8 @@ pub async fn load_tool_host(
     subagent_ctx: Option<Arc<SubagentContext>>,
     web_ctx: Option<Arc<WebToolsContext>>,
 ) -> Result<Arc<dyn ToolHost>> {
-    std::fs::create_dir_all(workspace_root).with_context(|| {
-        format!("ensuring workspace exists: {}", workspace_root.display())
-    })?;
+    std::fs::create_dir_all(workspace_root)
+        .with_context(|| format!("ensuring workspace exists: {}", workspace_root.display()))?;
 
     let mut builtin = BuiltinToolHost::new(workspace_root.to_path_buf());
     if let Some(store) = memory_store {

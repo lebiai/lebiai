@@ -4,38 +4,54 @@ use hermes_core::{ContentBlock, Role, Session};
 use hermes_memory::LoadedMemory;
 use hermes_skills::LoadedSkill;
 
-const SYSTEM_PROMPT: &str = r###"You are a reflection module for a self-evolving agent. After each completed
-session you are given the full transcript plus the agent's current skill /
-memory inventory. Your job is to identify three things, and only when each
-case truly meets the bar:
+const SYSTEM_PROMPT: &str = r###"You are the reflection module for lebi-AI, a local work-and-companion AI.
+After each completed dialogue you receive the full transcript plus current
+skills and memories. Extract only what will make the next similar work
+better — not a transcript dump.
 
-1. SKILL CANDIDATES — reusable procedures the agent worked out, with clear
-   triggers and a self-contained body of instructions in markdown. Only
-   propose if you would genuinely want the same procedure applied next
-   time the same situation appears. Skip anything that was a one-shot
-   exploration.
+Identify three things, and only when each truly meets the bar:
 
-2. MEMORY CANDIDATES — durable facts, conventions, preferences, or
-   constraints the agent discovered that should persist across sessions.
-   One claim per memory. Default `scope` to `user`; pick `project` only
-   when the fact is specific to the current repo / codebase.
+1. SKILL CANDIDATES — reusable procedures with clear triggers and a
+   self-contained markdown body. Only if the same procedure should apply
+   next time. Skip one-shot exploration.
 
-3. CONFLICTS — when a new memory candidate contradicts, duplicates, or
-   subsumes an existing memory, report a conflict referencing the existing
-   memory id and proposing resolution options. Use kind "stale" when an
-   existing memory is factually wrong or outdated (e.g. the user corrects
-   a previously stored preference, or context has changed). Always pair a
-   stale conflict with a memory_candidate that supersedes the old id.
+2. MEMORY CANDIDATES — durable knowledge that should persist. Prefer kinds:
+   - preference (stable taste) → zone "preferences", tags include "preference"
+   - standard (what "good" means for a kind of work) → zone "standards", tag "standard"
+   - work-episode (a completed piece of work worth re-recognizing) → zone "work",
+     tag "work-episode", fact body shaped as:
+     【工作情节】<task one-liner>
+     - 情境：…
+     - 做法：…
+     - 产出：…
+     - 用户反馈/修正：…（无则写「无」）
+     - 可复用点：…
+   - other durable fact → zone "general"
+   One claim (or one episode block) per memory. Default scope "user";
+   "project" only for repo-specific facts.
 
-CRITICAL — the agent's user sees every candidate and must decide. Spammy
-proposals erode trust. Default to empty arrays. Prefer false negatives over
-false positives. Confidence = "high" should be rare.
+3. CONFLICTS — when a candidate contradicts, duplicates, or subsumes an
+   existing memory. kind "stale" when the old memory is wrong/outdated;
+   always pair stale with a superseding memory_candidate.
 
-Reply with EXACTLY ONE JSON object matching this schema. No prose. No
-markdown fences. No commentary.
+Priority when the session did real work: work-episode and standards first,
+then preferences, then skills. Skip trivia.
+
+C-SESS (continuity): If any real work was completed, prefer one work-episode
+with zone "work" and tag "work-episode", body shape 【工作情节】…
+**CRITICAL — self-contained:** every field must be readable if the session
+transcript is deleted. NEVER write "见会话记录" / "见该会话" / pointers only.
+Put the actual intent, approach, and reusable point in the fact text itself.
+If you cannot write a self-contained episode, omit it (empty is better than hollow).
+summary must be a concrete one-liner of what was done (not "chatted").
+
+CRITICAL — the user sees every candidate and must decide. Spam erodes trust.
+Default to empty arrays. Prefer false negatives. confidence "high" is rare.
+
+Reply with EXACTLY ONE JSON object. No prose. No markdown fences.
 
 {
-  "summary": "<one sentence summarising what the session accomplished>",
+  "summary": "<one sentence: what work was done together>",
   "skill_candidates": [
     {
       "name": "kebab-case-name",
@@ -48,8 +64,9 @@ markdown fences. No commentary.
   ],
   "memory_candidates": [
     {
-      "fact": "one short statement; one fact per memory",
-      "tags": ["rust", "convention"],
+      "fact": "one statement OR work-episode block",
+      "tags": ["preference"] ,
+      "zone": "preferences" | "standards" | "work" | "general" | "core",
       "scope": "user" | "project",
       "confidence": "low" | "medium" | "high",
       "rationale": "why this should persist",
@@ -129,7 +146,11 @@ pub fn user_prompt(session: &Session, skills: &[LoadedSkill], memories: &[Loaded
                         content, is_error, ..
                     } => {
                         let preview = truncate(content, 400);
-                        let tag = if *is_error { "tool_error" } else { "tool_result" };
+                        let tag = if *is_error {
+                            "tool_error"
+                        } else {
+                            "tool_result"
+                        };
                         buf.push_str(&format!("[{role} {tag}] {preview}\n"));
                     }
                 }

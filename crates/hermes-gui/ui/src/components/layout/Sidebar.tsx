@@ -1,84 +1,405 @@
-import { Plus, MessageSquare, Trash2, Brain, Zap, Plug, Settings, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Plus,
+  MessageSquare,
+  Trash2,
+  Brain,
+  Zap,
+  Plug,
+  Settings,
+  Sparkles,
+  Search,
+  X,
+  ChevronDown,
+  ChevronRight,
+  RefreshCw,
+} from "lucide-react";
+import brandLogo from "../../assets/logo.png";
+import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../../store/chatStore";
 import { useNavStore, type Panel } from "../../store/navStore";
 import { useUiStore } from "../../store/uiStore";
 import type { TranslationKey } from "../../i18n";
+import type { SessionSummary } from "../../types";
+import { Button, ui } from "../common/ui";
+import { ConfirmPopover } from "../common/ConfirmPopover";
+import { toast } from "../../utils/toast";
+import { isDefaultTitle } from "../../utils/sessionTitle";
+import {
+  formatSessionTime,
+  groupSessionsByDay,
+  type SessionGroupId,
+} from "../../utils/sessionTime";
 
-const navItems: { panel: Panel; icon: typeof Brain; labelKey: TranslationKey }[] = [
+/** Primary product path — chat first, then evolution surfaces + settings. */
+const primaryNav: { panel: Panel; icon: typeof Brain; labelKey: TranslationKey }[] = [
   { panel: "chat", icon: MessageSquare, labelKey: "nav.chat" },
   { panel: "memory", icon: Brain, labelKey: "nav.memories" },
   { panel: "skills", icon: Zap, labelKey: "nav.skills" },
-  { panel: "mcp", icon: Plug, labelKey: "nav.mcp" },
-  { panel: "reflect", icon: Sparkles, labelKey: "nav.reflect" },
   { panel: "settings", icon: Settings, labelKey: "nav.settings" },
 ];
 
+/** Power-user surfaces — collapsed by default. */
+const advancedNav: { panel: Panel; icon: typeof Brain; labelKey: TranslationKey }[] = [
+  { panel: "reflect", icon: Sparkles, labelKey: "nav.reflect" },
+  { panel: "mcp", icon: Plug, labelKey: "nav.mcp" },
+];
+
+const groupLabelKey: Record<SessionGroupId, TranslationKey> = {
+  today: "chat.groupToday",
+  yesterday: "chat.groupYesterday",
+  earlier: "chat.groupEarlier",
+};
+
+function sessionTitleOf(
+  session: SessionSummary,
+  t: (key: TranslationKey) => string
+): string {
+  return isDefaultTitle(session.title) ? t("chat.defaultTitle") : session.title;
+}
+
 export function Sidebar() {
-  const { sessions, activeSessionId, newSession, loadSession, deleteSession } =
-    useChatStore();
+  const {
+    sessions,
+    draftSession,
+    sessionsLoading,
+    sessionsError,
+    fetchSessions,
+    clearSessionsError,
+    activeSessionId,
+    newSession,
+    loadSession,
+    deleteSession,
+    isStreaming,
+    sessionEnd,
+  } = useChatStore();
   const { activePanel, setPanel } = useNavStore();
   const t = useUiStore((s) => s.t);
+  const language = useUiStore((s) => s.language);
+  const busy = isStreaming || sessionEnd?.status === "review";
+  const [inboxCount, setInboxCount] = useState(0);
+
+  useEffect(() => {
+    const load = () => {
+      void invoke<number>("count_pending_review")
+        .then(setInboxCount)
+        .catch(() => setInboxCount(0));
+    };
+    load();
+    window.addEventListener("hermes:inbox-changed", load);
+    return () => window.removeEventListener("hermes:inbox-changed", load);
+  }, []);
+
+  const [query, setQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(
+    () => activePanel === "mcp" || activePanel === "reflect"
+  );
+  const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (activePanel === "mcp" || activePanel === "reflect") {
+      setAdvancedOpen(true);
+    }
+  }, [activePanel]);
+
+  useEffect(() => {
+    if (searchOpen) {
+      searchInputRef.current?.focus();
+    }
+  }, [searchOpen]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSearchOpen(false);
+        setQuery("");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [searchOpen]);
+
+  const q = query.trim().toLowerCase();
+
+  const draftMatches = useMemo(() => {
+    if (!draftSession) return false;
+    if (!q) return true;
+    return sessionTitleOf(draftSession, t).toLowerCase().includes(q);
+  }, [draftSession, q, t]);
+
+  const filtered = useMemo(() => {
+    if (!q) return sessions;
+    return sessions.filter((s) => sessionTitleOf(s, t).toLowerCase().includes(q));
+  }, [sessions, q, t]);
+
+  const groups = useMemo(() => groupSessionsByDay(filtered), [filtered]);
+
+  const locale = language === "zh-CN" ? "zh-CN" : "en-US";
+
+  const hasListContent =
+    (draftSession && draftMatches) || filtered.length > 0;
+
+  const openSession = (path: string) => {
+    if (busy) return;
+    setPanel("chat");
+    void loadSession(path);
+  };
+
+  const handleNew = () => {
+    if (busy) {
+      toast.info(t("toast.streamingBusy"));
+      return;
+    }
+    setPanel("chat");
+    void newSession();
+  };
+
+  const openDraft = () => {
+    if (busy || !draftSession) return;
+    // Draft stays memory-resident (activeSessionId already points here when set).
+    setPanel("chat");
+  };
+
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setQuery("");
+  };
+
+  const navButton = (panel: Panel, Icon: typeof Brain, labelKey: TranslationKey) => (
+    <button
+      key={panel}
+      type="button"
+      onClick={() => setPanel(panel)}
+      className={`${ui.navItem} ${
+        activePanel === panel ? ui.navItemActive : ui.navItemIdle
+      }`}
+    >
+      <Icon size={16} className="shrink-0 opacity-90" strokeWidth={1.75} />
+      <span className="flex-1 text-left">{t(labelKey)}</span>
+      {/* Pending review is part of 记忆 — badge on Memories only */}
+      {panel === "memory" && inboxCount > 0 && (
+        <span className="ml-auto text-[10px] font-semibold min-w-[1.15rem] h-4 px-1 rounded-full bg-app-primary text-white flex items-center justify-center">
+          {inboxCount > 99 ? "99+" : inboxCount}
+        </span>
+      )}
+    </button>
+  );
 
   return (
-    <aside className="w-64 h-full flex flex-col border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-      <div className="p-3">
-        <button
-          onClick={newSession}
-          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-sm"
-        >
+    <aside className={`w-[17rem] h-full flex flex-col shrink-0 ${ui.sidebar}`}>
+      <div className="px-3 pt-3.5 pb-2 shrink-0">
+        <div className="flex items-center gap-2 px-1 mb-3">
+          <img
+            src={brandLogo}
+            alt={t("app.brand")}
+            className="h-8 w-8 shrink-0 rounded-xl object-cover shadow-sm"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold tracking-tight text-app-fg dark:text-slate-100">
+              {t("app.brand")}
+            </div>
+            <div className="text-[11px] text-app-fg-tertiary dark:text-slate-500 truncate">
+              {t("app.tagline")}
+            </div>
+          </div>
+          <button
+            type="button"
+            title={t("chat.searchToggle")}
+            aria-label={t("chat.searchToggle")}
+            aria-expanded={searchOpen}
+            onClick={() => {
+              if (searchOpen) closeSearch();
+              else setSearchOpen(true);
+            }}
+            className={`shrink-0 p-1.5 rounded-lg transition-colors ${
+              searchOpen || q
+                ? "text-app-primary bg-app-primary-soft dark:bg-blue-950/40"
+                : "text-app-fg-tertiary hover:text-app-fg-secondary hover:bg-app-muted dark:hover:bg-slate-800"
+            }`}
+          >
+            <Search size={15} />
+          </button>
+        </div>
+        <Button variant="primary" className="w-full" onClick={handleNew} disabled={busy}>
           <Plus size={16} />
           <span>{t("chat.new")}</span>
-        </button>
+          <span className="ml-auto text-[10px] opacity-70 font-normal hidden sm:inline">
+            ⌘N
+          </span>
+        </Button>
       </div>
 
-      {activePanel === "chat" && (
-        <div className="flex-1 overflow-y-auto px-2 pb-2">
-          {sessions.map((session) => (
-            <div
-              key={session.id}
-              className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm mb-0.5 ${
-                activeSessionId === session.id
-                  ? "bg-gray-200 dark:bg-gray-700"
-                  : "hover:bg-gray-100 dark:hover:bg-gray-700/50"
-              }`}
-              onClick={() => loadSession(session.path)}
+      {searchOpen && (
+        <div className="px-3 pb-2 shrink-0">
+          <div className="relative">
+            <Search
+              size={13}
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-app-fg-tertiary pointer-events-none"
+            />
+            <input
+              ref={searchInputRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t("chat.searchSessions")}
+              className="w-full pl-8 pr-8 py-1.5 text-xs rounded-lg border border-app-border dark:border-slate-700 bg-app-surface dark:bg-slate-800/80 text-app-fg dark:text-slate-200 placeholder:text-app-fg-tertiary focus:outline-none focus:ring-2 focus:ring-app-primary/30"
+            />
+            <button
+              type="button"
+              aria-label={t("common.dismiss")}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded-md text-app-fg-tertiary hover:text-app-fg-secondary"
+              onClick={closeSearch}
             >
-              <MessageSquare size={14} className="shrink-0 text-gray-400" />
-              <span className="truncate flex-1">
-                {session.title === "New Chat" ? t("chat.defaultTitle") : session.title}
-              </span>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  deleteSession(session.path);
-                }}
-                className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-500 transition-opacity"
-                title={t("chat.deleteSession")}
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
+              <X size={12} />
+            </button>
+          </div>
         </div>
       )}
 
-      {activePanel !== "chat" && <div className="flex-1" />}
+      <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2">
+        <div className={`px-2 pt-0.5 pb-1.5 ${ui.sectionLabel}`}>
+          {t("chat.recentSessions")}
+        </div>
 
-      <nav className="border-t border-gray-200 dark:border-gray-700 p-2 space-y-0.5">
-        {navItems.map(({ panel, icon: Icon, labelKey }) => (
-          <button
-            key={panel}
-            onClick={() => setPanel(panel)}
-            className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
-              activePanel === panel
-                ? "bg-gray-200 dark:bg-gray-700 font-medium"
-                : "hover:bg-gray-100 dark:hover:bg-gray-700/50"
-            }`}
+        {sessionsError && (
+          <div className="mx-1 mb-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 px-2 py-2 space-y-1.5">
+            <p className="text-[11px] text-red-700 dark:text-red-300 leading-snug break-all">
+              {t("chat.sessionsError")}
+            </p>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 text-[11px] text-red-800 dark:text-red-200 font-medium"
+              onClick={() => {
+                clearSessionsError();
+                void fetchSessions();
+              }}
+            >
+              <RefreshCw size={11} />
+              {t("chat.retrySessions")}
+            </button>
+          </div>
+        )}
+
+        {sessionsLoading && !hasListContent && (
+          <p className="px-2.5 py-3 text-xs text-app-fg-tertiary">{t("chat.loadingSessions")}</p>
+        )}
+
+        {!sessionsLoading && !sessionsError && !hasListContent && (
+          <p className="px-2.5 py-3 text-xs text-app-fg-tertiary leading-relaxed">
+            {q ? t("chat.noSearchResults") : t("chat.noSessions")}
+          </p>
+        )}
+
+        {/* Empty draft — history zone, marked "current", not a second New Chat CTA */}
+        {draftSession && draftMatches && (
+          <div
+            className={`group relative flex items-center gap-2 pl-2.5 pr-1 py-1.5 rounded-lg cursor-pointer text-sm mb-1 ${
+              activePanel === "chat" && activeSessionId === draftSession.id
+                ? ui.sessionActive
+                : ui.sessionIdle
+            } ${busy ? "pointer-events-none opacity-55" : ""}`}
+            onClick={openDraft}
           >
-            <Icon size={16} />
-            <span>{t(labelKey)}</span>
-          </button>
+            <MessageSquare
+              size={14}
+              className={`shrink-0 ${
+                activePanel === "chat" && activeSessionId === draftSession.id
+                  ? "text-app-primary dark:text-blue-400"
+                  : "text-app-fg-tertiary"
+              }`}
+            />
+            <div className="flex-1 min-w-0">
+              <div className="truncate leading-snug text-app-fg-secondary dark:text-slate-300">
+                {sessionTitleOf(draftSession, t)}
+              </div>
+            </div>
+            <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-app-muted dark:bg-slate-800 text-app-fg-tertiary">
+              {t("chat.currentBadge")}
+            </span>
+          </div>
+        )}
+
+        {groups.map((group) => (
+          <div key={group.id} className="mb-2">
+            <div className={`px-2 py-1 ${ui.sectionLabel}`}>
+              {t(groupLabelKey[group.id])}
+            </div>
+            {group.sessions.map((session) => {
+              const selected =
+                activePanel === "chat" && activeSessionId === session.id;
+              const title = sessionTitleOf(session, t);
+              const timeLabel = formatSessionTime(session.createdAt, locale);
+              return (
+                <div
+                  key={session.id}
+                  className={`group relative flex items-center gap-2 pl-2.5 pr-1 py-1.5 rounded-lg cursor-pointer text-sm mb-0.5 ${
+                    selected ? ui.sessionActive : ui.sessionIdle
+                  } ${busy ? "pointer-events-none opacity-55" : ""}`}
+                  onClick={() => openSession(session.path)}
+                >
+                  <MessageSquare
+                    size={14}
+                    className={`shrink-0 ${
+                      selected
+                        ? "text-app-primary dark:text-blue-400"
+                        : "text-app-fg-tertiary"
+                    }`}
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="truncate leading-snug">{title}</div>
+                    {timeLabel && (
+                      <div className="text-[10px] text-app-fg-tertiary truncate leading-tight">
+                        {timeLabel}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    title={t("chat.deleteSession")}
+                    aria-label={t("chat.deleteSession")}
+                    className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-app-fg-tertiary hover:text-app-danger hover:bg-red-50 dark:hover:bg-red-950/40 transition-opacity"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!busy) setConfirmDeletePath(session.path);
+                    }}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                  <ConfirmPopover
+                    open={confirmDeletePath === session.path}
+                    message={t("chat.deleteSessionConfirm")}
+                    onCancel={() => setConfirmDeletePath(null)}
+                    onConfirm={() => {
+                      setConfirmDeletePath(null);
+                      void deleteSession(session.path)
+                        .then(() => toast.success(t("toast.sessionDeleted")))
+                        .catch((err) => toast.error(String(err)));
+                    }}
+                  />
+                </div>
+              );
+            })}
+          </div>
         ))}
+      </div>
+
+      <nav className="border-t border-app-border dark:border-slate-800 p-2 space-y-0.5 shrink-0 max-h-[40vh] overflow-y-auto">
+        {primaryNav.map(({ panel, icon, labelKey }) => navButton(panel, icon, labelKey))}
+
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((v) => !v)}
+            className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-app-fg-tertiary hover:text-app-fg-secondary dark:hover:text-slate-300"
+          >
+            {advancedOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            {t("nav.advanced")}
+          </button>
+          {advancedOpen &&
+            advancedNav.map(({ panel, icon, labelKey }) => navButton(panel, icon, labelKey))}
+        </div>
       </nav>
     </aside>
   );

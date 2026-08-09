@@ -14,7 +14,7 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
 use hermes_core::{Session, SessionEvent, SessionMeta};
-use hermes_store::SessionWriter;
+use hermes_memory::MemoryStore;
 use hermes_turn::{ConfirmAction, ConfirmRequest, TurnConfig, TurnEvent};
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -114,9 +114,7 @@ async fn chat(socket: WebSocket, state: Arc<AppState>) {
                         action,
                         tool_name,
                         reason,
-                    } => {
-                        handle_confirm(state.clone(), id, action, tool_name, reason).await
-                    }
+                    } => handle_confirm(state.clone(), id, action, tool_name, reason).await,
                 }
             }
             Message::Close(_) => break,
@@ -138,22 +136,24 @@ async fn handle_send(
     attachments: Vec<Attachment>,
     ws_tx: mpsc::UnboundedSender<Message>,
 ) {
-    let provider = state.provider.clone();
+    let provider = state.provider.read().unwrap().clone();
     let host = state.host.clone();
-    let model = state.model().to_string();
+    let model = state.model();
     let max_tokens = state.max_tokens();
     let tools = state.tools.lock().await.clone();
     let skills = state.skills.lock().await.clone();
     let pinned = state.pinned_memories.lock().await.clone();
     let active = state.active_memories.lock().await.clone();
     let workspace_root = state.workspace_root();
-    let limits = state.config.limits;
-    let provider_name = state.config.default_provider.clone();
+    let (limits, provider_name) = {
+        let cfg = state.config.read().unwrap();
+        (cfg.limits, cfg.default_provider.clone())
+    };
 
-    let mut allow_rules: Vec<String> = state.config.permissions.allow.clone();
+    let mut allow_rules: Vec<String> = state.config.read().unwrap().permissions.allow.clone();
+    let deny_rules: Vec<String> = state.config.read().unwrap().permissions.deny.clone();
     allow_rules.extend(state.always_allowed_tools.lock().await.iter().cloned());
-    let permissions =
-        hermes_turn::PermissionChecker::new(&allow_rules, &state.config.permissions.deny);
+    let permissions = hermes_turn::PermissionChecker::new(&allow_rules, &deny_rules);
 
     let (history, turn_system) = {
         let mut sessions = state.sessions.lock().await;
@@ -177,20 +177,6 @@ async fn handle_send(
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let mut writer = match SessionWriter::create(&path) {
-                Ok(w) => w,
-                Err(e) => {
-                    let _ = ws_tx.send(Message::Text(
-                        serde_json::to_string(&ChatStreamEvent::Error {
-                            message: format!("session writer: {e}"),
-                        })
-                        .unwrap_or_default()
-                        .into(),
-                    ));
-                    return;
-                }
-            };
-            let _ = writer.append(&SessionEvent::Meta(meta.clone()));
             let session = Session {
                 meta,
                 messages: Vec::new(),
@@ -201,7 +187,7 @@ async fn handle_send(
                 session_id.clone(),
                 ActiveSession {
                     session,
-                    writer,
+                    writer: None,
                     path,
                 },
             );
@@ -213,7 +199,6 @@ async fn handle_send(
             pinned: &pinned,
             active: &active,
             all_skills: &skills,
-            tools: &tools,
             workspace_root: &workspace_root,
             limits,
         };
@@ -221,20 +206,52 @@ async fn handle_send(
 
         let user_msg = hermes_core::Message {
             role: hermes_core::Role::User,
-            content: std::iter::once(hermes_core::ContentBlock::Text { text: content.clone() })
-                .chain(attachments.iter().map(|a| hermes_core::ContentBlock::Image {
-                    source: hermes_core::ImageSource {
-                        kind: "base64".into(),
-                        media_type: a.media_type.clone(),
-                        data: a.data.clone(),
-                    },
-                }))
-                .collect(),
+            content: std::iter::once(hermes_core::ContentBlock::Text {
+                text: content.clone(),
+            })
+            .chain(
+                attachments
+                    .iter()
+                    .map(|a| hermes_core::ContentBlock::Image {
+                        source: hermes_core::ImageSource {
+                            kind: "base64".into(),
+                            media_type: a.media_type.clone(),
+                            data: a.data.clone(),
+                        },
+                    }),
+            )
+            .collect(),
         };
         active_session.session.messages.push(user_msg.clone());
-        let _ = active_session
-            .writer
-            .append(&SessionEvent::Message(user_msg));
+        if let Ok(w) = active_session.ensure_writer() {
+            let _ = w.append(&SessionEvent::Message(user_msg));
+        }
+
+        {
+            use hermes_core::{
+                derive_title_from_messages, is_trivial_user_text, DEFAULT_SESSION_TITLE,
+            };
+            let derived = derive_title_from_messages(&active_session.session.messages);
+            let current = active_session
+                .session
+                .meta
+                .title
+                .as_deref()
+                .unwrap_or(DEFAULT_SESSION_TITLE);
+            let should_write = !is_trivial_user_text(&content)
+                && (current == DEFAULT_SESSION_TITLE
+                    || active_session.session.meta.title.is_none()
+                    || is_trivial_user_text(current));
+            if should_write && derived != DEFAULT_SESSION_TITLE {
+                active_session.session.meta.title = Some(derived.clone());
+                let path = active_session.path.clone();
+                let _ = hermes_store::update_session_title(&path, &derived);
+                if let Ok(w) = hermes_store::SessionWriter::open_append(&path) {
+                    active_session.writer = Some(w);
+                }
+            }
+        }
+
         (active_session.session.messages.clone(), turn_system)
     };
     // Drop the session guard before spawning the turn.
@@ -258,7 +275,26 @@ async fn handle_send(
     let sessions_arc = state.sessions.clone();
     let cancel_tokens_arc = state.cancel_tokens.clone();
     let propose_queue = state.propose_queue.clone();
+    let provider_for_micro = state.provider.read().unwrap().clone();
+    let memory_store = state.memory_store.clone();
+    let skills_for_micro = skills.clone();
+    let memories_for_micro = active.clone();
+    let active_memories_arc = state.active_memories.clone();
+    let pinned_memories_arc = state.pinned_memories.clone();
+    let micro_cooldown = state.micro_turns_since.clone();
+    let auto_accept = state.config.read().unwrap().reflect.auto_accept_memories;
+    let min_confidence: hermes_memory::Confidence = state
+        .config
+        .read()
+        .unwrap()
+        .reflect
+        .auto_accept_min_confidence
+        .parse()
+        .unwrap_or(hermes_memory::Confidence::Medium);
     let out = ws_tx.clone();
+    let persist_thinking = hermes_llm::Config::load_default()
+        .map(|c| c.ui.persist_thinking)
+        .unwrap_or(state.config.read().unwrap().ui.persist_thinking);
 
     tokio::spawn(async move {
         let config = TurnConfig {
@@ -278,9 +314,7 @@ async fn handle_send(
             let cs = match event {
                 TurnEvent::TextDelta(text) => ChatStreamEvent::TextDelta { text },
                 TurnEvent::ThinkingDelta(text) => ChatStreamEvent::ThinkingDelta { text },
-                TurnEvent::ToolUseStart { id, name } => {
-                    ChatStreamEvent::ToolUseStart { id, name }
-                }
+                TurnEvent::ToolUseStart { id, name } => ChatStreamEvent::ToolUseStart { id, name },
                 // Keep `input` (the GUI drops it) so the client can render
                 // the tool-call parameters, not just the summary.
                 TurnEvent::ToolExecStart {
@@ -298,10 +332,12 @@ async fn handle_send(
                     id,
                     tool_name,
                     summary,
+                    reason,
                 } => ChatStreamEvent::ConfirmRequired {
                     id,
                     tool_name,
                     summary,
+                    reason,
                 },
                 TurnEvent::ToolUseResult {
                     id,
@@ -315,11 +351,16 @@ async fn handle_send(
                 TurnEvent::Usage {
                     input_tokens,
                     output_tokens,
+                    ..
                 } => ChatStreamEvent::UsageUpdate {
                     input_tokens,
                     output_tokens,
                 },
                 TurnEvent::Error(message) => ChatStreamEvent::Error { message },
+                TurnEvent::Cancelled => ChatStreamEvent::Error {
+                    // Server protocol reuses Error for stop; clients may map "cancelled".
+                    message: "cancelled".into(),
+                },
                 TurnEvent::Done => ChatStreamEvent::Done,
             };
             push_event(&out_for_event, cs);
@@ -348,20 +389,44 @@ async fn handle_send(
 
         confirm_bridge.abort();
 
+        let mut turn_messages: Vec<hermes_core::Message> = Vec::new();
+        let mut session_id_for_log = sid.clone();
+
         match result {
             Ok(output) => {
+                turn_messages = output.new_messages.clone();
                 if let Some(s) = sessions_arc.lock().await.get_mut(&sid) {
+                    session_id_for_log = s.session.meta.id.clone();
                     for msg in &output.new_messages {
                         s.session.messages.push(msg.clone());
-                        let _ = s.writer.append(&SessionEvent::Message(msg.clone()));
+                        let to_disk = msg.for_persist(persist_thinking);
+                        if to_disk.content.is_empty() {
+                            continue;
+                        }
+                        if let Ok(w) = s.ensure_writer() {
+                            let _ = w.append(&SessionEvent::Message(to_disk));
+                        }
                     }
                     s.session.total_input_tokens += output.usage.input_tokens;
                     s.session.total_output_tokens += output.usage.output_tokens;
+                    if let Ok(w) = s.ensure_writer() {
+                        let _ = w.append(&SessionEvent::Usage(hermes_core::Usage {
+                            input_tokens: output.usage.input_tokens,
+                            output_tokens: output.usage.output_tokens,
+                            cache_read_tokens: output.usage.cache_read_tokens,
+                            cache_creation_tokens: output.usage.cache_creation_tokens,
+                        }));
+                    }
                 }
             }
             Err(e) => {
                 tracing::warn!(error=%e, "turn failed");
-                push_event(&out, ChatStreamEvent::Error { message: format!("{e:#}") });
+                push_event(
+                    &out,
+                    ChatStreamEvent::Error {
+                        message: format!("{e:#}"),
+                    },
+                );
             }
         }
 
@@ -380,6 +445,121 @@ async fn handle_send(
                     triggers: c.triggers,
                 },
             );
+        }
+
+        // Micro-reflection: shared pipeline; result over WS (Flutter has no Tauri events).
+        if !turn_messages.is_empty() {
+            let out_micro = out.clone();
+            let prov = provider_for_micro;
+            let ms = memory_store;
+            let skills_snap = skills_for_micro;
+            let mems_snap = memories_for_micro;
+            let active_arc = active_memories_arc;
+            let pinned_arc = pinned_memories_arc;
+            let cooldown = micro_cooldown;
+            let session_key = sid.clone();
+            let sess_log = session_id_for_log;
+            tokio::spawn(async move {
+                let turns_since = {
+                    let map = cooldown.lock().await;
+                    *map.get(&session_key).unwrap_or(&0)
+                };
+                let apply = hermes_reflect::MicroApplyConfig::new(
+                    sess_log,
+                    auto_accept,
+                    min_confidence,
+                    false,
+                );
+                let outcome =
+                    hermes_reflect::run_micro_after_turn(hermes_reflect::MicroRunRequest {
+                        provider: prov.as_ref(),
+                        store: ms.as_ref(),
+                        turn_messages: &turn_messages,
+                        skills: &skills_snap,
+                        memories: &mems_snap,
+                        turns_since_last: turns_since,
+                        apply,
+                        recompile_on_auto_accept: true,
+                    })
+                    .await;
+
+                {
+                    let mut map = cooldown.lock().await;
+                    let entry = map.entry(session_key).or_insert(0);
+                    match &outcome {
+                        Ok(o) => hermes_reflect::update_cooldown_after(o, entry),
+                        Err(_) => *entry = 0,
+                    }
+                }
+
+                let applied = match outcome {
+                    Ok(hermes_reflect::MicroRunOutcome::Applied(a)) => a,
+                    Ok(_) => return,
+                    Err(e) => {
+                        tracing::debug!(error=%e, "server micro-reflection failed");
+                        return;
+                    }
+                };
+
+                if applied.auto_accepted > 0 {
+                    if let Ok(fresh) = ms.list_active() {
+                        let pinned: Vec<_> = fresh
+                            .iter()
+                            .filter(|m| m.frontmatter.pinned)
+                            .cloned()
+                            .collect();
+                        *active_arc.lock().await = fresh;
+                        *pinned_arc.lock().await = pinned;
+                    }
+                }
+
+                // Persist pending candidates into the shared pending-review
+                // inbox (Micro source) so Flutter-originated evolution survives
+                // restarts and can be reviewed on the desktop GUI — mirrors
+                // `hermes-gui/src/commands/micro.rs`.
+                if applied.has_pending() {
+                    let pending_for_inbox = applied.pending_as_output();
+                    match hermes_reflect::enqueue_from_reflection(
+                        &pending_for_inbox,
+                        hermes_reflect::InboxSource::Micro,
+                    ) {
+                        Ok(added) => {
+                            if added > 0 {
+                                tracing::info!(added, "server micro pending enqueued to inbox");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error=%e, "enqueue server micro pending to inbox failed")
+                        }
+                    }
+                }
+
+                if applied.auto_accepted == 0 && !applied.has_pending() {
+                    return;
+                }
+
+                let pending = applied.pending_as_output();
+                let reflection = if applied.has_pending() {
+                    Some(crate::events::MicroReflectionPayload::from_output(&pending))
+                } else {
+                    None
+                };
+                let summary = if applied.summary.is_empty() {
+                    "Micro-reflection complete".into()
+                } else {
+                    applied.summary.clone()
+                };
+                push_event(
+                    &out_micro,
+                    ChatStreamEvent::MicroReflection {
+                        summary,
+                        memory_count: applied.pending_memory_count(),
+                        skill_count: applied.pending_skill_count(),
+                        auto_accepted: applied.auto_accepted,
+                        reflection,
+                    },
+                );
+            });
         }
 
         cancel_tokens_arc.lock().await.remove(&sid);
@@ -403,11 +583,7 @@ async fn handle_confirm(
         "allow" | "y" => ConfirmAction::Allow,
         "alwaysallow" | "always_allow" => {
             if let Some(name) = &tool_name {
-                state
-                    .always_allowed_tools
-                    .lock()
-                    .await
-                    .insert(name.clone());
+                state.always_allowed_tools.lock().await.insert(name.clone());
             }
             ConfirmAction::AlwaysAllow
         }

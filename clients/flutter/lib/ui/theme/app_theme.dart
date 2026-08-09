@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'app_dimensions.dart';
 
-/// Hermes design system.
+/// lebi-AI design system.
 ///
 /// One confident accent (teal) on cool-neutral surfaces, instead of the
 /// default Material indigo seed. Light and dark are hand-tuned so bubbles,

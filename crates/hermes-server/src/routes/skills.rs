@@ -42,7 +42,9 @@ pub struct ScopeQuery {
     pub scope: Option<String>,
 }
 
-pub async fn list_skills(State(state): State<Arc<AppState>>) -> Result<Json<Vec<SkillItem>>, ApiError> {
+pub async fn list_skills(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<SkillItem>>, ApiError> {
     let skills = state
         .skill_store
         .list()

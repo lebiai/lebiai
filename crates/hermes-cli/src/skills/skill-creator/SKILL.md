@@ -13,7 +13,7 @@ _Adapted from [anthropics/skills/skill-creator](https://github.com/anthropics/sk
 - _`skill_read_file` replaces direct disk reads — bundled references load on demand (Progressive Disclosure level 3)._
 - _A markdown `review.md` in the workspace replaces upstream's eval-viewer HTML browser — the user reads it inline and tells you their notes._
 
-This skill teaches you to author, evaluate, and iterate skills end-to-end. A "skill" is a chunk of expertise that future-you (or any other agent) loads on demand when a similar task shows up. It lives at `~/.small-rust-hermes/skills/<name>/SKILL.md`, optionally with sibling `scripts/` / `references/` / `assets/` / `agents/` directories. Discovery indexes only `name` + `description`; the body is read only when triggered, and bundled files are read only when the body asks for them.
+This skill teaches you to author, evaluate, and iterate skills end-to-end. A "skill" is a chunk of expertise that future-you (or any other agent) loads on demand when a similar task shows up. It lives at `~/.lebi-ai/skills/<name>/SKILL.md`, optionally with sibling `scripts/` / `references/` / `assets/` / `agents/` directories. Discovery indexes only `name` + `description`; the body is read only when triggered, and bundled files are read only when the body asks for them.
 
 Your job in one sentence: turn the user's recurring workflow into a SKILL.md (and supporting files, when useful), then verify with real evals that the next agent does the right thing when shown this skill.
 

@@ -46,7 +46,7 @@ pub(super) async fn handle_command(
         }
         "tools" => {
             if tools.is_empty() {
-                eprintln!("(no MCP tools loaded; check ~/.small-rust-hermes/mcp.json)");
+                eprintln!("(no MCP tools loaded; check ~/.lebi-ai/mcp.json)");
             } else {
                 for t in tools {
                     eprintln!(
@@ -73,10 +73,7 @@ pub(super) async fn handle_command(
                 eprintln!("(no skills loaded)");
             } else {
                 for s in skills {
-                    eprintln!(
-                        "  {}: {}",
-                        s.frontmatter.name, s.frontmatter.description
-                    );
+                    eprintln!("  {}: {}", s.frontmatter.name, s.frontmatter.description);
                 }
             }
         }
@@ -117,11 +114,23 @@ pub(super) async fn handle_command(
             if text.is_empty() {
                 eprintln!("usage: /remember <text>");
             } else {
-                use hermes_memory::{Confidence, MemoryFrontmatter, Scope as MemScope, Source as MemSource};
-                let mut fm = MemoryFrontmatter::new(MemSource::User, Confidence::High, vec![], "core".to_string());
+                use hermes_memory::{
+                    Confidence, MemoryFrontmatter, Scope as MemScope, Source as MemSource,
+                };
+                let mut fm = MemoryFrontmatter::new(
+                    MemSource::User,
+                    Confidence::High,
+                    vec![],
+                    "core".to_string(),
+                );
                 fm.pinned = true;
                 match memory_store.put(MemScope::User, fm, text) {
-                    Ok(p) => eprintln!("{} remembered: {} ({})", style::ok_mark(), text.chars().take(60).collect::<String>(), p.display()),
+                    Ok(p) => eprintln!(
+                        "{} remembered: {} ({})",
+                        style::ok_mark(),
+                        text.chars().take(60).collect::<String>(),
+                        p.display()
+                    ),
                     Err(e) => eprintln!("{} {e}", style::err_mark()),
                 }
             }
@@ -139,7 +148,10 @@ pub(super) async fn handle_command(
                     0 => eprintln!("no memory matching \"{id_prefix}\""),
                     1 => {
                         let m = matches[0];
-                        eprint!("delete \"{}\"? [y/N] ▸ ", m.body.lines().next().unwrap_or(""));
+                        eprint!(
+                            "delete \"{}\"? [y/N] ▸ ",
+                            m.body.lines().next().unwrap_or("")
+                        );
                         std::io::stderr().flush().ok();
                         let mut input = String::new();
                         if std::io::stdin().read_line(&mut input).is_ok() && input.trim() == "y" {
@@ -155,7 +167,11 @@ pub(super) async fn handle_command(
                     n => {
                         eprintln!("{n} memories match \"{id_prefix}\":");
                         for m in &matches {
-                            eprintln!("  {} — {}", m.frontmatter.id, m.body.lines().next().unwrap_or(""));
+                            eprintln!(
+                                "  {} — {}",
+                                m.frontmatter.id,
+                                m.body.lines().next().unwrap_or("")
+                            );
                         }
                         eprintln!("use a longer prefix to disambiguate");
                     }
@@ -167,7 +183,9 @@ pub(super) async fn handle_command(
                 eprintln!("(nothing to reflect on yet — send a message first)");
             } else {
                 eprintln!("{}", style::dim("(reflecting on session so far...)"));
-                if let Err(e) = crate::commands::reflect::run_with_min_turns(provider, session, 0).await {
+                if let Err(e) =
+                    crate::commands::reflect::run_with_min_turns(provider, session, 0).await
+                {
                     eprintln!("{}", style::red(&format!("(reflection failed: {e:#})")));
                 }
             }
@@ -182,7 +200,10 @@ pub(super) async fn handle_command(
                     Ok(profile) => match hermes_memory::save_profile(&profile) {
                         Ok(p) => {
                             eprint!("\r\x1b[K");
-                            eprintln!("{}", style::green(&format!("✓ profile updated ({})", p.display())));
+                            eprintln!(
+                                "{}",
+                                style::green(&format!("✓ profile updated ({})", p.display()))
+                            );
                         }
                         Err(e) => {
                             eprint!("\r\x1b[K");
@@ -219,7 +240,11 @@ pub(super) async fn handle_command(
         }
         "palace" => {
             let zones = hermes_memory::group_by_zone(active_memories);
-            eprintln!("Memory Palace: {} memories across {} zones", active_memories.len(), zones.len());
+            eprintln!(
+                "Memory Palace: {} memories across {} zones",
+                active_memories.len(),
+                zones.len()
+            );
             for (zone, mems) in &zones {
                 eprintln!("  {zone}: {} memories", mems.len());
             }
@@ -239,7 +264,10 @@ pub(super) async fn handle_command(
                     Ok(index) => match hermes_memory::save_palace_index(&index) {
                         Ok(p) => {
                             eprint!("\r\x1b[K");
-                            eprintln!("{}", style::green(&format!("✓ palace index compiled ({})", p.display())));
+                            eprintln!(
+                                "{}",
+                                style::green(&format!("✓ palace index compiled ({})", p.display()))
+                            );
                             eprintln!("(restart chat to use the new index)");
                         }
                         Err(e) => {
@@ -312,7 +340,10 @@ fn handle_skill_add(rest: &str, skill_store: &FsSkillStore) {
     };
 
     if name.contains('/') || name.contains("..") || name.contains('\\') {
-        eprintln!("{} invalid skill name (no path separators or '..')", style::err_mark());
+        eprintln!(
+            "{} invalid skill name (no path separators or '..')",
+            style::err_mark()
+        );
         return;
     }
 
@@ -331,8 +362,7 @@ fn handle_skill_add(rest: &str, skill_store: &FsSkillStore) {
 
     let body = match edit_in_editor(&format!(
         "# {}\n\n{}\n",
-        name,
-        "Describe the skill procedure here in markdown."
+        name, "Describe the skill procedure here in markdown."
     )) {
         Ok(b) => b,
         Err(e) => {
@@ -355,7 +385,11 @@ fn handle_skill_add(rest: &str, skill_store: &FsSkillStore) {
         extra: serde_yaml::Mapping::new(),
     };
     match skill_store.put(SkScope::User, fm, &body) {
-        Ok(p) => eprintln!("{} skill \"{name}\" saved: {}", style::ok_mark(), p.display()),
+        Ok(p) => eprintln!(
+            "{} skill \"{name}\" saved: {}",
+            style::ok_mark(),
+            p.display()
+        ),
         Err(e) => eprintln!("{} {e}", style::err_mark()),
     }
 }
@@ -394,7 +428,11 @@ fn handle_skill_edit(name: &str, skill_store: &FsSkillStore) {
     let scope = existing.scope;
     let fm = existing.frontmatter;
     match skill_store.put(scope, fm, &body) {
-        Ok(p) => eprintln!("{} skill \"{name}\" updated: {}", style::ok_mark(), p.display()),
+        Ok(p) => eprintln!(
+            "{} skill \"{name}\" updated: {}",
+            style::ok_mark(),
+            p.display()
+        ),
         Err(e) => eprintln!("{} {e}", style::err_mark()),
     }
 }

@@ -1,6 +1,6 @@
 //! Telegram bot-token storage.
 //!
-//! Storage path: `~/.small-rust-hermes/telegram.toml`, mode `0600`. The file
+//! Storage path: `~/.lebi-ai/telegram.toml`, mode `0600`. The file
 //! contains the bot token issued by @BotFather — treat it like an API key.
 
 use std::path::{Path, PathBuf};
@@ -17,8 +17,7 @@ pub struct StoredCreds {
 
 impl StoredCreds {
     pub fn default_path() -> Result<PathBuf> {
-        let home = dirs::home_dir().context("resolving $HOME")?;
-        Ok(home.join(".small-rust-hermes").join("telegram.toml"))
+        Ok(hermes_core::data_path("telegram.toml"))
     }
 
     /// Load credentials from `path`. Returns `Ok(None)` if the file does not
@@ -26,8 +25,8 @@ impl StoredCreds {
     pub fn load(path: &Path) -> Result<Option<Self>> {
         match std::fs::read_to_string(path) {
             Ok(s) => {
-                let c: Self = toml::from_str(&s)
-                    .with_context(|| format!("parsing {}", path.display()))?;
+                let c: Self =
+                    toml::from_str(&s).with_context(|| format!("parsing {}", path.display()))?;
                 Ok(Some(c))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

@@ -15,11 +15,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::retry::{backoff_delay, is_retriable_status, parse_retry_after, RETRY_ATTEMPTS};
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
 use hermes_core::{
-    Capabilities, CompletionRequest, CompletionResponse, ContentBlock, Error, LlmProvider,
-    Message, Result, Role, StopReason, StreamEvent, ToolSpec, Usage,
+    Capabilities, CompletionRequest, CompletionResponse, ContentBlock, Error, LlmProvider, Message,
+    Result, Role, StopReason, StreamEvent, ToolSpec, Usage,
 };
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +45,7 @@ impl OpenAiProvider {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(300))
-            .user_agent(format!("small-rust-hermes/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("lebi-ai/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| Error::Provider(format!("building http client: {e}")))?;
         Ok(Self {
@@ -65,22 +66,7 @@ impl LlmProvider for OpenAiProvider {
         let url = format!("{}/chat/completions", self.inner.base_url);
         tracing::debug!(url = %url, "openai request");
 
-        let resp = self
-            .inner
-            .client
-            .post(&url)
-            .header("authorization", format!("Bearer {}", self.inner.api_key))
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Provider(format!("http send: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Provider(format!("HTTP {status}: {text}")));
-        }
+        let resp = self.send_with_retry(&url, &body, false).await?;
 
         let parsed: ChatResponse = resp
             .json()
@@ -111,25 +97,82 @@ impl LlmProvider for OpenAiProvider {
         let body = build_request_body(&self.inner.default_model, &req, true);
         let url = format!("{}/chat/completions", self.inner.base_url);
 
-        let resp = self
-            .inner
-            .client
-            .post(&url)
-            .header("authorization", format!("Bearer {}", self.inner.api_key))
-            .header("content-type", "application/json")
-            .header("accept", "text/event-stream")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Provider(format!("http send: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Provider(format!("HTTP {status}: {text}")));
-        }
+        let resp = self.send_with_retry(&url, &body, true).await?;
 
         Ok(Box::pin(parse_openai_stream(resp.bytes_stream().boxed())))
+    }
+}
+
+impl OpenAiProvider {
+    /// POST `body` to `url`, retrying on transient errors (429 / 5xx /
+    /// network). `streaming=true` adds the `accept: text/event-stream`
+    /// header. Returns the successful response — caller decodes it.
+    /// Mirrors the Anthropic provider's policy via [`crate::retry`].
+    async fn send_with_retry<T: serde::Serialize>(
+        &self,
+        url: &str,
+        body: &T,
+        streaming: bool,
+    ) -> Result<reqwest::Response> {
+        let mut last_err: Option<String> = None;
+        for attempt in 0..=RETRY_ATTEMPTS {
+            if attempt > 0 {
+                tracing::debug!(attempt, "openai retry");
+            }
+            let mut req = self
+                .inner
+                .client
+                .post(url)
+                .header("authorization", format!("Bearer {}", self.inner.api_key))
+                .header("content-type", "application/json");
+            if streaming {
+                req = req.header("accept", "text/event-stream");
+            }
+            let send_res = req.json(body).send().await;
+
+            match send_res {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        return Ok(resp);
+                    }
+                    if is_retriable_status(status) && attempt < RETRY_ATTEMPTS {
+                        let delay =
+                            parse_retry_after(&resp).unwrap_or_else(|| backoff_delay(attempt));
+                        let text = resp.text().await.unwrap_or_default();
+                        tracing::warn!(
+                            attempt,
+                            status = %status,
+                            delay_ms = delay.as_millis(),
+                            "openai transient error, retrying"
+                        );
+                        last_err = Some(format!("HTTP {status}: {text}"));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    let text = resp.text().await.unwrap_or_default();
+                    return Err(Error::Provider(format!("HTTP {status}: {text}")));
+                }
+                Err(e) => {
+                    if attempt < RETRY_ATTEMPTS {
+                        let delay = backoff_delay(attempt);
+                        tracing::warn!(
+                            attempt,
+                            error = %e,
+                            delay_ms = delay.as_millis(),
+                            "openai network error, retrying"
+                        );
+                        last_err = Some(format!("http send: {e}"));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(Error::Provider(format!("http send: {e}")));
+                }
+            }
+        }
+        Err(Error::Provider(
+            last_err.unwrap_or_else(|| "exhausted retries".to_string()),
+        ))
     }
 }
 
@@ -217,10 +260,12 @@ fn translate_outbound(m: &Message) -> Vec<ChatMessage> {
                         // thinking is dropped.
                     }
                     ContentBlock::Image { source } => {
-                        // OpenAI ChatMessage content is plain text here; full
-                        // image_url support needs multi-part content (TODO).
-                        // Embed a placeholder so the model knows an image was
-                        // attached.
+                        // OpenAI-compat endpoints are text-only for now
+                        // (intentional degradation — same rule documented in
+                        // hermes-core message.rs). Embed a placeholder so the
+                        // model still knows an image was attached and which
+                        // media type it had; real multi-part image_url
+                        // support would be a new provider capability.
                         text_parts.push(format!("[image: {}]", source.media_type));
                     }
                 }
@@ -613,8 +658,14 @@ fn finalise(s: &mut StreamState) {
         content.push(ContentBlock::Text {
             text: std::mem::take(&mut s.text_buf),
         });
+        // Text occupies block index 0 (see `handle_line`).
+        s.pending.push_back(Ok(StreamEvent::BlockStop { index: 0 }));
     }
-    for c in s.tool_calls.drain(..) {
+    for (i, c) in s.tool_calls.drain(..).enumerate() {
+        // Tool blocks are streamed at `idx + 1` (shifted past the text block).
+        let block_index = i + 1;
+        s.pending
+            .push_back(Ok(StreamEvent::BlockStop { index: block_index }));
         let input = if c.arguments.trim().is_empty() {
             serde_json::json!({})
         } else {
@@ -630,17 +681,21 @@ fn finalise(s: &mut StreamState) {
             input,
         });
     }
-    s.pending.push_back(Ok(StreamEvent::Final(CompletionResponse {
-        content,
-        stop_reason: s.stop_reason,
-        usage: s.usage,
-        truncated_tool_ids,
-    })));
+    s.pending
+        .push_back(Ok(StreamEvent::Final(CompletionResponse {
+            content,
+            stop_reason: s.stop_reason,
+            usage: s.usage,
+            truncated_tool_ids,
+        })));
 }
 
 fn parse_usage(v: &serde_json::Value) -> Option<Usage> {
     let prompt = v.get("prompt_tokens").and_then(|n| n.as_u64()).unwrap_or(0) as u32;
-    let completion = v.get("completion_tokens").and_then(|n| n.as_u64()).unwrap_or(0) as u32;
+    let completion = v
+        .get("completion_tokens")
+        .and_then(|n| n.as_u64())
+        .unwrap_or(0) as u32;
     if prompt == 0 && completion == 0 {
         return None;
     }
@@ -717,8 +772,7 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].id, "call_1");
         assert_eq!(calls[0].function.name, "search");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&calls[0].function.arguments).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
         assert_eq!(parsed, serde_json::json!({"q":"rust"}));
     }
 
@@ -762,7 +816,9 @@ mod tests {
         let comp = parsed.into_completion();
         assert_eq!(comp.stop_reason, StopReason::ToolUse);
         assert_eq!(comp.content.len(), 2);
-        assert!(matches!(&comp.content[0], ContentBlock::Text { text } if text == "going to search"));
+        assert!(
+            matches!(&comp.content[0], ContentBlock::Text { text } if text == "going to search")
+        );
         assert!(
             matches!(&comp.content[1], ContentBlock::ToolUse { id, name, .. } if id == "call_1" && name == "search")
         );

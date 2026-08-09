@@ -1,9 +1,9 @@
-//! HTTP/WebSocket server for Hermes agents — the Flutter client backend.
+//! HTTP/WebSocket server for lebi-AI agents — the Flutter client backend.
 //!
 //! `serve(port)` builds an [`AppState`] (mirroring `hermes-gui`), wires axum
 //! routes, and serves. The chat WebSocket drives `hermes_turn::run_turn` and
-//! streams [`events::ChatStreamEvent`]s back; management endpoints
-//! (sessions/skills/memory/config/reflect) arrive in later milestones.
+//! streams [`events::ChatStreamEvent`]s back, alongside REST endpoints for
+//! sessions/skills/memory/config/reflect/uploads.
 
 pub mod auth;
 pub mod context;

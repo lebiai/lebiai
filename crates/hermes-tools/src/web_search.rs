@@ -153,9 +153,17 @@ async fn scraper_search(query: &str, limit: usize) -> Result<String> {
         .await
         .map_err(|e| hermes_core::Error::ToolHost(format!("web_search fetch: {e}")))?;
     if !resp.status().is_success() {
+        let code = resp.status().as_u16();
+        let hint = if code == 429 {
+            "Brave HTML scraper rate-limited. In ~/.lebi-ai/config.toml set \
+             [web] search_backend = \"tavily\" and tavily_api_key = \"…\" \
+             (or search_backend = \"brave_api\" and brave_api_key = \"…\"), then restart. \
+             Or wait a few minutes and retry with fewer searches."
+        } else {
+            "Brave scraper failed; consider configuring a search API key under [web] in config.toml"
+        };
         return Err(hermes_core::Error::ToolHost(format!(
-            "HTTP {} (Brave scraper may be rate-limited; consider configuring a search API key)",
-            resp.status()
+            "HTTP {code} ({hint})"
         )));
     }
     let body = resp
@@ -420,9 +428,21 @@ mod tests {
     #[test]
     fn dedupe_keeps_first_per_domain() {
         let results = vec![
-            SearchResult { title: "a".into(), url: "https://x.com/1".into(), snippet: String::new() },
-            SearchResult { title: "b".into(), url: "https://x.com/2".into(), snippet: String::new() },
-            SearchResult { title: "c".into(), url: "https://y.com/1".into(), snippet: String::new() },
+            SearchResult {
+                title: "a".into(),
+                url: "https://x.com/1".into(),
+                snippet: String::new(),
+            },
+            SearchResult {
+                title: "b".into(),
+                url: "https://x.com/2".into(),
+                snippet: String::new(),
+            },
+            SearchResult {
+                title: "c".into(),
+                url: "https://y.com/1".into(),
+                snippet: String::new(),
+            },
         ];
         let deduped = dedupe_by_domain(results);
         assert_eq!(deduped.len(), 2);

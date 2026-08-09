@@ -160,7 +160,11 @@ fn focused_user_prompt(recent: &[Message], hint: Option<&str>) -> String {
                         content, is_error, ..
                     } => {
                         let preview = truncate(content, 400);
-                        let tag = if *is_error { "tool_error" } else { "tool_result" };
+                        let tag = if *is_error {
+                            "tool_error"
+                        } else {
+                            "tool_result"
+                        };
                         buf.push_str(&format!("[{role} {tag}] {preview}\n"));
                     }
                 }

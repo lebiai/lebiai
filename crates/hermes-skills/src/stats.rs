@@ -1,13 +1,13 @@
 //! Skill effectiveness tracking: record when a skill is matched vs actually
-//! used (its body content appears in the assistant's response). Skills with
-//! low used/match ratio get deprioritized in matching.
+//! used (a turn counts as "used" when it has real output — tool calls or
+//! >=40 chars of text). Skills with low used/match ratio are factored into relevance scoring.
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,8 +25,7 @@ pub enum SkillEvent {
 }
 
 fn default_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("resolving $HOME")?;
-    Ok(home.join(".small-rust-hermes").join("skill-stats.jsonl"))
+    Ok(hermes_core::data_path("skill-stats.jsonl"))
 }
 
 /// Append a stat entry. Best-effort write.
@@ -108,15 +107,24 @@ mod tests {
 
     #[test]
     fn effectiveness_factor_scales() {
-        let e = SkillEffectiveness { matched: 10, used: 5 };
+        let e = SkillEffectiveness {
+            matched: 10,
+            used: 5,
+        };
         // ratio = 0.5, factor = 0.5 + 0.5 * 0.5 = 0.75
         assert!((e.factor() - 0.75).abs() < 1e-6);
 
-        let e = SkillEffectiveness { matched: 10, used: 0 };
+        let e = SkillEffectiveness {
+            matched: 10,
+            used: 0,
+        };
         // ratio = 0.0, factor = 0.5
         assert!((e.factor() - 0.5).abs() < 1e-6);
 
-        let e = SkillEffectiveness { matched: 10, used: 10 };
+        let e = SkillEffectiveness {
+            matched: 10,
+            used: 10,
+        };
         // ratio = 1.0, factor = 1.0
         assert!((e.factor() - 1.0).abs() < 1e-6);
     }

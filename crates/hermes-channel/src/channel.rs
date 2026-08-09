@@ -1,4 +1,6 @@
-//! Shared bridge layer for chat-style channels (WeChat / Feishu / Telegram).
+//! Shared chat-channel driver (hermes-channel): Channel trait, ServeCtx, per-user
+//! session persistence and the inbound-turn driver. Surfaces (CLI / GUI / IM)
+//! implement only protocol specifics and call [`serve_inbound`].
 //!
 //! Each channel's command module (`wechat.rs`, `feishu.rs`, `telegram.rs`)
 //! owns only its protocol specifics — how it receives inbound messages and
@@ -16,34 +18,31 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use hermes_core::{ContentBlock, LlmProvider, Message, Role, SessionEvent, SessionMeta, ToolHost, ToolSpec};
-use hermes_llm::{Config, ContextLimits};
-use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryEffectiveness, MemoryStore};
-use hermes_skills::{FsSkillStore, LoadedSkill, SkillEffectiveness, SkillStore};
-use hermes_store::SessionWriter;
-use hermes_tools::SubagentContext;
-use hermes_turn::{PermissionChecker, TurnConfig, TurnEvent};
-
-use super::chat::{
-    auto_install_find_skills_skill, auto_install_palace_skill, auto_install_skill_creator_skill,
-    compose_system_prompt, inject_time_header,
+use hermes_core::{
+    ContentBlock, LlmProvider, Message, Role, SessionEvent, SessionMeta, ToolHost, ToolSpec,
 };
-use super::context::ContextSources;
-use super::util::{build_active_provider, build_web_ctx, load_tool_host};
+use hermes_llm::ContextLimits;
+use hermes_memory::{LoadedMemory, MemoryEffectiveness};
+use hermes_skills::{LoadedSkill, SkillEffectiveness};
+use hermes_store::SessionWriter;
+use hermes_turn::{TurnConfig, TurnEvent};
+
+use crate::context::ContextSources;
+use crate::system_prompt::inject_time_header;
 
 /// Tools a chat channel may invoke. The whitelist IS the safety boundary:
-/// every entry is hand-vetted for a surface with no confirmation UI. Tools
-/// marked `requires_confirmation: true` are auto-approved because
-/// `serve_inbound` passes `confirm_tx: None`; each writer tool enforces its
-/// own path/quota guards.
+/// every entry is hand-vetted for a surface with no confirmation UI.
+/// `serve_inbound` passes `confirm_tx: None` (no modal on IM), so destructive
+/// or code-installing tools (`skill_install`, `skill_delete`,
+/// `memory_delete`, `subagent`) are deliberately **not** whitelisted — they
+/// stay exclusive to surfaces with a confirmation modal (GUI/CLI).
 pub const CHAT_TOOL_WHITELIST: &[&str] = &[
     "web_search",
     "web_fetch",
     "memory_search",
     "memory_save",
-    "memory_delete",
     "palace_zones",
     "palace_read_zone",
     "palace_recall",
@@ -51,9 +50,6 @@ pub const CHAT_TOOL_WHITELIST: &[&str] = &[
     "skill_read",
     "skill_read_file",
     "skill_create",
-    "skill_install",
-    "skill_delete",
-    "subagent",
     "think",
 ];
 
@@ -71,7 +67,7 @@ pub trait Channel: Send + Sync {
     type Reply: Send + Sync + Clone + 'static;
 
     /// Channel name, used as the per-user session directory:
-    /// `~/.small-rust-hermes/sessions/{name}/{user_id}/`.
+    /// `~/.lebi-ai/sessions/{name}/{user_id}/`.
     fn name(&self) -> &str;
 
     /// Send `text` to the conversation identified by `reply`. Used for both
@@ -85,153 +81,25 @@ pub trait Channel: Send + Sync {
 /// built once at startup, reused for every inbound message. Mirrors what
 /// `hermes chat` carries on the stack.
 pub struct ServeCtx {
-    provider: Arc<dyn LlmProvider>,
-    host: Arc<dyn ToolHost>,
-    tools: Vec<ToolSpec>,
-    base_turn_cfg: TurnConfig,
-    model: String,
-    provider_name: String,
-    base_system: Option<String>,
-    palace_index: Option<String>,
-    compiled_profile: Option<String>,
-    always_active_skills: Vec<LoadedSkill>,
-    pinned_memories: Vec<LoadedMemory>,
-    active_memories: Vec<LoadedMemory>,
-    all_skills: Vec<LoadedSkill>,
-    skill_effectiveness: HashMap<String, SkillEffectiveness>,
-    memory_effectiveness: HashMap<String, MemoryEffectiveness>,
-    limits: ContextLimits,
+    pub provider: Arc<dyn LlmProvider>,
+    pub host: Arc<dyn ToolHost>,
+    pub tools: Vec<ToolSpec>,
+    pub base_turn_cfg: TurnConfig,
+    pub model: String,
+    pub provider_name: String,
+    pub base_system: Option<String>,
+    pub palace_index: Option<String>,
+    pub compiled_profile: Option<String>,
+    pub always_active_skills: Vec<LoadedSkill>,
+    pub pinned_memories: Vec<LoadedMemory>,
+    pub active_memories: Vec<LoadedMemory>,
+    pub all_skills: Vec<LoadedSkill>,
+    pub skill_effectiveness: HashMap<String, SkillEffectiveness>,
+    pub memory_effectiveness: HashMap<String, MemoryEffectiveness>,
+    pub limits: ContextLimits,
 }
 
 impl ServeCtx {
-    /// Load the default config and build the serve context.
-    pub async fn build() -> Result<Arc<Self>> {
-        let cfg = Config::load_default()
-            .context("loading config from ~/.small-rust-hermes/config.toml")?;
-        Self::build_from(&cfg).await
-    }
-
-    /// Build from an already-loaded config.
-    pub async fn build_from(cfg: &Config) -> Result<Arc<Self>> {
-        let provider_cfg = cfg.active_provider()?.clone();
-        let provider = build_active_provider(cfg)?;
-        let provider_name = provider.name().to_string();
-        let model = provider_cfg.model.clone();
-        let workspace_root = cfg.workspace.root.clone();
-
-        let memory_store_arc: Arc<dyn MemoryStore> = Arc::new(
-            FsMemoryStore::standard().map_err(|e| anyhow!("memory store: {e}"))?,
-        );
-        let skill_store_arc: Arc<FsSkillStore> =
-            Arc::new(FsSkillStore::standard().map_err(|e| anyhow!("skill store: {e}"))?);
-        auto_install_palace_skill(skill_store_arc.as_ref());
-        auto_install_skill_creator_skill(skill_store_arc.as_ref());
-        auto_install_find_skills_skill(skill_store_arc.as_ref());
-
-        // Wire up `subagent` so channel-driven skill authoring can do real
-        // evals (skill-creator's grader needs fresh child contexts).
-        let subagent_ctx = Arc::new(SubagentContext::new(
-            provider.clone(),
-            provider_cfg.model.clone(),
-            provider_cfg.max_tokens,
-            cfg.limits.max_tool_rounds,
-            PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
-            workspace_root.clone(),
-            Some(memory_store_arc.clone()),
-            Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
-        ));
-
-        let host = load_tool_host(
-            &workspace_root,
-            Some(memory_store_arc.clone()),
-            Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
-            None,
-            Some(subagent_ctx),
-            Some(build_web_ctx(cfg, provider.clone())),
-        )
-        .await?;
-        let all_tools = host
-            .list_tools()
-            .await
-            .map_err(|e| anyhow!("listing tools: {e}"))?;
-        let tools: Vec<ToolSpec> = all_tools
-            .into_iter()
-            .filter(|t| CHAT_TOOL_WHITELIST.contains(&t.name.as_str()))
-            .collect();
-        eprintln!("✓ tools ready: {} whitelisted", tools.len());
-
-        let active_memories: Vec<LoadedMemory> = memory_store_arc
-            .list_active()
-            .map_err(|e| anyhow!("listing memories: {e}"))?;
-        let pinned_memories: Vec<LoadedMemory> = active_memories
-            .iter()
-            .filter(|m| m.frontmatter.pinned)
-            .cloned()
-            .collect();
-        let all_skills: Vec<LoadedSkill> = skill_store_arc
-            .list()
-            .map_err(|e| anyhow!("listing skills: {e}"))?;
-        let always_active_skills: Vec<LoadedSkill> = all_skills
-            .iter()
-            .filter(|s| s.frontmatter.always_active)
-            .cloned()
-            .collect();
-        let skill_effectiveness: HashMap<String, SkillEffectiveness> =
-            hermes_skills::load_effectiveness().unwrap_or_default();
-        let memory_effectiveness: HashMap<String, MemoryEffectiveness> =
-            hermes_memory::load_effectiveness().unwrap_or_default();
-
-        let palace_index: Option<String> = if active_memories.is_empty() {
-            None
-        } else {
-            match hermes_memory::load_palace_index() {
-                Ok(Some(idx)) => Some(idx),
-                _ => Some(hermes_memory::build_palace_index_simple(&active_memories)),
-            }
-        };
-        let compiled_profile: Option<String> = hermes_memory::load_profile().unwrap_or(None);
-
-        eprintln!(
-            "memory:   {} active ({} pinned) · profile {}",
-            active_memories.len(),
-            pinned_memories.len(),
-            if compiled_profile.is_some() {
-                "✓"
-            } else {
-                "—"
-            },
-        );
-        eprintln!("skills:   {} loaded", all_skills.len());
-
-        let base_system = compose_system_prompt(None, &workspace_root);
-        let base_turn_cfg = TurnConfig {
-            model: model.clone(),
-            system: None,
-            max_tokens: provider_cfg.max_tokens,
-            max_tool_rounds: cfg.limits.max_tool_rounds,
-            permissions: PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
-        };
-
-        Ok(Arc::new(Self {
-            provider,
-            host,
-            tools,
-            base_turn_cfg,
-            model,
-            provider_name,
-            base_system,
-            palace_index,
-            compiled_profile,
-            always_active_skills,
-            pinned_memories,
-            active_memories,
-            all_skills,
-            skill_effectiveness,
-            memory_effectiveness,
-            limits: cfg.limits,
-        }))
-    }
-
     pub fn model(&self) -> &str {
         &self.model
     }
@@ -271,8 +139,7 @@ pub struct UserState {
 impl UserState {
     pub fn new(channel: &str, user_id: &str, model: &str, provider: &str) -> Result<Self> {
         let dir = user_session_dir(channel, user_id)?;
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("creating {}", dir.display()))?;
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let meta = SessionMeta::new(model, provider);
         let stamp = meta.created_at.format("%Y-%m-%dT%H-%M-%S");
         let short = &meta.id[..8.min(meta.id.len())];
@@ -290,15 +157,10 @@ impl UserState {
 }
 
 /// Per-user session directory:
-/// `~/.small-rust-hermes/sessions/{channel}/{sanitized_user_id}/`.
+/// `~/.lebi-ai/sessions/{channel}/{sanitized_user_id}/`.
 fn user_session_dir(channel: &str, user_id: &str) -> Result<PathBuf> {
-    let home = dirs::home_dir().context("resolving $HOME")?;
     let safe = sanitize_user_id(user_id);
-    Ok(home
-        .join(".small-rust-hermes")
-        .join("sessions")
-        .join(channel)
-        .join(safe))
+    Ok(hermes_core::data_path("sessions").join(channel).join(safe))
 }
 
 /// Channel user ids are opaque tokens; strip anything that's not a safe path char.
@@ -312,6 +174,35 @@ fn sanitize_user_id(s: &str) -> String {
             }
         })
         .collect()
+}
+
+// ===== handle_text_message ==================================================
+
+/// Handle one inbound text message under a shared per-user map: look up or
+/// create the user's session, then drive a full turn via [`serve_inbound`].
+///
+/// Shared by CLI and GUI so per-user session bookkeeping stays single-source
+/// (sessions live under `~/.lebi-ai/sessions/{channel}/{user_id}/`).
+pub async fn handle_text_message<C>(
+    ctx: &ServeCtx,
+    channel: &C,
+    users: &mut HashMap<String, UserState>,
+    user_id: &str,
+    text: String,
+    reply: C::Reply,
+) -> Result<()>
+where
+    C: Channel + Clone + Send + Sync + 'static,
+{
+    let state = match users.get_mut(user_id) {
+        Some(s) => s,
+        None => {
+            let s = UserState::new(channel.name(), user_id, ctx.model(), ctx.provider_name())?;
+            users.insert(user_id.to_string(), s);
+            users.get_mut(user_id).unwrap()
+        }
+    };
+    serve_inbound(ctx, channel, state, user_id, &text, reply).await
 }
 
 // ===== serve_inbound ========================================================

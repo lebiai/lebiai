@@ -8,7 +8,7 @@ services:
     # as a native install, so you can switch between docker and bare-metal
     # without copying state around.
     volumes:
-      - ${HERMES_HOME:-~/.small-rust-hermes}:/data/.small-rust-hermes
+      - ${LEBI_HOME:-$HOME/.lebi-ai}:/data/.lebi-ai
     environment:
       HOME: /data
       HERMES_LOG: ${HERMES_LOG:-warn,hermes_cli=info}

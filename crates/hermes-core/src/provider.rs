@@ -101,7 +101,10 @@ pub trait LlmProvider: Send + Sync {
     /// Stream a completion. The default implementation falls back to
     /// [`Self::complete`] and synthesises a single [`StreamEvent::Final`]
     /// — providers without native streaming still satisfy the contract.
-    async fn stream(&self, req: CompletionRequest) -> Result<BoxStream<'static, Result<StreamEvent>>> {
+    async fn stream(
+        &self,
+        req: CompletionRequest,
+    ) -> Result<BoxStream<'static, Result<StreamEvent>>> {
         let resp = self.complete(req).await?;
         let s = futures::stream::iter(vec![Ok(StreamEvent::Final(resp))]);
         Ok(Box::pin(s))
@@ -129,10 +132,25 @@ pub trait LlmProvider: Send + Sync {
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     MessageStart,
-    TextDelta { index: usize, text: String },
-    ThinkingDelta { index: usize, text: String },
-    ToolUseStart { index: usize, id: String, name: String },
-    ToolUseInputDelta { index: usize, partial_json: String },
-    BlockStop { index: usize },
+    TextDelta {
+        index: usize,
+        text: String,
+    },
+    ThinkingDelta {
+        index: usize,
+        text: String,
+    },
+    ToolUseStart {
+        index: usize,
+        id: String,
+        name: String,
+    },
+    ToolUseInputDelta {
+        index: usize,
+        partial_json: String,
+    },
+    BlockStop {
+        index: usize,
+    },
     Final(CompletionResponse),
 }

@@ -23,7 +23,8 @@ pub fn spec() -> ToolSpec {
             modifying existing files — it is safer and uses fewer output tokens. \
             `old_string` must match exactly (including whitespace and indentation) \
             and must be unique in the file unless `replace_all` is true. \
-            Always `read` the file first to find the precise text to replace.".into(),
+            Always `read` the file first to find the precise text to replace."
+            .into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -34,7 +35,8 @@ pub fn spec() -> ToolSpec {
             },
             "required": ["path", "old_string", "new_string"]
         }),
-        requires_confirmation: true,
+        // Workspace-scoped edits are normal; path escape is hard-blocked in safety.
+        requires_confirmation: false,
     }
 }
 
@@ -74,7 +76,11 @@ pub async fn run(workspace: &Path, args: serde_json::Value) -> Result<ToolCallOu
         .map_err(|e| hermes_core::Error::ToolHost(format!("edit write {}: {e}", path.display())))?;
 
     Ok(ToolCallOutcome {
-        content: format!("edited {}: {} replacement(s)", a.path, if a.replace_all { count } else { 1 }),
+        content: format!(
+            "edited {}: {} replacement(s)",
+            a.path,
+            if a.replace_all { count } else { 1 }
+        ),
         is_error: false,
     })
 }

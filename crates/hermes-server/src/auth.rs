@@ -26,10 +26,9 @@ pub struct TokenOpts {
     pub file: Option<PathBuf>,
 }
 
-/// Default token file: `~/.small-rust-hermes/server.token`.
+/// Default token file: `~/.lebi-ai/server.token`.
 pub fn default_token_path() -> anyhow::Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("could not resolve $HOME"))?;
-    Ok(home.join(".small-rust-hermes").join("server.token"))
+    Ok(hermes_core::data_path("server.token"))
 }
 
 /// Resolve the server token by precedence. If none of the explicit sources

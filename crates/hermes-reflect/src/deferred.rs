@@ -5,7 +5,7 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::output::{MemoryCandidate, SkillCandidate};
@@ -20,8 +20,7 @@ pub enum DeferredCandidate {
 }
 
 fn default_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("resolving $HOME")?;
-    Ok(home.join(".small-rust-hermes").join("deferred.jsonl"))
+    Ok(hermes_core::data_path("deferred.jsonl"))
 }
 
 /// Append a deferred candidate. Best-effort write.
@@ -86,6 +85,7 @@ mod tests {
         let c1 = DeferredCandidate::Memory(MemoryCandidate {
             fact: "user prefers anyhow".into(),
             tags: vec!["rust".into()],
+            zone: "preferences".into(),
             scope: Scope::User,
             confidence: Confidence::High,
             rationale: "explicit".into(),

@@ -1,5 +1,6 @@
-//! Route table. All endpoints under `/api/v1`. Maps 1:1 to the
-//! `hermes-gui` Tauri commands.
+//! Route table. All endpoints under `/api/v1`.
+//! Serves the Flutter client surface: a subset of the `hermes-gui`
+//! Tauri commands (chat via WebSocket frames) — NOT a 1:1 mirror.
 
 use std::sync::Arc;
 
@@ -18,6 +19,7 @@ pub mod memory;
 pub mod reflect;
 pub mod sessions;
 pub mod skills;
+pub mod uploads;
 
 /// Build the full router with shared `Arc<AppState>`, every route gated by
 /// the bearer-token auth middleware (header **or** `?token=` query, so it
@@ -74,6 +76,12 @@ pub fn build(state: Arc<AppState>, token: Arc<String>) -> Router {
             post(reflect::accept_memory_candidate),
         )
         .route("/api/v1/reflect/conflict", post(reflect::handle_conflict))
+        // document import (1:1 GUI upload commands)
+        .route(
+            "/api/v1/uploads/converter",
+            get(uploads::check_document_converter),
+        )
+        .route("/api/v1/uploads", post(uploads::import_document_handler))
         .layer(from_fn_with_state(token, auth_middleware))
         .with_state(state)
 }

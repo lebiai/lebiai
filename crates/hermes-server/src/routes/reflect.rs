@@ -4,9 +4,8 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::Json;
-use hermes_memory::{
-    Confidence, FsMemoryStore, MemoryFrontmatter, MemoryStore, Scope, Source,
-};
+use hermes_memory::{Confidence, FsMemoryStore, MemoryFrontmatter, MemoryStore, Scope, Source};
+use hermes_reflect::{log_append, ActionTaken, CandidateKind, ReflectLogEntry};
 use hermes_skills::{SkillFrontmatter, SkillStore};
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +37,7 @@ pub struct SkillCandidateView {
 pub struct MemoryCandidateView {
     pub fact: String,
     pub tags: Vec<String>,
+    pub zone: String,
     pub scope: String,
     pub confidence: String,
     pub rationale: String,
@@ -68,7 +68,8 @@ pub async fn run_reflection(
     let skills = state.skill_store.list().unwrap_or_default();
     let memories = state.memory_store.list_active().unwrap_or_default();
 
-    let output = hermes_reflect::reflect(state.provider.as_ref(), &session, &skills, &memories)
+    let provider = state.provider.read().unwrap().clone();
+    let output = hermes_reflect::reflect(provider.as_ref(), &session, &skills, &memories)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -92,6 +93,7 @@ pub async fn run_reflection(
             .map(|c| MemoryCandidateView {
                 fact: c.fact.clone(),
                 tags: c.tags.clone(),
+                zone: c.zone.clone(),
                 scope: format!("{:?}", c.scope),
                 confidence: format!("{:?}", c.confidence),
                 rationale: c.rationale.clone(),
@@ -133,10 +135,18 @@ pub async fn accept_skill_candidate(
         always_active: false,
         extra: Default::default(),
     };
+    let skill_name = fm.name.clone();
     state
         .skill_store
         .put(hermes_skills::Scope::User, fm, &b.body)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    log_append(ReflectLogEntry {
+        at: chrono::Utc::now(),
+        session_id: "server:accept_skill".into(),
+        kind: CandidateKind::Skill,
+        action: ActionTaken::Accept,
+        label: skill_name,
+    });
     Ok(Json(()))
 }
 
@@ -148,6 +158,8 @@ pub struct AcceptMemoryBody {
     pub scope: String,
     pub confidence: String,
     pub supersedes: Vec<String>,
+    #[serde(default)]
+    pub zone: Option<String>,
 }
 
 pub async fn accept_memory_candidate(
@@ -156,9 +168,22 @@ pub async fn accept_memory_candidate(
 ) -> Result<Json<()>, ApiError> {
     let s = parse_scope(&b.scope);
     let conf = parse_confidence(&b.confidence);
-    let mut fm = MemoryFrontmatter::new(Source::Reflection, conf, b.tags, "general".to_string());
+    let zone = b
+        .zone
+        .map(|z| z.trim().to_string())
+        .filter(|z| !z.is_empty())
+        .unwrap_or_else(|| "general".to_string());
+    let mut fm = MemoryFrontmatter::new(Source::Reflection, conf, b.tags, zone);
     fm.supersedes = b.supersedes;
+    let label = b.fact.lines().next().unwrap_or("").to_string();
     put_memory_with_fallback(&state.memory_store, s, fm, &b.fact)?;
+    log_append(ReflectLogEntry {
+        at: chrono::Utc::now(),
+        session_id: "server:accept_memory".into(),
+        kind: CandidateKind::Memory,
+        action: ActionTaken::Accept,
+        label,
+    });
     Ok(Json(()))
 }
 
@@ -173,6 +198,8 @@ pub struct HandleConflictBody {
     pub old_id: String,
     pub action: String,
     pub merged_body: Option<String>,
+    #[serde(default)]
+    pub zone: Option<String>,
 }
 
 pub async fn handle_conflict(
@@ -181,6 +208,21 @@ pub async fn handle_conflict(
 ) -> Result<Json<()>, ApiError> {
     let s = parse_scope(&b.scope);
     let conf = parse_confidence(&b.confidence);
+    let zone = b
+        .zone
+        .map(|z| z.trim().to_string())
+        .filter(|z| !z.is_empty())
+        .unwrap_or_else(|| "general".to_string());
+    let label = b.fact.lines().next().unwrap_or("").to_string();
+    let log = |action: ActionTaken| {
+        log_append(ReflectLogEntry {
+            at: chrono::Utc::now(),
+            session_id: "server:conflict".into(),
+            kind: CandidateKind::ConflictMemory,
+            action,
+            label: label.clone(),
+        });
+    };
 
     match b.action.as_str() {
         "keep_new" => {
@@ -188,10 +230,10 @@ pub async fn handle_conflict(
             if !sup.iter().any(|id| id == &b.old_id) {
                 sup.push(b.old_id);
             }
-            let mut fm =
-                MemoryFrontmatter::new(Source::Reflection, conf, b.tags, "general".to_string());
+            let mut fm = MemoryFrontmatter::new(Source::Reflection, conf, b.tags, zone);
             fm.supersedes = sup;
             put_memory_with_fallback(&state.memory_store, s, fm, &b.fact)?;
+            log(ActionTaken::Accept);
         }
         "merge" => {
             let body = b
@@ -203,10 +245,10 @@ pub async fn handle_conflict(
             if !sup.iter().any(|id| id == &b.old_id) {
                 sup.push(b.old_id);
             }
-            let mut fm =
-                MemoryFrontmatter::new(Source::Reflection, conf, b.tags, "general".to_string());
+            let mut fm = MemoryFrontmatter::new(Source::Reflection, conf, b.tags, zone);
             fm.supersedes = sup;
             put_memory_with_fallback(&state.memory_store, s, fm, &body)?;
+            log(ActionTaken::Merge);
         }
         "scope_split" => {
             let opposite = match s {
@@ -215,12 +257,12 @@ pub async fn handle_conflict(
             };
             let mut sup = b.supersedes;
             sup.retain(|id| id != &b.old_id);
-            let mut fm =
-                MemoryFrontmatter::new(Source::Reflection, conf, b.tags, "general".to_string());
+            let mut fm = MemoryFrontmatter::new(Source::Reflection, conf, b.tags, zone);
             fm.supersedes = sup;
             put_memory_with_fallback(&state.memory_store, opposite, fm, &b.fact)?;
+            log(ActionTaken::ScopeSplit);
         }
-        "keep_old" | "skip" => {}
+        "keep_old" | "skip" => log(ActionTaken::Reject),
         other => {
             return Err(ApiError::Internal(format!(
                 "unknown conflict action: {other}"

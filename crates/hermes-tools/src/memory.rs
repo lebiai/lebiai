@@ -3,7 +3,8 @@
 use hermes_core::{Result, ToolCallOutcome, ToolSpec};
 use hermes_memory::{
     distill::{find_clusters, DEFAULT_THRESHOLD},
-    load_effectiveness, Confidence, MemoryFrontmatter, MemoryStore, Scope, Source,
+    load_effectiveness, Confidence, MemoryFrontmatter, MemoryStore, MemoryStoreError, Scope,
+    Source, DEFAULT_DEDUP_THRESHOLD,
 };
 use serde::Deserialize;
 
@@ -116,7 +117,8 @@ pub fn save_spec() -> ToolSpec {
             },
             "required": ["content"]
         }),
-        requires_confirmation: true,
+        // Normal knowledge write — open by default; memory_delete stays gated.
+        requires_confirmation: false,
     }
 }
 
@@ -137,6 +139,34 @@ pub async fn save_run(store: &dyn MemoryStore, args: serde_json::Value) -> Resul
     // caller's list if provided (the distill flow uses this to retire the
     // members of a merged cluster).
     fm.supersedes = a.supersedes;
+
+    // Plain saves (no supersedes) reject near-duplicates of active memories.
+    // Intentional replace/merge via supersedes skips the gate so distill and
+    // conflict resolution can write the survivor body.
+    if fm.supersedes.is_empty() {
+        match store.check_near_duplicate(&a.content, DEFAULT_DEDUP_THRESHOLD) {
+            Ok(()) => {}
+            Err(MemoryStoreError::Conflict {
+                existing_id,
+                similarity,
+            }) => {
+                return Ok(ToolCallOutcome {
+                    content: format!(
+                        "memory_save refused: too similar to existing memory {existing_id} \
+                         (similarity {similarity:.2}). Use memory_search to review it, or \
+                         call memory_save with supersedes=[\"{existing_id}\"] to replace it."
+                    ),
+                    is_error: true,
+                });
+            }
+            Err(e) => {
+                return Ok(ToolCallOutcome {
+                    content: format!("memory_save failed (dedup check): {e}"),
+                    is_error: true,
+                });
+            }
+        }
+    }
 
     match store.put(Scope::User, fm, &a.content) {
         Ok(path) => Ok(ToolCallOutcome {
@@ -481,6 +511,55 @@ mod tests {
         let args = serde_json::json!({"content": "plain fact"});
         let out = save_run(&store, args).await.unwrap();
         assert!(!out.is_error);
+        assert_eq!(store.list_active().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn save_run_rejects_near_duplicate_without_supersedes() {
+        let (_dir, store) = fresh_store();
+        let first = serde_json::json!({
+            "content": "The user prefers vim as their primary editor"
+        });
+        let out1 = save_run(&store, first).await.unwrap();
+        assert!(!out1.is_error, "{}", out1.content);
+
+        let second = serde_json::json!({
+            "content": "User prefers vim as the primary editor"
+        });
+        let out2 = save_run(&store, second).await.unwrap();
+        assert!(
+            out2.is_error,
+            "expected near-dup refusal, got: {}",
+            out2.content
+        );
+        assert!(
+            out2.content.contains("too similar") || out2.content.contains("supersedes"),
+            "{}",
+            out2.content
+        );
+        assert_eq!(store.list_active().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn save_run_allows_near_duplicate_when_superseding() {
+        let (_dir, store) = fresh_store();
+        let old =
+            MemoryFrontmatter::new(Source::User, Confidence::Medium, vec![], "general".into());
+        let old_id = old.id.clone();
+        store
+            .put(
+                Scope::User,
+                old,
+                "The user prefers vim as their primary editor",
+            )
+            .unwrap();
+
+        let args = serde_json::json!({
+            "content": "User prefers vim as the primary editor",
+            "supersedes": [old_id]
+        });
+        let out = save_run(&store, args).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
         assert_eq!(store.list_active().unwrap().len(), 1);
     }
 }

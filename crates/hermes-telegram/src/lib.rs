@@ -1,4 +1,4 @@
-//! Telegram Bot API client for Hermes.
+//! Telegram Bot API client for lebi-AI.
 //!
 //! Mirrors the shape of `hermes-weixin` (HTTP long-poll) rather than
 //! `hermes-feishu` (WebSocket) — Telegram's Bot API is plain HTTP: a

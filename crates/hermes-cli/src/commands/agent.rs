@@ -2,7 +2,8 @@
 //!
 //! Mirrors the `hermes chat` subsystem wiring: loads skills, memories,
 //! memory-backed tool host, session persistence, workspace system prompt,
-//! context assembly, and end-of-session reflection.
+//! and context assembly. (No end-of-session reflection in agent mode —
+//! run `hermes chat` or the GUI for reflection candidates.)
 
 use std::io::Write;
 use std::sync::Arc;
@@ -19,7 +20,11 @@ use super::util::{build_active_provider, build_web_ctx, load_tool_host, session_
 use super::{style, toolfmt};
 use hermes_tools::SubagentContext;
 
-pub async fn run(goal: String, system: Option<String>, max_iterations: Option<usize>) -> Result<()> {
+pub async fn run(
+    goal: String,
+    system: Option<String>,
+    max_iterations: Option<usize>,
+) -> Result<()> {
     let cfg = super::util::load_config_or_hint()?;
     let provider_cfg = cfg.active_provider()?.clone();
     let provider = build_active_provider(&cfg)?;
@@ -28,12 +33,10 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
     let workspace_root = cfg.workspace.root.clone();
 
     // --- memory store (enables memory_search tool) ---
-    let memory_store_arc: Arc<dyn MemoryStore> = Arc::new(
-        FsMemoryStore::standard().map_err(|e| anyhow::anyhow!("memory store: {e}"))?,
-    );
-    let skill_store_arc: Arc<FsSkillStore> = Arc::new(
-        FsSkillStore::standard().map_err(|e| anyhow::anyhow!("skill store: {e}"))?,
-    );
+    let memory_store_arc: Arc<dyn MemoryStore> =
+        Arc::new(FsMemoryStore::standard().map_err(|e| anyhow::anyhow!("memory store: {e}"))?);
+    let skill_store_arc: Arc<FsSkillStore> =
+        Arc::new(FsSkillStore::standard().map_err(|e| anyhow::anyhow!("skill store: {e}"))?);
     super::chat::auto_install_palace_skill(skill_store_arc.as_ref());
     super::chat::auto_install_skill_creator_skill(skill_store_arc.as_ref());
     super::chat::auto_install_find_skills_skill(skill_store_arc.as_ref());
@@ -173,13 +176,11 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
 
     let history: Vec<Message> = Vec::new();
     let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-    let (confirm_tx, mut confirm_rx) =
-        tokio::sync::mpsc::channel::<hermes_turn::ConfirmRequest>(8);
+    let (confirm_tx, mut confirm_rx) = tokio::sync::mpsc::channel::<hermes_turn::ConfirmRequest>(8);
 
     // --- confirmation task: prompt user for dangerous tools ---
     let confirm_task = tokio::spawn(async move {
-        let mut always_allow: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut always_allow: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut first_prompt = true;
         while let Some(req) = confirm_rx.recv().await {
             if always_allow.contains(&req.tool_name) {
@@ -192,6 +193,9 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
                     style::faint("  (y = yes, a = always allow this tool, N = deny, or type a reason to deny with feedback)")
                 );
                 first_prompt = false;
+            }
+            if let Some(reason) = &req.reason {
+                eprintln!("{} {}", style::bold_yellow("  ⚠ why"), reason);
             }
             eprint!(
                 "{} {}: {}  {} ",
@@ -235,63 +239,98 @@ pub async fn run(goal: String, system: Option<String>, max_iterations: Option<us
         }
     };
 
-    let on_event = |event: AgentEvent| {
-        match event {
-            AgentEvent::TurnStart { iteration, max } => {
-                eprintln!("{}", style::bold(&format!("--- Iteration {iteration}/{max} ---")));
+    let on_event = |event: AgentEvent| match event {
+        AgentEvent::TurnStart { iteration, max } => {
+            eprintln!(
+                "{}",
+                style::bold(&format!("--- Iteration {iteration}/{max} ---"))
+            );
+        }
+        AgentEvent::TurnEvent(te) => match te {
+            TurnEvent::TextDelta(text) => {
+                flush_thinking(&thinking_buf);
+                print!("{text}");
+                std::io::stdout().flush().ok();
             }
-            AgentEvent::TurnEvent(te) => match te {
-                TurnEvent::TextDelta(text) => {
-                    flush_thinking(&thinking_buf);
-                    print!("{text}");
-                    std::io::stdout().flush().ok();
-                }
-                TurnEvent::ThinkingDelta(text) => {
-                    let mut buf = thinking_buf.lock().unwrap();
-                    buf.push_str(&text);
-                    let preview: String = buf.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
-                    let preview = preview.replace('\n', " ");
-                    drop(buf);
-                    eprint!("\r\x1b[K{}", style::dim(&format!("  💭 {preview}")));
-                    std::io::stderr().flush().ok();
-                }
-                TurnEvent::ToolUseStart { name, .. } => {
-                    flush_thinking(&thinking_buf);
-                    eprint!("\r\x1b[K{}", style::yellow(&format!("  {}", toolfmt::friendly_tool_desc(&name))));
-                    std::io::stderr().flush().ok();
-                }
-                TurnEvent::ToolExecStart { name, input, .. } => {
-                    eprint!("\r\x1b[K");
-                    eprintln!("{}", style::yellow(&format!("  {}", toolfmt::friendly_tool_result(&name, &input, &workspace_root))));
-                }
-                TurnEvent::ToolUseResult { content, is_error, .. } => {
-                    if is_error {
-                        eprintln!("{}", style::red(&format!("  ✗ {}", content.lines().next().unwrap_or(""))));
-                    }
-                }
-                TurnEvent::ToolConfirmPending { tool_name, summary, .. } => {
-                    tracing::debug!(tool_name, summary, "tool confirmation pending");
-                }
-                TurnEvent::Usage { .. } | TurnEvent::Done => {}
-                TurnEvent::Error(msg) => {
-                    eprintln!("{}", style::red(&format!("  error: {msg}")));
-                }
-            },
-            AgentEvent::TurnEnd { iteration } => {
-                eprintln!("\n{}", style::faint(&format!("  iteration {iteration} done")));
+            TurnEvent::ThinkingDelta(text) => {
+                let mut buf = thinking_buf.lock().unwrap();
+                buf.push_str(&text);
+                let preview: String = buf
+                    .chars()
+                    .rev()
+                    .take(60)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                let preview = preview.replace('\n', " ");
+                drop(buf);
+                eprint!("\r\x1b[K{}", style::dim(&format!("  💭 {preview}")));
+                std::io::stderr().flush().ok();
             }
-            AgentEvent::Compacted { removed } => {
-                eprintln!("{}", style::faint(&format!("  🗜 compacted: removed {removed} messages")));
+            TurnEvent::ToolUseStart { name, .. } => {
+                flush_thinking(&thinking_buf);
+                eprint!(
+                    "\r\x1b[K{}",
+                    style::yellow(&format!("  {}", toolfmt::friendly_tool_desc(&name)))
+                );
+                std::io::stderr().flush().ok();
             }
-            AgentEvent::GoalComplete { summary } => {
-                eprintln!("\n{} {summary}", style::green("✓ Goal complete:"));
+            TurnEvent::ToolExecStart { name, input, .. } => {
+                eprint!("\r\x1b[K");
+                eprintln!(
+                    "{}",
+                    style::yellow(&format!(
+                        "  {}",
+                        toolfmt::friendly_tool_result(&name, &input, &workspace_root)
+                    ))
+                );
             }
-            AgentEvent::GoalFailed { reason } => {
-                eprintln!("\n{} {reason}", style::red("✗ Goal failed:"));
+            TurnEvent::ToolUseResult {
+                content, is_error, ..
+            } => {
+                if is_error {
+                    eprintln!(
+                        "{}",
+                        style::red(&format!("  ✗ {}", content.lines().next().unwrap_or("")))
+                    );
+                }
             }
-            AgentEvent::MaxIterationsReached => {
-                eprintln!("\n{}", style::yellow(&format!("⚠ Max iterations ({max_iterations}) reached without completion.")));
+            TurnEvent::ToolConfirmPending {
+                tool_name, summary, ..
+            } => {
+                tracing::debug!(tool_name, summary, "tool confirmation pending");
             }
+            TurnEvent::Usage { .. } | TurnEvent::Done | TurnEvent::Cancelled => {}
+            TurnEvent::Error(msg) => {
+                eprintln!("{}", style::red(&format!("  error: {msg}")));
+            }
+        },
+        AgentEvent::TurnEnd { iteration } => {
+            eprintln!(
+                "\n{}",
+                style::faint(&format!("  iteration {iteration} done"))
+            );
+        }
+        AgentEvent::Compacted { removed } => {
+            eprintln!(
+                "{}",
+                style::faint(&format!("  🗜 compacted: removed {removed} messages"))
+            );
+        }
+        AgentEvent::GoalComplete { summary } => {
+            eprintln!("\n{} {summary}", style::green("✓ Goal complete:"));
+        }
+        AgentEvent::GoalFailed { reason } => {
+            eprintln!("\n{} {reason}", style::red("✗ Goal failed:"));
+        }
+        AgentEvent::MaxIterationsReached => {
+            eprintln!(
+                "\n{}",
+                style::yellow(&format!(
+                    "⚠ Max iterations ({max_iterations}) reached without completion."
+                ))
+            );
         }
     };
 

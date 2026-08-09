@@ -33,8 +33,7 @@ pub struct McpServerInfo {
 
 #[tauri::command]
 pub fn list_mcp_servers(_state: State<'_, AppState>) -> Result<Vec<McpServerInfo>, GuiError> {
-    let cfg =
-        hermes_mcp::McpConfig::load_default().map_err(|e| GuiError::Config(e.to_string()))?;
+    let cfg = hermes_mcp::McpConfig::load_default().map_err(|e| GuiError::Config(e.to_string()))?;
     Ok(cfg
         .servers
         .iter()
@@ -45,7 +44,11 @@ pub fn list_mcp_servers(_state: State<'_, AppState>) -> Result<Vec<McpServerInfo
                 }
                 hermes_mcp::ServerSpec::Http { url, .. } => ("http".into(), url.clone()),
             };
-            McpServerInfo { name: name.clone(), kind, detail }
+            McpServerInfo {
+                name: name.clone(),
+                kind,
+                detail,
+            }
         })
         .collect())
 }

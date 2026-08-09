@@ -21,6 +21,11 @@ use walkdir::WalkDir;
 use crate::memory::{LoadedMemory, MemoryFrontmatter, Scope};
 use hermes_store::{FrontmatterDoc, FrontmatterError};
 
+/// Cosine-similarity threshold for write-time near-duplicate rejection.
+/// Aligned with [`crate::distill::DEFAULT_THRESHOLD`]: genuine rewordings of
+/// the same fact typically score ~0.55–0.65 under TF-IDF.
+pub const DEFAULT_DEDUP_THRESHOLD: f64 = 0.55;
+
 #[derive(Debug, Error)]
 pub enum MemoryStoreError {
     #[error("memory id already exists: {0:?}")]
@@ -29,7 +34,9 @@ pub enum MemoryStoreError {
     #[error("invalid memory id {0:?}")]
     InvalidId(String),
 
-    #[error("potential conflict with existing memory {existing_id:?} (similarity {similarity:.2})")]
+    #[error(
+        "potential conflict with existing memory {existing_id:?} (similarity {similarity:.2})"
+    )]
     Conflict {
         existing_id: String,
         similarity: f64,
@@ -65,13 +72,22 @@ pub trait MemoryStore: Send + Sync {
     fn get(&self, id: &str) -> Result<Option<LoadedMemory>>;
 
     /// Persist a new memory. Refuses if the id already exists in either
-    /// scope.
+    /// scope. Does **not** reject near-duplicate *bodies* — callers that
+    /// write without a `supersedes` link should call
+    /// [`check_near_duplicate`](Self::check_near_duplicate) first (auto-accept,
+    /// plain `memory_save`). Writes that intentionally replace via
+    /// `supersedes` skip that check.
     fn put(&self, scope: Scope, frontmatter: MemoryFrontmatter, body: &str) -> Result<PathBuf>;
 
     fn delete(&self, scope: Scope, id: &str) -> Result<bool>;
 
     /// Return the top-`k` active memories most relevant to `query`.
     fn search(&self, query: &str, k: usize) -> Result<Vec<LoadedMemory>>;
+
+    /// Reject bodies that are too similar to an **active** memory
+    /// (`Err(Conflict)` when cosine similarity exceeds `threshold`).
+    /// Used as a write-time dedup gate; does not modify the store.
+    fn check_near_duplicate(&self, body: &str, threshold: f64) -> Result<()>;
 }
 
 pub struct FsMemoryStore {
@@ -79,6 +95,19 @@ pub struct FsMemoryStore {
     project_root: Option<PathBuf>,
     #[cfg(feature = "embed")]
     embed_index: Option<std::sync::Mutex<crate::embed::EmbedIndex>>,
+}
+
+impl Clone for FsMemoryStore {
+    /// Clone paths only. Embedding index is not shared (callers that need
+    /// embeddings re-enable on the new instance).
+    fn clone(&self) -> Self {
+        Self {
+            user_root: self.user_root.clone(),
+            project_root: self.project_root.clone(),
+            #[cfg(feature = "embed")]
+            embed_index: None,
+        }
+    }
 }
 
 impl FsMemoryStore {
@@ -130,16 +159,17 @@ impl FsMemoryStore {
         }
     }
 
-    /// Check if a new memory body conflicts with an existing one.
-    /// Returns `Err(MemoryStoreError::Conflict)` if similarity > threshold.
-    /// When embeddings are unavailable, falls back to TF-IDF similarity.
+    /// Embedding-based conflict check when the embed index is enabled.
+    /// Returns `Ok(())` without checking if embeddings are not active —
+    /// prefer [`MemoryStore::check_near_duplicate`] which always falls back
+    /// to TF-IDF.
     #[cfg(feature = "embed")]
     pub fn check_conflict(&self, body: &str, threshold: f64) -> Result<()> {
         if let Some(ref index) = self.embed_index {
             let mut idx = index.lock().unwrap();
-            let hits = idx.search(body, 1).map_err(|e| {
-                MemoryStoreError::Config(format!("embedding search failed: {e}"))
-            })?;
+            let hits = idx
+                .search(body, 1)
+                .map_err(|e| MemoryStoreError::Config(format!("embedding search failed: {e}")))?;
             if let Some((id, sim)) = hits.first() {
                 if *sim > threshold {
                     return Err(MemoryStoreError::Conflict {
@@ -152,16 +182,20 @@ impl FsMemoryStore {
         Ok(())
     }
 
-    /// TF-IDF based conflict check (used when embeddings are unavailable).
+    /// TF-IDF based conflict check against active memories.
     pub fn check_conflict_tfidf(&self, body: &str, threshold: f64) -> Result<()> {
+        if threshold <= 0.0 || body.trim().is_empty() {
+            return Ok(());
+        }
         let active = self.list_active()?;
-        let refs = crate::relevance::search_memories(&active, body, 1);
-        if let Some(m) = refs.first() {
-            // Re-run TF-IDF to get the actual score.
-            let score = crate::relevance::search_memories_scored(&active, body, 1)
-                .first()
-                .map(|(_, s)| *s)
-                .unwrap_or(0.0);
+        if active.is_empty() {
+            return Ok(());
+        }
+        // Single scored query is enough (top-1).
+        if let Some((m, score)) = crate::relevance::search_memories_scored(&active, body, 1)
+            .into_iter()
+            .next()
+        {
             if score > threshold {
                 return Err(MemoryStoreError::Conflict {
                     existing_id: m.id().to_string(),
@@ -172,7 +206,23 @@ impl FsMemoryStore {
         Ok(())
     }
 
-    /// `~/.small-rust-hermes/memories` + (optional) `./.small-rust-hermes/memories`.
+    fn near_duplicate_impl(&self, body: &str, threshold: f64) -> Result<()> {
+        #[cfg(feature = "embed")]
+        if self.embed_index.is_some() {
+            match self.check_conflict(body, threshold) {
+                // Embed path found a hit or ran cleanly.
+                Ok(()) => return Ok(()),
+                Err(e @ MemoryStoreError::Conflict { .. }) => return Err(e),
+                // Search/config failure → fall through to TF-IDF.
+                Err(e) => {
+                    tracing::warn!(error=%e, "embed near-duplicate check failed; using TF-IDF");
+                }
+            }
+        }
+        self.check_conflict_tfidf(body, threshold)
+    }
+
+    /// `~/.lebi-ai/memories` + (optional) `./.lebi-ai/memories`.
     pub fn standard() -> Result<Self> {
         let user = standard_user_root()?;
         let project = standard_project_root();
@@ -191,7 +241,11 @@ impl FsMemoryStore {
             return Ok(Vec::new());
         }
         let mut out = Vec::new();
-        for entry in WalkDir::new(root).max_depth(1).into_iter().filter_map(|e| e.ok()) {
+        for entry in WalkDir::new(root)
+            .max_depth(1)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             let path = entry.path();
             if !path.is_file() {
                 continue;
@@ -244,8 +298,7 @@ impl MemoryStore for FsMemoryStore {
                 superseded.insert(old.as_str());
             }
         }
-        let superseded_owned: HashSet<String> =
-            superseded.iter().map(|s| s.to_string()).collect();
+        let superseded_owned: HashSet<String> = superseded.iter().map(|s| s.to_string()).collect();
         Ok(all
             .into_iter()
             .filter(|m| !superseded_owned.contains(m.id()))
@@ -300,7 +353,11 @@ impl MemoryStore for FsMemoryStore {
             )
         })?;
         // Walk the scope directory once and delete by frontmatter-id match.
-        for entry in WalkDir::new(root).max_depth(1).into_iter().filter_map(|e| e.ok()) {
+        for entry in WalkDir::new(root)
+            .max_depth(1)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             let path = entry.path();
             if !path.is_file() || path.extension().and_then(|s| s.to_str()) != Some("md") {
                 continue;
@@ -342,6 +399,10 @@ impl MemoryStore for FsMemoryStore {
         let refs = crate::relevance::search_memories(&active, query, k);
         Ok(refs.into_iter().cloned().collect())
     }
+
+    fn check_near_duplicate(&self, body: &str, threshold: f64) -> Result<()> {
+        self.near_duplicate_impl(body, threshold)
+    }
 }
 
 fn validate_id(id: &str) -> Result<()> {
@@ -363,13 +424,11 @@ fn id_prefix(id: &str, n: usize) -> &str {
 }
 
 pub fn standard_user_root() -> Result<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| MemoryStoreError::Config("could not resolve $HOME".into()))?;
-    Ok(home.join(".small-rust-hermes").join("memories"))
+    Ok(hermes_core::data_path("memories"))
 }
 
 pub fn standard_project_root() -> Option<PathBuf> {
-    let p = PathBuf::from(".small-rust-hermes").join("memories");
+    let p = PathBuf::from(hermes_core::project_data_dirname()).join("memories");
     if p.exists() {
         Some(p)
     } else {
@@ -398,7 +457,9 @@ mod tests {
 
         let m1 = fm(vec!["rust", "convention"]);
         let id1 = m1.id.clone();
-        let path = store.put(Scope::User, m1, "use anyhow not thiserror at app layer\n").unwrap();
+        let path = store
+            .put(Scope::User, m1, "use anyhow not thiserror at app layer\n")
+            .unwrap();
         assert!(path.to_string_lossy().ends_with(".md"));
 
         let loaded = store.get(&id1).unwrap().unwrap();
@@ -435,12 +496,20 @@ mod tests {
 
         let m_old = fm(vec!["rust"]);
         let id_old = m_old.id.clone();
-        store.put(Scope::User, m_old, "use thiserror everywhere\n").unwrap();
+        store
+            .put(Scope::User, m_old, "use thiserror everywhere\n")
+            .unwrap();
 
         let mut m_new = fm(vec!["rust"]);
         m_new.supersedes = vec![id_old.clone()];
         let id_new = m_new.id.clone();
-        store.put(Scope::User, m_new, "use anyhow at app layer, thiserror in libs\n").unwrap();
+        store
+            .put(
+                Scope::User,
+                m_new,
+                "use anyhow at app layer, thiserror in libs\n",
+            )
+            .unwrap();
 
         let active = store.list_active().unwrap();
         assert_eq!(active.len(), 1);
@@ -486,8 +555,7 @@ mod tests {
 
         let listed = store.list().unwrap();
         assert_eq!(listed.len(), 2);
-        let scopes: std::collections::HashSet<Scope> =
-            listed.iter().map(|m| m.scope).collect();
+        let scopes: std::collections::HashSet<Scope> = listed.iter().map(|m| m.scope).collect();
         assert!(scopes.contains(&Scope::User));
         assert!(scopes.contains(&Scope::Project));
 
@@ -537,5 +605,81 @@ mod tests {
         assert!(store.list().unwrap().is_empty());
         assert!(store.list_active().unwrap().is_empty());
         assert!(store.list_pinned().unwrap().is_empty());
+    }
+
+    #[test]
+    fn check_near_duplicate_rejects_reworded_active_memory() {
+        let user = tempfile::tempdir().unwrap();
+        let store = FsMemoryStore::new(user.path().to_path_buf(), None);
+        let m = fm(vec!["editor"]);
+        store
+            .put(
+                Scope::User,
+                m,
+                "The user prefers vim as their primary editor",
+            )
+            .unwrap();
+
+        let err = store
+            .check_near_duplicate(
+                "User prefers vim as the primary editor",
+                DEFAULT_DEDUP_THRESHOLD,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, MemoryStoreError::Conflict { similarity, .. } if similarity > DEFAULT_DEDUP_THRESHOLD),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_near_duplicate_allows_unrelated_body() {
+        let user = tempfile::tempdir().unwrap();
+        let store = FsMemoryStore::new(user.path().to_path_buf(), None);
+        store
+            .put(
+                Scope::User,
+                fm(vec![]),
+                "The user prefers vim as their primary editor",
+            )
+            .unwrap();
+        store
+            .check_near_duplicate(
+                "The build server is named ci-prod-07",
+                DEFAULT_DEDUP_THRESHOLD,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn check_near_duplicate_ignores_superseded_memories() {
+        let user = tempfile::tempdir().unwrap();
+        let store = FsMemoryStore::new(user.path().to_path_buf(), None);
+
+        let old = fm(vec![]);
+        let old_id = old.id.clone();
+        store
+            .put(
+                Scope::User,
+                old,
+                "The user prefers vim as their primary editor",
+            )
+            .unwrap();
+
+        // Replace with an unrelated active fact so the old body is only on disk
+        // as a superseded audit record.
+        let mut newer = fm(vec![]);
+        newer.supersedes = vec![old_id];
+        store
+            .put(Scope::User, newer, "The build server is named ci-prod-07")
+            .unwrap();
+
+        // Same wording as the superseded file must not trip the gate.
+        store
+            .check_near_duplicate(
+                "The user prefers vim as their primary editor",
+                DEFAULT_DEDUP_THRESHOLD,
+            )
+            .unwrap();
     }
 }

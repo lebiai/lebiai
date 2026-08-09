@@ -40,6 +40,11 @@ sealed class ChatStreamEvent {
           description: data['description'] as String,
           body: data['body'] as String,
           triggers: (data['triggers'] as List).cast<String>()),
+      'microReflection' => MicroReflection(
+          summary: data['summary'] as String,
+          memoryCount: (data['memoryCount'] as num).toInt(),
+          skillCount: (data['skillCount'] as num).toInt(),
+          autoAccepted: (data['autoAccepted'] as num).toInt()),
       'done' => const Done(),
       _ => UnknownEvent(type: event),
     };
@@ -121,6 +126,20 @@ class SkillCandidateProposed extends ChatStreamEvent {
   final String description;
   final String body;
   final List<String> triggers;
+}
+
+class MicroReflection extends ChatStreamEvent {
+  const MicroReflection({
+    required this.summary,
+    required this.memoryCount,
+    required this.skillCount,
+    required this.autoAccepted,
+  });
+  final String summary;
+  final int memoryCount;
+  final int skillCount;
+  /// Memories auto-written by this pass (no human review needed).
+  final int autoAccepted;
 }
 
 class Done extends ChatStreamEvent {

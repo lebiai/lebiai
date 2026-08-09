@@ -1,43 +1,264 @@
-import { useRef, useEffect } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { Sparkles, X } from "lucide-react";
 import { useChatStore } from "../../store/chatStore";
+import { useUiStore } from "../../store/uiStore";
+import { useNavStore } from "../../store/navStore";
+import { isDefaultTitle } from "../../utils/sessionTitle";
+import {
+  coalesceMessagesForDisplay,
+  hasVisibleAssistantContent,
+} from "../../utils/displayMessages";
+import { Button, ui } from "../common/ui";
 import { MessageBubble } from "./MessageBubble";
 import { InputArea } from "./InputArea";
 import { StreamingBubble } from "./StreamingBubble";
 import { ConfirmModal } from "./ConfirmModal";
 import { ProposedSkillModal } from "./ProposedSkillModal";
-import { Sparkles, X } from "lucide-react";
-import { useUiStore } from "../../store/uiStore";
+import { WelcomeScenes } from "./WelcomeScenes";
+import { SetupBanner } from "./SetupBanner";
+import { MicroReviewModal } from "../reflect/MicroReviewModal";
+
+/** Enable windowing when the transcript is long enough to matter. */
+const VIRTUAL_THRESHOLD = 28;
+
+function messageKey(
+  msg: { role: string; content: unknown[]; rawStart?: number },
+  index: number
+): string {
+  if (typeof msg.rawStart === "number") {
+    return `${msg.role}-${msg.rawStart}`;
+  }
+  const text = msg.content
+    .map((b) => {
+      if (b && typeof b === "object" && "type" in b) {
+        const block = b as {
+          type: string;
+          text?: string;
+          thinking?: string;
+          id?: string;
+          name?: string;
+        };
+        if (block.type === "text") return block.text ?? "";
+        if (block.type === "thinking") return block.thinking ?? "";
+        if (block.type === "toolUse") return block.id ?? block.name ?? "";
+      }
+      return "";
+    })
+    .join("|")
+    .slice(0, 48);
+  return `${msg.role}-${index}-${text.length}-${text.slice(0, 16)}`;
+}
 
 export function ChatView() {
-  const { activeSessionId, messages, isStreaming, streamingText, streamingThinking, activeToolCalls, inputTokens, outputTokens, lastReflection, clearReflection, newSession } =
-    useChatStore();
+  const {
+    activeSessionId,
+    sessions,
+    messages,
+    isStreaming,
+    streamingText,
+    streamingThinking,
+    activeToolCalls,
+    inputTokens,
+    outputTokens,
+    lastReflection,
+    clearReflection,
+    openMicroReview,
+    microReview,
+    newSession,
+    regenerateLast,
+    editAndResend,
+  } = useChatStore();
   const t = useUiStore((s) => s.t);
+  const setComposerPrefill = useUiStore((s) => s.setComposerPrefill);
+  const setPanel = useNavStore((s) => s.setPanel);
+  const parentRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  /** Keys already present when session loaded / previously rendered — no re-enter. */
+  const knownMsgKeys = useRef<Set<string>>(new Set());
+  const seededSessionId = useRef<string | null>(null);
+  /** Keys currently playing enter animation (new turns only). */
+  const [enteringKeys, setEnteringKeys] = useState<Record<string, true>>({});
+
+  const [editDraft, setEditDraft] = useState<{
+    rawStart: number;
+    text: string;
+  } | null>(null);
+
+  const sessionTitle = useMemo(() => {
+    if (!activeSessionId) return t("chat.header");
+    const s = sessions.find((x) => x.id === activeSessionId);
+    if (!s) return t("chat.defaultTitle");
+    return isDefaultTitle(s.title) ? t("chat.defaultTitle") : s.title;
+  }, [activeSessionId, sessions, t]);
+
+  const displayMessages = useMemo(
+    () =>
+      coalesceMessagesForDisplay(messages).filter(
+        (m) => m.role === "user" || hasVisibleAssistantContent(m)
+      ),
+    [messages]
+  );
+
+  const messageKeys = useMemo(
+    () => displayMessages.map((m, i) => messageKey(m, i)),
+    [displayMessages]
+  );
+
+  /** Seed history silently on session switch; animate only keys that arrive later. */
+  useLayoutEffect(() => {
+    if (!activeSessionId) {
+      seededSessionId.current = null;
+      knownMsgKeys.current = new Set();
+      setEnteringKeys({});
+      return;
+    }
+    if (seededSessionId.current !== activeSessionId) {
+      seededSessionId.current = activeSessionId;
+      knownMsgKeys.current = new Set(messageKeys);
+      setEnteringKeys({});
+      return;
+    }
+    const fresh: Record<string, true> = {};
+    for (const k of messageKeys) {
+      if (!knownMsgKeys.current.has(k)) {
+        knownMsgKeys.current.add(k);
+        fresh[k] = true;
+      }
+    }
+    if (Object.keys(fresh).length > 0) {
+      setEnteringKeys((prev) => ({ ...prev, ...fresh }));
+    }
+  }, [activeSessionId, messageKeys]);
+
+  const markEntered = useCallback((key: string) => {
+    setEnteringKeys((prev) => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  const showWelcome =
+    !!activeSessionId && displayMessages.length === 0 && !isStreaming;
+
+  const useVirtual = displayMessages.length >= VIRTUAL_THRESHOLD;
+
+  const virtualizer = useVirtualizer({
+    count: useVirtual ? displayMessages.length : 0,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 120,
+    overscan: 6,
+  });
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingText]);
+    if (!useVirtual) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      return;
+    }
+    if (displayMessages.length > 0) {
+      virtualizer.scrollToIndex(displayMessages.length - 1, { align: "end" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only on new content / stream
+  }, [
+    displayMessages.length,
+    streamingText,
+    streamingThinking,
+    activeToolCalls.length,
+    useVirtual,
+  ]);
+
+  const handlePickPrompt = (prompt: string) => {
+    setComposerPrefill(prompt);
+  };
+
+  const lastAssistantIdx = useMemo(() => {
+    for (let i = displayMessages.length - 1; i >= 0; i--) {
+      if (displayMessages[i].role === "assistant") return i;
+    }
+    return -1;
+  }, [displayMessages]);
+
+  const onEditUser = useCallback((rawStart: number, currentText: string) => {
+    setEditDraft({ rawStart, text: currentText });
+  }, []);
+
+  const confirmEdit = () => {
+    if (!editDraft) return;
+    const { rawStart, text } = editDraft;
+    setEditDraft(null);
+    void editAndResend(rawStart, text);
+  };
 
   if (!activeSessionId) {
     return (
-      <div className="flex flex-col h-full items-center justify-center text-gray-400">
-        <p className="text-lg mb-4">{t("chat.empty")}</p>
-        <button
-          onClick={newSession}
-          className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm"
-        >
-          {t("chat.new")}
-        </button>
+      <div className={`flex flex-col h-full ${ui.page}`}>
+        <div className="flex-1 flex flex-col items-center justify-center">
+          <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-app-primary-soft dark:bg-blue-950/40 text-app-primary">
+            <Sparkles size={28} />
+          </div>
+          <p className="text-base font-medium text-app-fg dark:text-slate-100 mb-1">
+            {t("chat.empty")}
+          </p>
+          <p className="text-sm text-app-fg-secondary dark:text-slate-400 mb-5 max-w-sm text-center">
+            {t("chat.emptyHint")}
+          </p>
+          <Button
+            onClick={() => {
+              setPanel("chat");
+              void newSession();
+            }}
+          >
+            {t("chat.new")}
+          </Button>
+        </div>
       </div>
     );
   }
 
+  const renderMessage = (msg: (typeof displayMessages)[0], i: number) => {
+    const key = messageKeys[i] ?? messageKey(msg, i);
+    const enter = !!enteringKeys[key];
+    return (
+      <div
+        key={key}
+        className={enter ? "msg-enter" : undefined}
+        onAnimationEnd={(e) => {
+          if (e.target === e.currentTarget && enter) markEntered(key);
+        }}
+      >
+        <MessageBubble
+          message={msg}
+          canRegenerate={i === lastAssistantIdx && !isStreaming}
+          onRegenerate={() => void regenerateLast()}
+          onEditUser={onEditUser}
+          isStreaming={isStreaming}
+        />
+      </div>
+    );
+  };
+
   return (
-    <div className="flex flex-col h-full">
-      <header className="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-700 text-xs text-gray-500">
-        <span>{t("chat.header")}</span>
-        <span>
-          {inputTokens > 0 &&
+    <div className={`flex flex-col h-full ${ui.page}`}>
+      <header className={ui.header}>
+        <div className="min-w-0 flex-1 flex items-baseline gap-2">
+          <h1 className="text-sm font-semibold text-app-fg dark:text-slate-100 truncate min-w-0">
+            {sessionTitle}
+          </h1>
+          <span className="shrink-0 text-[11px] text-app-fg-tertiary dark:text-slate-500 whitespace-nowrap">
+            {t("chat.headerSubShort")}
+          </span>
+        </div>
+        <span className="text-[11px] tabular-nums text-app-fg-tertiary dark:text-slate-500 shrink-0">
+          {(inputTokens > 0 || outputTokens > 0) &&
             t("chat.usage", {
               input: inputTokens.toLocaleString(),
               output: outputTokens.toLocaleString(),
@@ -45,38 +266,99 @@ export function ChatView() {
         </span>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-4 py-6">
-        <div className="max-w-3xl mx-auto space-y-4">
-          {messages.map((msg, i) => (
-            <MessageBubble key={i} message={msg} />
-          ))}
+      <SetupBanner />
+
+      {/* key forces light re-enter when switching / new chat — not a blocking loader */}
+      <div
+        key={activeSessionId ?? "none"}
+        ref={parentRef}
+        className="flex-1 overflow-y-auto px-4 py-4 session-enter"
+      >
+        <div className="max-w-3xl mx-auto">
+          {showWelcome ? (
+            <WelcomeScenes onPick={handlePickPrompt} disabled={isStreaming} />
+          ) : useVirtual ? (
+            <div
+              className="relative w-full"
+              style={{ height: `${virtualizer.getTotalSize()}px` }}
+            >
+              {virtualizer.getVirtualItems().map((vr) => {
+                const msg = displayMessages[vr.index];
+                const key = messageKeys[vr.index] ?? messageKey(msg, vr.index);
+                return (
+                  <div
+                    key={key}
+                    data-index={vr.index}
+                    ref={virtualizer.measureElement}
+                    className="absolute top-0 left-0 w-full pb-5"
+                    style={{ transform: `translateY(${vr.start}px)` }}
+                  >
+                    {renderMessage(msg, vr.index)}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {displayMessages.map((msg, i) => renderMessage(msg, i))}
+            </div>
+          )}
+
           {isStreaming && (
-            <StreamingBubble
-              text={streamingText}
-              thinking={streamingThinking}
-              toolCalls={activeToolCalls}
-            />
+            <div
+              key="stream-turn"
+              className={`${useVirtual ? "pt-5" : "mt-5"} stream-enter`}
+            >
+              <StreamingBubble
+                text={streamingText}
+                thinking={streamingThinking}
+                toolCalls={activeToolCalls}
+              />
+            </div>
           )}
           <div ref={bottomRef} />
         </div>
       </div>
 
       {lastReflection && (
-        <div className="mx-4 mb-2 flex items-center gap-2 px-3 py-2 rounded-lg bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-700 text-sm">
-          <Sparkles size={14} className="text-purple-500 shrink-0" />
-          <span className="flex-1 text-purple-700 dark:text-purple-300">
-            {lastReflection.summary}
+        <div className="mx-4 mb-2 flex items-center gap-2.5 px-3.5 py-3 rounded-xl bg-app-accent-soft dark:bg-violet-950/40 border border-app-accent/30 dark:border-violet-600/50 text-sm shadow-[var(--shadow-app-card)] fade-up-in ring-1 ring-app-accent/10">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-app-accent/15 dark:bg-violet-800/50 text-app-accent dark:text-violet-300">
+            <Sparkles size={16} />
+          </div>
+          <span className="flex-1 text-violet-900 dark:text-violet-100 text-xs leading-relaxed min-w-0">
+            <span className="font-medium block sm:inline">{lastReflection.summary}</span>
             {(lastReflection.memoryCount > 0 || lastReflection.skillCount > 0) && (
-              <span className="text-xs text-purple-500 ml-2">
+              <span className="text-violet-600 dark:text-violet-300 ml-0 sm:ml-1.5 block sm:inline mt-0.5 sm:mt-0">
                 {t("chat.reflectionCounts", {
                   memory: lastReflection.memoryCount,
                   skill: lastReflection.skillCount,
                 })}
               </span>
             )}
+            {lastReflection.autoAccepted > 0 && (
+              <span className="text-emerald-600 dark:text-emerald-400 ml-0 sm:ml-1.5 block sm:inline">
+                {t("chat.microAutoAccepted", { count: lastReflection.autoAccepted })}
+              </span>
+            )}
           </span>
-          <button onClick={clearReflection} className="p-0.5 hover:bg-purple-100 dark:hover:bg-purple-800 rounded">
-            <X size={12} className="text-purple-400" />
+          {microReview &&
+            (lastReflection.memoryCount > 0 || lastReflection.skillCount > 0) && (
+              <button
+                type="button"
+                onClick={() => openMicroReview()}
+                className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-app-accent text-white hover:bg-violet-700 shadow-sm motion-safe-only"
+                style={{ animation: "ambient-breathe 2.2s ease-in-out 2" }}
+              >
+                {t("chat.microReview")}
+              </button>
+            )}
+          <button
+            type="button"
+            onClick={clearReflection}
+            className="p-1 rounded-md hover:bg-violet-100 dark:hover:bg-violet-900/50"
+            aria-label={t("common.dismiss")}
+          >
+            <X size={12} className="text-violet-400" />
           </button>
         </div>
       )}
@@ -84,6 +366,46 @@ export function ChatView() {
       <InputArea />
       <ConfirmModal />
       <ProposedSkillModal />
+      <MicroReviewModal />
+
+      {editDraft && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div
+            role="dialog"
+            aria-labelledby="edit-msg-title"
+            className="w-full max-w-lg rounded-2xl bg-app-surface dark:bg-slate-900 border border-app-border dark:border-slate-700 shadow-xl p-4 space-y-3"
+          >
+            <h2
+              id="edit-msg-title"
+              className="text-sm font-semibold text-app-fg dark:text-slate-100"
+            >
+              {t("message.editTitle")}
+            </h2>
+            <p className="text-xs text-app-fg-secondary dark:text-slate-400">
+              {t("message.editHint")}
+            </p>
+            <textarea
+              className="w-full min-h-[120px] rounded-xl border border-app-border dark:border-slate-600 bg-app-bg dark:bg-slate-950 px-3 py-2 text-sm text-app-fg dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-app-primary/40"
+              value={editDraft.text}
+              onChange={(e) =>
+                setEditDraft((d) => (d ? { ...d, text: e.target.value } : d))
+              }
+              autoFocus
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setEditDraft(null)}>
+                {t("common.cancel")}
+              </Button>
+              <Button
+                onClick={confirmEdit}
+                disabled={!editDraft.text.trim()}
+              >
+                {t("message.editSubmit")}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

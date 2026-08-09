@@ -26,7 +26,8 @@ use crate::web_cache;
 /// the extraction request's token count bounded regardless of `max_chars`.
 const EXTRACT_INPUT_CAP: usize = 48_000;
 
-const EXTRACT_SYSTEM: &str = "You extract information from a web page to answer a specific question. \
+const EXTRACT_SYSTEM: &str =
+    "You extract information from a web page to answer a specific question. \
 Use ONLY the page content provided — do not add outside knowledge. \
 Answer directly and concisely, quoting the relevant facts, figures, or quotes. \
 If the page does not contain the answer, say so explicitly rather than guessing.";
@@ -195,7 +196,13 @@ fn clean_html_to_markdown(html: &str) -> String {
 /// the result map back onto the original string.
 fn ascii_lower(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_uppercase() { c.to_ascii_lowercase() } else { c })
+        .map(|c| {
+            if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            }
+        })
         .collect()
 }
 

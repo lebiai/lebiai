@@ -40,7 +40,7 @@ class ChatDrawer extends ConsumerWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text('Hermes',
+                        Text('lebi-AI',
                             style: Theme.of(context).textTheme.titleLarge),
                         const SizedBox(height: 2),
                         _ConnectionPill(onEdit: () => _editServer(context, ref)),

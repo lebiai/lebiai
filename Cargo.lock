@@ -1998,6 +1998,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hermes-channel"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "hermes-core",
+ "hermes-llm",
+ "hermes-memory",
+ "hermes-skills",
+ "hermes-store",
+ "hermes-turn",
+ "serde_yaml",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "hermes-cli"
 version = "0.1.1"
 dependencies = [
@@ -2007,6 +2025,7 @@ dependencies = [
  "clap",
  "dirs 5.0.1",
  "futures",
+ "hermes-channel",
  "hermes-core",
  "hermes-feishu",
  "hermes-llm",
@@ -2039,9 +2058,11 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "dirs 5.0.1",
  "futures",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -2053,9 +2074,12 @@ name = "hermes-feishu"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "dirs 5.0.1",
  "futures-util",
+ "hermes-channel",
+ "hermes-core",
  "reqwest 0.12.28",
  "rustls",
  "serde",
@@ -2078,6 +2102,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "futures",
+ "hermes-channel",
  "hermes-core",
  "hermes-llm",
  "hermes-mcp",
@@ -2087,8 +2112,10 @@ dependencies = [
  "hermes-store",
  "hermes-tools",
  "hermes-turn",
+ "hermes-weixin",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tauri",
  "tauri-build",
  "thiserror 1.0.69",
@@ -2180,6 +2207,7 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
  "dirs 5.0.1",
  "futures",
  "hermes-core",
@@ -2241,7 +2269,10 @@ name = "hermes-telegram"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "dirs 5.0.1",
+ "hermes-channel",
+ "hermes-core",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2256,7 +2287,9 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
+ "encoding_rs",
  "glob",
  "hermes-core",
  "hermes-memory",
@@ -2275,6 +2308,7 @@ dependencies = [
  "tokio",
  "tracing",
  "urlencoding",
+ "uuid",
  "walkdir",
 ]
 
@@ -2282,6 +2316,7 @@ dependencies = [
 name = "hermes-turn"
 version = "0.1.1"
 dependencies = [
+ "async-trait",
  "futures",
  "hermes-core",
  "serde_json",
@@ -2294,9 +2329,12 @@ name = "hermes-weixin"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
+ "hermes-channel",
+ "hermes-core",
  "qrcode",
  "rand 0.8.6",
  "reqwest 0.12.28",

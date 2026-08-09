@@ -7,7 +7,8 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
+use async_trait::async_trait;
 use serde::Deserialize;
 
 const API_BASE: &str = "https://api.telegram.org";
@@ -15,6 +16,25 @@ const API_BASE: &str = "https://api.telegram.org";
 const LONG_POLL_TIMEOUT_SECS: u64 = 30;
 /// HTTP client timeout: long-poll window + jitter headroom.
 const HTTP_TIMEOUT_SECS: u64 = 35;
+
+/// Telegram surface adapter for the shared channel driver
+/// (`hermes_channel::Channel`): a reply is addressed by the `chat_id` (the
+/// `Client` here is aliased `TgClient` by callers).
+#[async_trait]
+impl hermes_channel::Channel for Client {
+    type Reply = i64;
+
+    fn name(&self) -> &str {
+        "telegram"
+    }
+
+    async fn send(&self, reply: &i64, text: &str) -> Result<()> {
+        self.send_message(*reply, text)
+            .await
+            .context("telegram send_message")?;
+        Ok(())
+    }
+}
 
 // ---- response envelope ----------------------------------------------------
 
@@ -109,10 +129,7 @@ impl Client {
 
     /// Send a text message to a chat.
     pub async fn send_message(&self, chat_id: i64, text: &str) -> Result<()> {
-        let form = vec![
-            ("chat_id", chat_id.to_string()),
-            ("text", text.to_string()),
-        ];
+        let form = vec![("chat_id", chat_id.to_string()), ("text", text.to_string())];
         let _: TgResponse<serde_json::Value> = self.call("sendMessage", &form).await?;
         Ok(())
     }

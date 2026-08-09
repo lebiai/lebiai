@@ -43,7 +43,9 @@ fn cap_output(s: &str, max: usize) -> String {
 pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "bash".into(),
-        description: "Run a shell command in the workspace directory. Returns stdout, stderr, and exit code.".into(),
+        description:
+            "Run a shell command in the workspace directory. Returns stdout, stderr, and exit code."
+                .into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -52,7 +54,8 @@ pub fn spec() -> ToolSpec {
             },
             "required": ["command"]
         }),
-        requires_confirmation: true,
+        // Default open; high-risk commands are gated in hermes_turn::danger.
+        requires_confirmation: false,
     }
 }
 
@@ -126,7 +129,11 @@ mod tests {
         let capped = cap_output(&s, 30_000);
         assert!(capped.contains("chars elided"));
         // Stays within the cap plus the short marker line.
-        assert!(capped.chars().count() < 31_000, "len {}", capped.chars().count());
+        assert!(
+            capped.chars().count() < 31_000,
+            "len {}",
+            capped.chars().count()
+        );
         // Head from the start, tail from the end are both preserved.
         assert!(capped.starts_with("HHH"));
         assert!(capped.ends_with("TTT"));

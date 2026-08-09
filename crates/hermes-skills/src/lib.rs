@@ -12,7 +12,9 @@ pub use install::{
 };
 pub use relevance::{match_for_query, match_for_query_hybrid, match_for_query_with_effectiveness};
 pub use skill::{LoadedSkill, Scope, SkillFrontmatter};
-pub use stats::{SkillEffectiveness, SkillEvent, SkillStatEntry, load_effectiveness, record as record_skill_stat};
+pub use stats::{
+    load_effectiveness, record as record_skill_stat, SkillEffectiveness, SkillEvent, SkillStatEntry,
+};
 pub use store::{
     standard_project_root, standard_user_root, validate_skill_name, FsSkillStore, SkillStore,
     SkillStoreError,

@@ -61,7 +61,10 @@ pub async fn run() -> Result<()> {
             } else if ws.exists() {
                 ok(&format!("workspace: {}", ws.display()));
             } else {
-                warn(&format!("workspace does not exist yet: {} (created on first use)", ws.display()));
+                warn(&format!(
+                    "workspace does not exist yet: {} (created on first use)",
+                    ws.display()
+                ));
             }
         }
         Err(e) => {
@@ -80,16 +83,23 @@ pub async fn run() -> Result<()> {
                 ok(&format!("MCP servers configured: {n}"));
             }
         }
-        Err(e) => warn(&format!("mcp.json not loaded: {e} (built-in tools still available)")),
+        Err(e) => warn(&format!(
+            "mcp.json not loaded: {e} (built-in tools still available)"
+        )),
     }
 
     eprintln!();
     if problems == 0 {
-        eprintln!("{}", style::green("All good — you're ready to `hermes chat`."));
+        eprintln!(
+            "{}",
+            style::green("All good — you're ready to `hermes chat`.")
+        );
     } else {
         eprintln!(
             "{}",
-            style::yellow(&format!("{problems} issue(s) found — see the ✗ lines above."))
+            style::yellow(&format!(
+                "{problems} issue(s) found — see the ✗ lines above."
+            ))
         );
     }
     Ok(())
@@ -102,7 +112,14 @@ fn masked(key: &str) -> String {
         "********".to_string()
     } else {
         let head: String = key.chars().take(4).collect();
-        let tail: String = key.chars().rev().take(2).collect::<Vec<_>>().into_iter().rev().collect();
+        let tail: String = key
+            .chars()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         format!("{head}…{tail}, {n} chars")
     }
 }

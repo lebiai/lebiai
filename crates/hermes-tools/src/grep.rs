@@ -47,7 +47,10 @@ pub async fn run(workspace: &Path, args: serde_json::Value) -> Result<ToolCallOu
         None => workspace.to_path_buf(),
     };
 
-    let include_glob = a.include.as_deref().and_then(|g| glob::Pattern::new(g).ok());
+    let include_glob = a
+        .include
+        .as_deref()
+        .and_then(|g| glob::Pattern::new(g).ok());
 
     let mut matches: Vec<String> = Vec::new();
     for entry in WalkDir::new(&search_root)

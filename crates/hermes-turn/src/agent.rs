@@ -188,7 +188,9 @@ where
         total_usage.cache_creation_tokens += output.usage.cache_creation_tokens;
         iterations = i + 1;
 
-        on_event(AgentEvent::TurnEnd { iteration: iterations });
+        on_event(AgentEvent::TurnEnd {
+            iteration: iterations,
+        });
 
         // Scan assistant messages for completion/failure markers.
         let last_assistant = messages.iter().rev().find(|m| m.role == Role::Assistant);
@@ -234,9 +236,8 @@ where
             total_input_tokens: 0,
             total_output_tokens: 0,
         };
-        let tools_approx = compaction::estimate_tokens(
-            &serde_json::to_string(&tools).unwrap_or_default(),
-        );
+        let tools_approx =
+            compaction::estimate_tokens(&serde_json::to_string(&tools).unwrap_or_default());
         if compaction::should_compact(
             &agent_system,
             &session,

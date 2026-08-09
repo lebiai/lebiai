@@ -22,7 +22,8 @@ pub fn spec() -> ToolSpec {
         description: "Read a file and return its contents with line numbers. \
             Use `offset` and `limit` to read specific sections of large files. \
             Always read a file before editing it to understand its structure and \
-            find the exact text to replace.".into(),
+            find the exact text to replace."
+            .into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {

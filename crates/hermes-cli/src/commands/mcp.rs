@@ -6,7 +6,7 @@ use hermes_mcp::{McpConfig, McpToolHost, ServerSpec};
 pub async fn list() -> Result<()> {
     let cfg = McpConfig::load_default()?;
     if cfg.servers.is_empty() {
-        println!("(no MCP servers configured in ~/.small-rust-hermes/mcp.json)");
+        println!("(no MCP servers configured in ~/.lebi-ai/mcp.json)");
         return Ok(());
     }
     let mut names: Vec<&String> = cfg.servers.keys().collect();

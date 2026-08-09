@@ -6,12 +6,13 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
-use base64::Engine;
+use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use rand::RngCore;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{Map, Value};
 
 use crate::types::*;
@@ -110,10 +111,7 @@ impl Client {
         if let Some(t) = timeout {
             req = req.timeout(t);
         }
-        let resp = req
-            .send()
-            .await
-            .with_context(|| format!("POST {path}"))?;
+        let resp = req.send().await.with_context(|| format!("POST {path}"))?;
         decode_json(resp, path).await
     }
 
@@ -124,10 +122,7 @@ impl Client {
     }
 
     pub async fn get_qrcode_status(&self, qrcode: &str) -> Result<QrCodeStatusResp> {
-        let path = format!(
-            "/ilink/bot/get_qrcode_status?qrcode={}",
-            urlencode(qrcode)
-        );
+        let path = format!("/ilink/bot/get_qrcode_status?qrcode={}", urlencode(qrcode));
         self.get_json(&path).await
     }
 
@@ -191,6 +186,26 @@ impl Client {
             )
             .await?;
         let _ = check_ret(env)?;
+        Ok(())
+    }
+}
+
+/// WeChat surface adapter for the shared channel driver
+/// (`hermes_channel::Channel`): a reply is addressed by the inbound message
+/// itself (its `context_token` / `client_id` must be echoed verbatim).
+#[async_trait]
+impl hermes_channel::Channel for Client {
+    type Reply = WeixinMessage;
+
+    fn name(&self) -> &str {
+        "wechat"
+    }
+
+    async fn send(&self, reply: &WeixinMessage, text: &str) -> Result<()> {
+        let out = WeixinMessage::reply_text(reply, text);
+        self.send_message(out)
+            .await
+            .context("wechat send_message")?;
         Ok(())
     }
 }

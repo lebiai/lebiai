@@ -196,7 +196,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text('Hermes'),
+                const Text('lebi-AI'),
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -270,6 +270,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     },
                   ),
           ),
+          if (state.notice != null)
+            _NoticeBanner(
+              message: state.notice!,
+              onDismiss: () =>
+                  ref.read(chatStateProvider.notifier).clearNotice(),
+            ),
           if (state.error != null)
             _ErrorBanner(
               message: state.error!,
@@ -313,7 +319,7 @@ class _EmptyState extends StatelessWidget {
             const BrandMark(size: 64),
             const SizedBox(height: HermesSpacing.lg),
             Text(
-              '你好，我是 Hermes',
+              '你好，我是乐彼AI',
               style: Theme.of(context).textTheme.headlineMedium,
             ),
             const SizedBox(height: HermesSpacing.sm),
@@ -468,6 +474,50 @@ class _PendingTile extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+// ----- Notice banner -------------------------------------------------------
+
+class _NoticeBanner extends StatelessWidget {
+  const _NoticeBanner({required this.message, required this.onDismiss});
+  final String message;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(
+          HermesSpacing.md, HermesSpacing.sm, HermesSpacing.md, 0),
+      padding: const EdgeInsets.symmetric(
+          horizontal: HermesSpacing.md, vertical: HermesSpacing.sm + 2),
+      decoration: BoxDecoration(
+        color: scheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(HermesRadius.md),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.auto_awesome, size: 18, color: scheme.onSecondaryContainer),
+          const SizedBox(width: HermesSpacing.sm),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(
+                color: scheme.onSecondaryContainer,
+                fontSize: 13,
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 16),
+            onPressed: onDismiss,
+          ),
+        ],
+      ),
     );
   }
 }

@@ -4,6 +4,7 @@
 //! enforce workspace-root boundaries for all file operations.
 
 pub mod bash;
+pub mod document_import;
 pub mod edit;
 pub mod git;
 pub mod glob;
@@ -23,6 +24,11 @@ pub mod web_cache;
 pub mod web_fetch;
 pub mod web_search;
 pub mod write;
+
+pub use document_import::{
+    check_converter, decode_bytes_base64, import_document, ConverterPathConfig, ConverterStatus,
+    ImportError, ImportRequest, ImportResult,
+};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -311,10 +317,8 @@ mod tests {
     #[tokio::test]
     async fn every_listed_tool_is_handled() {
         let dir = tempdir().unwrap();
-        let store: Arc<dyn MemoryStore> = Arc::new(FsMemoryStore::new(
-            dir.path().to_path_buf(),
-            None,
-        ));
+        let store: Arc<dyn MemoryStore> =
+            Arc::new(FsMemoryStore::new(dir.path().to_path_buf(), None));
         let host = BuiltinToolHost::new(dir.path().to_path_buf()).with_memory_store(store);
 
         let tools = host.list_tools().await.unwrap();

@@ -1,4 +1,4 @@
-//! Feishu (Lark) long-connection protocol client for Hermes.
+//! Feishu (Lark) long-connection protocol client for lebi-AI.
 //!
 //! Provides a WebSocket-based event receiver (mirroring the Go SDK's
 //! `oapi-sdk-go/ws` package) and an HTTP messaging API for sending
@@ -9,6 +9,4 @@ pub mod client;
 pub mod frame;
 
 pub use auth::StoredCreds;
-pub use client::{
-    EventPayload, FeishuClient, MessageBody, MessageReceiveEvent, Sender, SenderId,
-};
+pub use client::{EventPayload, FeishuClient, MessageBody, MessageReceiveEvent, Sender, SenderId};

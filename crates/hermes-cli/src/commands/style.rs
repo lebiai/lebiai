@@ -20,9 +20,7 @@ use std::sync::OnceLock;
 pub fn color_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
-        if std::env::var_os("CLICOLOR_FORCE")
-            .is_some_and(|v| !v.is_empty() && v != "0")
-        {
+        if std::env::var_os("CLICOLOR_FORCE").is_some_and(|v| !v.is_empty() && v != "0") {
             return true;
         }
         if std::env::var_os("NO_COLOR").is_some() {
@@ -75,12 +73,6 @@ pub fn bold(s: &str) -> String {
 /// Bold yellow (SGR 1;33) — confirmation prompts.
 pub fn bold_yellow(s: &str) -> String {
     paint("1;33", s)
-}
-
-/// Cyan (SGR 36) — headings / labels in diagnostic output.
-#[allow(dead_code)]
-pub fn cyan(s: &str) -> String {
-    paint("36", s)
 }
 
 /// Green `✓` success marker.

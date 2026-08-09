@@ -7,7 +7,7 @@ use anyhow::Result;
 use hermes_core::{LlmProvider, Session, SessionEvent, ToolHost};
 use hermes_store::SessionWriter;
 
-use super::system_prompt::inject_time_header;
+use super::inject_time_header;
 use crate::commands::{style, toolfmt};
 
 #[allow(clippy::too_many_arguments)]
@@ -30,7 +30,11 @@ pub(super) async fn run_one_turn(
     let permissions = PermissionChecker::new(&permissions_cfg.allow, &permissions_cfg.deny);
     let config = TurnConfig {
         model: model.to_string(),
-        system: if turn_system.is_empty() { None } else { Some(turn_system.to_string()) },
+        system: if turn_system.is_empty() {
+            None
+        } else {
+            Some(turn_system.to_string())
+        },
         max_tokens,
         max_tool_rounds,
         permissions,
@@ -54,8 +58,7 @@ pub(super) async fn run_one_turn(
 
     // Spawn a task that reads confirmation requests and prompts the user.
     let confirm_task = tokio::spawn(async move {
-        let mut always_allow: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut always_allow: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut first_prompt = true;
         while let Some(req) = confirm_rx.recv().await {
             if always_allow.contains(&req.tool_name) {
@@ -68,6 +71,9 @@ pub(super) async fn run_one_turn(
                     style::faint("  (y = yes, a = always allow this tool, N = deny, or type a reason to deny with feedback)")
                 );
                 first_prompt = false;
+            }
+            if let Some(reason) = &req.reason {
+                eprintln!("{} {}", style::bold_yellow("  ⚠ why"), reason);
             }
             eprint!(
                 "{} {}: {}  {} ",
@@ -125,7 +131,14 @@ pub(super) async fn run_one_turn(
                 if !text_started.load(Relaxed) {
                     let mut buf = thinking_buf.lock().unwrap();
                     buf.push_str(&text);
-                    let preview: String = buf.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
+                    let preview: String = buf
+                        .chars()
+                        .rev()
+                        .take(60)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
                     let preview = preview.replace('\n', " ");
                     drop(buf);
                     eprint!("\r\x1b[K{}", style::dim(&format!("  💭 {preview}")));
@@ -146,19 +159,35 @@ pub(super) async fn run_one_turn(
                     buf.clear();
                     thinking_started.store(false, Relaxed);
                 }
-                eprint!("{}", style::yellow(&format!("  {}", toolfmt::friendly_tool_desc(&name))));
+                eprint!(
+                    "{}",
+                    style::yellow(&format!("  {}", toolfmt::friendly_tool_desc(&name)))
+                );
                 std::io::stderr().flush().ok();
             }
             TurnEvent::ToolExecStart { name, input, .. } => {
                 eprint!("\r\x1b[K");
-                eprintln!("{}", style::yellow(&format!("  {}", toolfmt::friendly_tool_result(&name, &input, workspace))));
+                eprintln!(
+                    "{}",
+                    style::yellow(&format!(
+                        "  {}",
+                        toolfmt::friendly_tool_result(&name, &input, workspace)
+                    ))
+                );
             }
-            TurnEvent::ToolUseResult { content, is_error, .. } => {
+            TurnEvent::ToolUseResult {
+                content, is_error, ..
+            } => {
                 if is_error {
-                    eprintln!("{}", style::red(&format!("  ✗ {}", content.lines().next().unwrap_or(""))));
+                    eprintln!(
+                        "{}",
+                        style::red(&format!("  ✗ {}", content.lines().next().unwrap_or("")))
+                    );
                 }
             }
-            TurnEvent::ToolConfirmPending { tool_name, summary, .. } => {
+            TurnEvent::ToolConfirmPending {
+                tool_name, summary, ..
+            } => {
                 // The spawned confirm_task handles the actual stdin prompt.
                 // This event is for frontends that render their own UI.
                 tracing::debug!(tool_name, summary, "tool confirmation pending");
@@ -167,13 +196,22 @@ pub(super) async fn run_one_turn(
             TurnEvent::Error(msg) => {
                 eprintln!("{}", style::red(&format!("  error: {msg}")));
             }
+            TurnEvent::Cancelled => {
+                eprintln!("{}", style::dim("  (stopped)"));
+            }
             TurnEvent::Done => {}
         }
     };
 
     let result = hermes_turn::run_turn(
-        provider, host, tools, &history, &config,
-        Some(confirm_tx), on_event, cancel_rx,
+        provider,
+        host,
+        tools,
+        &history,
+        &config,
+        Some(confirm_tx),
+        on_event,
+        cancel_rx,
     )
     .await;
 

@@ -1,20 +1,20 @@
 //! QR-code login flow and persistent token storage.
 //!
-//! Storage path: `~/.small-rust-hermes/wechat.toml`, mode `0600`. The file
+//! Storage path: `~/.lebi-ai/wechat.toml`, mode `0600`. The file
 //! contains the `bot_token` which is a long-lived bearer credential — treat
 //! it like an API key.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
-use qrcode::QrCode;
+use anyhow::{anyhow, bail, Context, Result};
 use qrcode::render::unicode::Dense1x2;
+use qrcode::{Color, QrCode};
 use serde::{Deserialize, Serialize};
 
 use crate::client::{Client, DEFAULT_BASE_URL};
 
-/// Persisted creds (file under `~/.small-rust-hermes/wechat.toml`).
+/// Persisted creds (file under `~/.lebi-ai/wechat.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredCreds {
     pub bot_token: String,
@@ -35,8 +35,7 @@ fn default_base_url() -> String {
 
 impl StoredCreds {
     pub fn default_path() -> Result<PathBuf> {
-        let home = dirs::home_dir().context("resolving $HOME")?;
-        Ok(home.join(".small-rust-hermes").join("wechat.toml"))
+        Ok(hermes_core::data_path("wechat.toml"))
     }
 
     /// Load credentials from `path`. Returns `Ok(None)` if the file does
@@ -44,8 +43,8 @@ impl StoredCreds {
     pub fn load(path: &Path) -> Result<Option<Self>> {
         match std::fs::read_to_string(path) {
             Ok(s) => {
-                let c: Self = toml::from_str(&s)
-                    .with_context(|| format!("parsing {}", path.display()))?;
+                let c: Self =
+                    toml::from_str(&s).with_context(|| format!("parsing {}", path.display()))?;
                 Ok(Some(c))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -118,8 +117,7 @@ impl LoginSession {
     /// Render the scannable payload as a terminal QR (unicode half-blocks).
     /// Print the result to stdout for the user to scan with WeChat.
     pub fn render_terminal(&self) -> Result<String> {
-        let code = QrCode::new(self.qr_payload.as_bytes())
-            .context("encoding qrcode payload")?;
+        let code = QrCode::new(self.qr_payload.as_bytes()).context("encoding qrcode payload")?;
         Ok(code
             .render::<Dense1x2>()
             .dark_color(Dense1x2::Light)
@@ -128,8 +126,21 @@ impl LoginSession {
             .build())
     }
 
-    /// Re-fetch a fresh QR (used internally after the current one expires).
-    async fn refresh(&mut self) -> Result<()> {
+    /// QR module matrix (`true` = dark) for surfaces that render the QR
+    /// themselves (e.g. the GUI canvas). Row-major and square; includes the
+    /// quiet zone.
+    pub fn matrix(&self) -> Result<Vec<Vec<bool>>> {
+        let code = QrCode::new(self.qr_payload.as_bytes()).context("encoding qrcode payload")?;
+        let size = code.width();
+        let colors = code.to_colors();
+        Ok(colors
+            .chunks(size)
+            .map(|row| row.iter().map(|c| *c == Color::Dark).collect())
+            .collect())
+    }
+
+    /// Re-fetch a fresh QR after the current one expires.
+    pub async fn refresh(&mut self) -> Result<()> {
         let resp = self
             .client
             .get_bot_qrcode()
@@ -212,10 +223,11 @@ impl LoginSession {
     }
 }
 
-/// Internal sentinel for "the server says this QR is expired"; not
-/// surfaced to callers — `await_confirmation` translates it into a refresh.
+/// Sentinel for "the server says this QR is expired". Callers driving
+/// the poll loop themselves (GUI) refresh and re-render on this; CLI's
+/// `await_confirmation` translates it into an automatic refresh.
 #[derive(Debug)]
-struct ExpiredSignal;
+pub struct ExpiredSignal;
 
 impl std::fmt::Display for ExpiredSignal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

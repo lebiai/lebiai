@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/hermes-core",
+    "crates/hermes-channel",
     "crates/hermes-llm",
     "crates/hermes-mcp",
     "crates/hermes-store",
@@ -64,6 +65,7 @@ fastembed = "5"
 
 # Internal
 hermes-core = { path = "crates/hermes-core" }
+hermes-channel = { path = "crates/hermes-channel" }
 hermes-llm = { path = "crates/hermes-llm" }
 hermes-mcp = { path = "crates/hermes-mcp" }
 hermes-store = { path = "crates/hermes-store" }

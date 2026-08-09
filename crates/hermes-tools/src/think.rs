@@ -25,13 +25,13 @@ pub fn spec() -> ToolSpec {
 }
 
 pub async fn run(args: serde_json::Value) -> Result<ToolCallOutcome> {
-    let thought = args
-        .get("thought")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let thought = args.get("thought").and_then(|v| v.as_str()).unwrap_or("");
 
     Ok(ToolCallOutcome {
-        content: format!("Thought recorded ({} chars). Proceed with your plan.", thought.len()),
+        content: format!(
+            "Thought recorded ({} chars). Proceed with your plan.",
+            thought.len()
+        ),
         is_error: false,
     })
 }

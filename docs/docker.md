@@ -1,14 +1,14 @@
 # Docker 部署
 
-Hermes 提供一个 distroless 静态镜像，主要用于把 `hermes wechat run` 作为
+乐彼AI（lebi-AI）提供一个 debian-slim 运行时镜像（约 100 MB），主要用于把 `hermes wechat run` 作为
 后台长跑服务。同一个镜像也能跑 `ask` / `chat` / `run` 等任意子命令。
 
 ## 一键部署微信 Bot
 
 ```bash
 # 1. 准备配置目录（与裸机安装完全一致的布局）
-mkdir -p ~/.small-rust-hermes
-cat > ~/.small-rust-hermes/config.toml <<'EOF'
+mkdir -p ~/.lebi-ai
+cat > ~/.lebi-ai/config.toml <<'EOF'
 default_provider = "anthropic"
 
 [providers.anthropic]
@@ -16,7 +16,7 @@ base_url = "https://api.anthropic.com"
 api_key = "sk-ant-..."
 model = "claude-sonnet-4-20250514"
 EOF
-chmod 600 ~/.small-rust-hermes/config.toml
+chmod 600 ~/.lebi-ai/config.toml
 
 # 2. 构建镜像
 docker compose build
@@ -41,8 +41,8 @@ docker compose down            # 停掉并移除容器；数据卷不动
 
 ## 数据 / 配置
 
-容器里 `HOME=/data`，宿主机的 `~/.small-rust-hermes/` 会挂到
-`/data/.small-rust-hermes/`，所以 `config.toml`、`wechat.toml`、
+容器里 `HOME=/data`，宿主机的 `~/.lebi-ai/` 会挂到
+`/data/.lebi-ai/`，所以 `config.toml`、`wechat.toml`、
 `wechat-cursor.txt`、`sessions/`、`skills/`、`memories/` 全在宿主机本地，
 和裸机安装可以无缝互换。
 
@@ -59,13 +59,13 @@ HERMES_HOME=/srv/hermes-data docker compose up -d
 ```bash
 # 一次性问答
 docker run --rm \
-  -v ~/.small-rust-hermes:/data/.small-rust-hermes \
+  -v ~/.lebi-ai:/data/.lebi-ai \
   -e HOME=/data \
   hermes:latest ask "解释一下这段错误"
 
 # 交互式 chat（需要 -it）
 docker run --rm -it \
-  -v ~/.small-rust-hermes:/data/.small-rust-hermes \
+  -v ~/.lebi-ai:/data/.lebi-ai \
   -e HOME=/data \
   hermes:latest chat
 ```
@@ -77,7 +77,7 @@ docker run --rm -it \
 - TLS：`reqwest` 走 `rustls`，但传递依赖里 `aws-lc-sys` 需要 glibc，所以
   没有走纯静态 musl 路线。
 - 默认非 root 运行（uid 1000，用户名 `hermes`）。如果宿主机挂载目录是
-  root 拥有的，要么改属主 `sudo chown -R 1000:1000 ~/.small-rust-hermes`，
+  root 拥有的，要么改属主 `sudo chown -R 1000:1000 ~/.lebi-ai`，
   要么在 `docker-compose.yml` 加 `user: "${UID}:${GID}"` 跑成当前用户。
 
 ## 常见问题
@@ -94,5 +94,8 @@ docker compose restart
 ```
 
 **Q: 想自己 build 一个 arm64 / Apple Silicon 镜像？**
-A: 改 Dockerfile 里的 target 为 `aarch64-unknown-linux-musl`，
-或者用 `docker buildx build --platform linux/arm64 -t hermes:arm64 .`。
+A: 本仓库 Dockerfile 使用 glibc 工具链（`rust:1-bookworm`），直接：
+```bash
+docker buildx build --platform linux/arm64 -t hermes:arm64 .
+```
+（不提供 musl target 路线。）

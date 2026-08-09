@@ -117,9 +117,8 @@ pub fn friendly_tool_result(name: &str, input: &serde_json::Value, workspace: &P
             let n = items.map(|a| a.len()).unwrap_or(0);
             let active = items
                 .and_then(|a| {
-                    a.iter().find(|it| {
-                        it.get("status").and_then(|s| s.as_str()) == Some("in_progress")
-                    })
+                    a.iter()
+                        .find(|it| it.get("status").and_then(|s| s.as_str()) == Some("in_progress"))
                 })
                 .and_then(|it| it.get("content").and_then(|c| c.as_str()));
             match active {

@@ -8,7 +8,11 @@
 pub mod anthropic;
 pub mod config;
 pub mod openai;
+pub(crate) mod retry;
 
 pub use anthropic::AnthropicProvider;
-pub use config::{Config, ContextLimits, PermissionsConfig, ProviderConfig, ProviderKind};
+pub use config::{
+    Config, ContextLimits, PermissionsConfig, ProviderConfig, ProviderKind, ProviderPreset,
+    PROVIDER_PRESETS,
+};
 pub use openai::OpenAiProvider;

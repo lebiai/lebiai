@@ -2,23 +2,23 @@
 //!
 //! Two subcommands:
 //!   - `auth` — validate the bot token (from @BotFather) and persist it to
-//!     `~/.small-rust-hermes/telegram.toml`.
+//!     `~/.lebi-ai/telegram.toml`.
 //!   - `run`  — long-poll the Telegram Bot API and reply to inbound text
 //!     messages via the shared [`serve_inbound`] driver. Each Telegram chat
 //!     gets its own session JSONL under
-//!     `~/.small-rust-hermes/sessions/telegram/{chat_id}/`.
+//!     `~/.lebi-ai/sessions/telegram/{chat_id}/`.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
-use async_trait::async_trait;
+use anyhow::{anyhow, bail, Context, Result};
 use hermes_telegram::auth::StoredCreds;
 use hermes_telegram::client::Client as TgClient;
 
-use super::channel::{Channel, ServeCtx, UserState, serve_inbound};
+use hermes_channel::{serve_inbound, Channel, UserState};
 
 // ===== auth =================================================================
 
@@ -65,22 +65,31 @@ fn prompt_secret(label: &str) -> Result<String> {
     }
 }
 
-// ===== Channel impl =========================================================
+// ===== offset persistence ====================================================
+//
+// Mirror of the WeChat cursor pattern (`wechat-cursor.txt`): the getUpdates
+// offset survives restarts so acknowledged updates are never re-processed.
 
-/// A Telegram reply is addressed by the `chat_id` (an integer).
-#[async_trait]
-impl Channel for TgClient {
-    type Reply = i64;
+/// Path where we persist the long-poll offset between `telegram run` invocations.
+fn offset_path() -> Result<PathBuf> {
+    Ok(hermes_core::data_path("telegram-offset.txt"))
+}
 
-    fn name(&self) -> &str {
-        "telegram"
-    }
+fn read_offset() -> Option<i64> {
+    offset_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| s.trim().parse::<i64>().ok())
+}
 
-    async fn send(&self, reply: &i64, text: &str) -> Result<()> {
-        self.send_message(*reply, text)
-            .await
-            .context("telegram send_message")?;
-        Ok(())
+fn save_offset(offset: i64) {
+    if let Ok(p) = offset_path() {
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&p, offset.to_string()) {
+            tracing::warn!(error = %e, path = %p.display(), "saving offset failed");
+        }
     }
 }
 
@@ -104,7 +113,7 @@ pub async fn run() -> Result<()> {
     eprintln!("✓ Telegram client ready (@{bot_name})");
 
     // ----- shared serve context (provider/host/tools/memory/skills) ----
-    let ctx = ServeCtx::build().await?;
+    let ctx = super::chat::build_channel_ctx().await?;
 
     // ----- ctrl-c handling ---------------------------------------------
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -119,12 +128,11 @@ pub async fn run() -> Result<()> {
     }
 
     // ----- main loop: getUpdates long-poll -----------------------------
-    // offset is kept in memory only for this process; a restart re-fetches
-    // any unconfirmed updates. TODO: persist to telegram-offset.txt like the
-    // WeChat cursor.
-    let mut offset: Option<i64> = None;
+    // Offset is persisted after each acknowledged batch so a restart resumes
+    // from the last update instead of re-delivering old ones.
+    let mut offset = read_offset();
     let mut users: HashMap<i64, UserState> = HashMap::new();
-    eprintln!("📡 监听中。在 Telegram 里给 bot 发消息即可对话。");
+    eprintln!("📡 监听中（offset={offset:?}）。在 Telegram 里给 bot 发消息即可对话。");
 
     while !shutdown.load(Ordering::SeqCst) {
         let updates = match tg.get_updates(offset).await {
@@ -146,7 +154,9 @@ pub async fn run() -> Result<()> {
             // Acknowledge this update so Telegram won't redeliver it.
             offset = Some(upd.update_id + 1);
 
-            let Some(msg) = upd.message else { continue; };
+            let Some(msg) = upd.message else {
+                continue;
+            };
             let chat_id = msg.chat.id;
             let Some(text) = msg.text else {
                 // Non-text (sticker/photo/voice/...). MVP: politely decline.
@@ -173,8 +183,15 @@ pub async fn run() -> Result<()> {
                 tracing::warn!(error = format!("{e:#}"), "handling inbound message failed");
             }
         }
+
+        if let Some(o) = offset {
+            save_offset(o);
+        }
     }
 
-    eprintln!("✓ 已退出。");
+    if let Some(o) = offset {
+        save_offset(o);
+    }
+    eprintln!("✓ 已退出。offset 已保存。");
     Ok(())
 }

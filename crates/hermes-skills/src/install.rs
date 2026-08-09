@@ -71,8 +71,8 @@ pub struct DeleteOutcome {
 /// auto-install path (`include_str!` of a bundled SKILL.md) and by the
 /// install logic below after fetching a remote SKILL.md.
 pub fn parse_skill_doc(raw: &str) -> Result<(SkillFrontmatter, String)> {
-    let doc: FrontmatterDoc<SkillFrontmatter> = parse_doc_str("<skill>", raw)
-        .context("parsing SKILL.md frontmatter")?;
+    let doc: FrontmatterDoc<SkillFrontmatter> =
+        parse_doc_str("<skill>", raw).context("parsing SKILL.md frontmatter")?;
     Ok((doc.frontmatter, doc.body))
 }
 
@@ -206,9 +206,7 @@ fn build_client() -> Result<Client> {
 /// `git_ref` separately keeps things explicit.
 fn parse_slug(source: &str) -> Result<(String, String, String)> {
     let (repo_part, slug) = source.split_once('@').ok_or_else(|| {
-        anyhow!(
-            "source {source:?}: expected `owner/repo@skill-name` (or a full https:// URL)"
-        )
+        anyhow!("source {source:?}: expected `owner/repo@skill-name` (or a full https:// URL)")
     })?;
     let (owner, repo) = repo_part
         .split_once('/')
@@ -223,9 +221,7 @@ fn parse_slug(source: &str) -> Result<(String, String, String)> {
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     }
     if !ok_component(owner) || !ok_component(repo) || !ok_component(slug) {
-        bail!(
-            "source {source:?}: owner/repo/slug must be alphanumeric (with `.`, `_`, `-`)"
-        );
+        bail!("source {source:?}: owner/repo/slug must be alphanumeric (with `.`, `_`, `-`)");
     }
     Ok((owner.to_string(), repo.to_string(), slug.to_string()))
 }
@@ -248,8 +244,8 @@ fn fetch_raw_url(client: &Client, url: &str) -> Result<StagedBundle> {
             MAX_FILE_BYTES
         );
     }
-    let raw = std::str::from_utf8(&bytes)
-        .with_context(|| format!("SKILL.md at {url} is not UTF-8"))?;
+    let raw =
+        std::str::from_utf8(&bytes).with_context(|| format!("SKILL.md at {url} is not UTF-8"))?;
     let (mut fm, body) = parse_skill_doc(raw)?;
     fm.always_active = false;
     Ok(StagedBundle {
@@ -284,9 +280,7 @@ fn fetch_slug_bundle(
     walk_contents(client, owner, repo, &root_path, git_ref, &mut all_files)?;
 
     if all_files.is_empty() {
-        bail!(
-            "no files found at {owner}/{repo}:{root_path}@{git_ref} — is the slug correct?"
-        );
+        bail!("no files found at {owner}/{repo}:{root_path}@{git_ref} — is the slug correct?");
     }
     if all_files.len() > MAX_FILES {
         bail!(
@@ -313,11 +307,7 @@ fn fetch_slug_bundle(
     let skill_md = all_files
         .iter()
         .find(|e| e.path == format!("{root_path}/SKILL.md"))
-        .ok_or_else(|| {
-            anyhow!(
-                "no SKILL.md at {root_path}/ — not a valid Agent Skills directory"
-            )
-        })?
+        .ok_or_else(|| anyhow!("no SKILL.md at {root_path}/ — not a valid Agent Skills directory"))?
         .clone_self();
 
     // Download each file.
@@ -333,8 +323,7 @@ fn fetch_slug_bundle(
             .download_url
             .as_deref()
             .ok_or_else(|| anyhow!("entry {} has no download_url", entry.path))?;
-        let body = http_get_bytes(client, dl)
-            .with_context(|| format!("downloading {dl}"))?;
+        let body = http_get_bytes(client, dl).with_context(|| format!("downloading {dl}"))?;
         if body.len() as u64 > MAX_FILE_BYTES {
             bail!(
                 "{} body is {} bytes (cap {MAX_FILE_BYTES}); refused to keep partial install",
@@ -373,9 +362,7 @@ fn walk_contents(
     git_ref: &str,
     out: &mut Vec<ContentsEntry>,
 ) -> Result<()> {
-    let url = format!(
-        "https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={git_ref}"
-    );
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={git_ref}");
     let resp = client
         .get(&url)
         .header("Accept", "application/vnd.github+json")
@@ -504,15 +491,13 @@ fn commit_bundle(
 
     // Extras
     for (rel, bytes) in &extras {
-        validate_relative_path(rel)
-            .with_context(|| format!("staging extra file {rel:?}"))?;
+        validate_relative_path(rel).with_context(|| format!("staging extra file {rel:?}"))?;
         let dst = staging.path().join(rel);
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        std::fs::write(&dst, bytes)
-            .with_context(|| format!("writing {}", dst.display()))?;
+        std::fs::write(&dst, bytes).with_context(|| format!("writing {}", dst.display()))?;
         total_bytes += bytes.len() as u64;
         files_written.push(rel.clone());
     }
@@ -661,10 +646,7 @@ With multiple lines.
             frontmatter: fm,
             body: "## Body\n\nstep 1\n".into(),
             extras: vec![
-                (
-                    "scripts/run.sh".into(),
-                    b"#!/bin/sh\necho hi\n".to_vec(),
-                ),
+                ("scripts/run.sh".into(), b"#!/bin/sh\necho hi\n".to_vec()),
                 (
                     "references/anatomy.md".into(),
                     b"# Anatomy\n\nstuff\n".to_vec(),
@@ -690,13 +672,9 @@ With multiple lines.
         assert_eq!(loaded.frontmatter.name, "test-skill");
         assert!(loaded.body.contains("step 1"));
 
-        let script = std::fs::read_to_string(
-            dir.path()
-                .join("test-skill")
-                .join("scripts")
-                .join("run.sh"),
-        )
-        .unwrap();
+        let script =
+            std::fs::read_to_string(dir.path().join("test-skill").join("scripts").join("run.sh"))
+                .unwrap();
         assert!(script.contains("echo hi"));
     }
 

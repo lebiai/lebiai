@@ -8,6 +8,9 @@ authors.workspace = true
 description = "Telegram Bot API client for Hermes agents"
 
 [dependencies]
+hermes-core = { workspace = true }
+hermes-channel = { workspace = true }
+async-trait = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

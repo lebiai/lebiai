@@ -38,6 +38,7 @@ tracing-subscriber = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
 rand = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }

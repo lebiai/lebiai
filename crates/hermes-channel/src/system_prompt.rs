@@ -1,32 +1,33 @@
 //! Session-level system prompt + per-turn time-header injection.
 //!
+//! Shared by CLI chat and IM channels (hermes-channel); kept cache-stable
+//! so Anthropic prompt caching stays warm across turns.
+//!
 //! The cache-stable session system prompt MUST NOT contain time-varying
 //! data — Anthropic prompt caching needs the prefix to be byte-identical
 //! across turns. Time gets injected per-turn into the user message instead,
 //! so the system prefix stays warm.
 
-/// Build the session system prompt: workspace clause first, then any
-/// user-supplied system prompt.
+use hermes_core::companion;
+
+/// Build the session system prompt: companion identity + workspace + tool strategy.
 ///
 /// **Cache-stable**: this prompt MUST NOT contain time-varying data
 /// (timestamps, session counters, etc.) — Anthropic prompt caching needs
 /// the prefix to be byte-identical across turns. Per-turn dynamic context
 /// (current time, palace index, matched skills) is injected separately.
-pub(crate) fn compose_system_prompt(
+pub fn compose_system_prompt(
     user_system: Option<String>,
     workspace_root: &std::path::Path,
 ) -> Option<String> {
     let clause = format!(
-        "## Role\n\
-         You are an expert software engineer assistant. You think step-by-step, \
-         verify before claiming success, and prefer the smallest correct change. \
-         When uncertain, say so. When a task is risky, warn the user.\n\n\
+        "{protocol}\n\
          ## Workspace\n\
-         Your working directory is `{}`. All file reads, writes, and \
+         Your working directory is `{ws}`. All file reads, writes, and \
          commands MUST stay inside this directory. If a task seems to \
          require touching anything outside, stop and ask the user before \
          proceeding.\n\n\
-         ## Tool Strategy\n\
+         ## Tool Strategy (how you Do engineering work)\n\
          Explore before acting: grep/glob to locate, read to understand, \
          then edit/write to change. Verify with bash (tests, build).\n\
          - Use grep to find symbols, glob to find files by pattern.\n\
@@ -44,19 +45,22 @@ pub(crate) fn compose_system_prompt(
          3. Trace callers/callees if the change has side effects\n\
          4. edit → make the minimal change\n\
          5. bash → run tests or build to verify\n\n\
-         ## Memory\n\
+         ## Memory Palace\n\
          You have a Memory Palace with zone-organized memories. The palace \
          index (zone map) is in your system prompt when available.\n\
          - Use palace_zones to list zones\n\
          - Use palace_read_zone to load a zone's content\n\
-         - Use palace_recall to search by topic\n\
-         - Use memory_save (with zone parameter) to persist new learnings\n\
+         - Use palace_recall / memory_search to find past work, standards, preferences\n\
+         - Prefer zones: `work` (episodes), `preferences`, `standards` / `core`, `general`\n\
+         - Use memory_save (with zone + tags) to persist new learnings\n\
          - Use memory_delete to remove outdated memories\n\
-         Don't guess about preferences or conventions — load the relevant \
-         zone first.\n\n\
+         When the user starts work similar to a past episode, **search first**, then use Continuity.\n\
+         Don't guess about preferences or conventions — load the relevant zone first.\n\n\
          ## Output Style\n\
          Be concise. Show file paths with line numbers when referencing code. \
-         End task responses with: Changed / Verified / Not verified / Risks.\n\n\
+         End task responses with: Changed / Verified / Not verified / Risks when useful.\n\
+         After a complete deliverable (any work domain), optional Care: at most 1–3 concrete \
+         improvements fit to the user — skip on final-only / 定稿.\n\n\
          ## Web\n\
          When answering time-sensitive questions, use web_search first.\n\
          - Prefer snippets from search results — only web_fetch if you need the full page.\n\
@@ -66,7 +70,8 @@ pub(crate) fn compose_system_prompt(
          Do not retry the same site.\n\
          - For weather, news, or real-time data: search first, use the snippet, \
          move on.",
-        workspace_root.display()
+        protocol = companion::companion_protocol(),
+        ws = workspace_root.display()
     );
     Some(match user_system {
         Some(extra) if !extra.is_empty() => format!("{clause}\n\n{extra}"),
@@ -77,16 +82,17 @@ pub(crate) fn compose_system_prompt(
 /// One-line "## Context" header with the current wall-clock time, formatted
 /// for prepending to the per-turn user message. Kept out of the cacheable
 /// system prompt so Anthropic prompt caching can hit on every turn.
-pub(crate) fn current_time_header() -> String {
+pub fn current_time_header() -> String {
     let now = chrono::Local::now();
-    format!("[Context: current time {}]", now.format("%Y-%m-%d %H:%M (%A)"))
+    format!(
+        "[Context: current time {}]",
+        now.format("%Y-%m-%d %H:%M (%A)")
+    )
 }
 
 /// Prepend `current_time_header()` to the last user message in `history`.
 /// Operates on a local clone so the persisted session log stays clean.
-pub(crate) fn inject_time_header(
-    mut history: Vec<hermes_core::Message>,
-) -> Vec<hermes_core::Message> {
+pub fn inject_time_header(mut history: Vec<hermes_core::Message>) -> Vec<hermes_core::Message> {
     let header = current_time_header();
     for msg in history.iter_mut().rev() {
         if matches!(msg.role, hermes_core::Role::User) {

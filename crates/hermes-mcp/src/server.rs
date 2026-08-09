@@ -58,19 +58,13 @@ impl McpServer {
                 server: name.clone(),
                 source,
             })?;
-        let service = ()
-            .serve(transport)
-            .await
-            .map_err(|e| boxed_service_error(&name, e))?;
+        let service = ().serve(transport).await.map_err(|e| boxed_service_error(&name, e))?;
         Self::finalize(name, service).await
     }
 
     pub async fn connect_http(name: String, url: String) -> Result<Self> {
         let transport = StreamableHttpClientTransport::from_uri(url);
-        let service = ()
-            .serve(transport)
-            .await
-            .map_err(|e| boxed_service_error(&name, e))?;
+        let service = ().serve(transport).await.map_err(|e| boxed_service_error(&name, e))?;
         Self::finalize(name, service).await
     }
 

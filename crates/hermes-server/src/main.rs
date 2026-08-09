@@ -2,7 +2,7 @@
 //! (in `hermes-cli`); this binary exists for `cargo run -p hermes-server`
 //! during development. Configure via env vars: `PORT` (default 8765),
 //! `HOST` (default `127.0.0.1`), and `HERMES_SERVER_TOKEN` (else a token is
-//! read/generated at `~/.small-rust-hermes/server.token`).
+//! read/generated at `~/.lebi-ai/server.token`).
 
 use std::net::IpAddr;
 use std::sync::Arc;

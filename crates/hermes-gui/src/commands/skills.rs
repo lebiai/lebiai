@@ -35,7 +35,10 @@ fn parse_scope(scope: &str) -> hermes_skills::Scope {
 
 #[tauri::command]
 pub fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillItem>, GuiError> {
-    let skills = state.skill_store.list().map_err(|e| GuiError::Internal(e.to_string()))?;
+    let skills = state
+        .skill_store
+        .list()
+        .map_err(|e| GuiError::Internal(e.to_string()))?;
     Ok(skills.iter().map(to_item).collect())
 }
 

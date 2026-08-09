@@ -17,7 +17,7 @@ class HermesApp extends StatelessWidget {
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.dark,
       child: MaterialApp(
-        title: 'Hermes',
+        title: 'lebi-AI',
         debugShowCheckedModeBanner: false,
         theme: appLightTheme(),
         darkTheme: appDarkTheme(),

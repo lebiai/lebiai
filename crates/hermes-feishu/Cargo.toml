@@ -8,6 +8,9 @@ authors.workspace = true
 description = "Feishu (Lark) long-connection protocol client for Hermes agents"
 
 [dependencies]
+hermes-core = { workspace = true }
+hermes-channel = { workspace = true }
+async-trait = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

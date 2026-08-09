@@ -41,9 +41,6 @@ pub fn green(s: &str) -> String {
 pub fn yellow(s: &str) -> String {
     paint("\x1b[33m", s)
 }
-pub fn cyan(s: &str) -> String {
-    paint("\x1b[36m", s)
-}
 pub fn dim(s: &str) -> String {
     paint("\x1b[90m", s)
 }

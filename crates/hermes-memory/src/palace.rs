@@ -15,9 +15,7 @@ pub const ZONE_GENERAL: &str = "general";
 pub fn group_by_zone<'a>(memories: &'a [LoadedMemory]) -> BTreeMap<String, Vec<&'a LoadedMemory>> {
     let mut map: BTreeMap<String, Vec<&'a LoadedMemory>> = BTreeMap::new();
     for m in memories {
-        map.entry(m.frontmatter.zone.clone())
-            .or_default()
-            .push(m);
+        map.entry(m.frontmatter.zone.clone()).or_default().push(m);
     }
     map
 }
@@ -57,8 +55,7 @@ pub fn build_palace_index_simple(memories: &[LoadedMemory]) -> String {
 }
 
 fn base_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("resolving $HOME")?;
-    Ok(home.join(".small-rust-hermes"))
+    Ok(hermes_core::data_root())
 }
 
 pub fn palace_index_path() -> Result<PathBuf> {
@@ -70,8 +67,8 @@ pub fn load_palace_index() -> Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
     }
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     if content.trim().is_empty() {
         return Ok(None);
     }
@@ -84,45 +81,7 @@ pub fn save_palace_index(content: &str) -> Result<PathBuf> {
         std::fs::create_dir_all(parent)?;
     }
     let tmp = path.with_file_name(".palace-index.md.tmp");
-    std::fs::write(&tmp, content)
-        .with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path)
-        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
-    Ok(path)
-}
-
-fn sanitize_zone_filename(zone: &str) -> String {
-    zone.replace(':', "_")
-}
-
-pub fn zone_cache_dir() -> Result<PathBuf> {
-    let dir = base_dir()?.join("zone-cache");
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating {}", dir.display()))?;
-    Ok(dir)
-}
-
-pub fn load_zone_summary(zone: &str) -> Result<Option<String>> {
-    let dir = zone_cache_dir()?;
-    let path = dir.join(format!("{}.md", sanitize_zone_filename(zone)));
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    if content.trim().is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(content))
-}
-
-pub fn save_zone_summary(zone: &str, content: &str) -> Result<PathBuf> {
-    let dir = zone_cache_dir()?;
-    let filename = format!("{}.md", sanitize_zone_filename(zone));
-    let path = dir.join(&filename);
-    let tmp = dir.join(format!(".{filename}.tmp"));
-    std::fs::write(&tmp, content)
-        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::write(&tmp, content).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, &path)
         .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
     Ok(path)
@@ -135,12 +94,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn mem(id: &str, zone: &str, body: &str) -> LoadedMemory {
-        let mut fm = MemoryFrontmatter::new(
-            Source::User,
-            Confidence::Medium,
-            vec![],
-            zone.to_string(),
-        );
+        let mut fm =
+            MemoryFrontmatter::new(Source::User, Confidence::Medium, vec![], zone.to_string());
         fm.id = id.to_string();
         LoadedMemory {
             frontmatter: fm,
@@ -197,21 +152,4 @@ mod tests {
         assert!(index.contains("Empty"));
     }
 
-    #[test]
-    fn sanitize_zone_filename_replaces_colon() {
-        assert_eq!(sanitize_zone_filename("project:hermes"), "project_hermes");
-        assert_eq!(sanitize_zone_filename("core"), "core");
-    }
-
-    #[test]
-    fn zone_cache_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
-        let zone = "test_zone";
-        let filename = format!("{}.md", sanitize_zone_filename(zone));
-        let path = dir.path().join(&filename);
-        let content = "## Test Zone Summary\n- fact 1\n- fact 2\n";
-        std::fs::write(&path, content).unwrap();
-        let read = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(read, content);
-    }
 }

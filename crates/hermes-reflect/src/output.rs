@@ -41,13 +41,21 @@ pub struct SkillCandidate {
     pub confidence: Confidence,
 }
 
+fn default_memory_zone() -> String {
+    "general".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryCandidate {
-    /// One short statement. Goes into the memory file's body.
+    /// One short statement (or work-episode template). Goes into the memory body.
     #[serde(alias = "content")]
     pub fact: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Memory palace / filesystem zone. Prefer:
+    /// `preferences` | `standards` | `work` | `general` | `core`.
+    #[serde(default = "default_memory_zone")]
+    pub zone: String,
     pub scope: Scope,
     pub confidence: Confidence,
     pub rationale: String,

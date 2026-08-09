@@ -1,45 +1,25 @@
-//! `hermes init` — interactive first-run configuration.
+//! `hermes init` — interactive first-run configuration (product: lebi-AI).
 //!
 //! Walks the user through picking a provider, base URL, API key (hidden
 //! input via `rpassword`), model, and token budget, then writes a complete
-//! `~/.small-rust-hermes/config.toml` (mode 600). Everything else in the
+//! `~/.lebi-ai/config.toml` (mode 600). Everything else in the
 //! config keeps its serde defaults, so the file is immediately usable by
 //! `chat` / `ask` / `run`.
 
 use std::io::Write;
 
 use anyhow::{Context, Result};
-use hermes_llm::{Config, ProviderConfig};
+use hermes_llm::{Config, ProviderConfig, PROVIDER_PRESETS};
 
 use super::style;
-
-/// One selectable provider preset.
-struct Preset {
-    key: &'static str,
-    label: &'static str,
-    base_url: &'static str,
-    model: &'static str,
-}
-
-const PRESETS: &[Preset] = &[
-    Preset {
-        key: "anthropic",
-        label: "Anthropic (Claude)",
-        base_url: "https://api.anthropic.com",
-        model: "claude-sonnet-4-20250514",
-    },
-    Preset {
-        key: "openai",
-        label: "OpenAI (GPT)",
-        base_url: "https://api.openai.com",
-        model: "gpt-4o-mini",
-    },
-];
 
 pub async fn run() -> Result<()> {
     let path = Config::default_path()?;
 
-    eprintln!("{}", style::bold("hermes init — configure your model provider"));
+    eprintln!(
+        "{}",
+        style::bold("lebi-AI · hermes init — configure your model provider")
+    );
     eprintln!();
 
     if path.exists() {
@@ -58,18 +38,18 @@ pub async fn run() -> Result<()> {
 
     // --- provider ---
     eprintln!("Choose a provider:");
-    for (i, p) in PRESETS.iter().enumerate() {
+    for (i, p) in PROVIDER_PRESETS.iter().enumerate() {
         eprintln!("  {}) {}", i + 1, p.label);
     }
-    let choice = prompt_line(&format!("Provider [1-{}] (default 1): ", PRESETS.len()))?;
+    let choice = prompt_line(&format!("Provider [1-{}] (default 1): ", PROVIDER_PRESETS.len()))?;
     let idx = choice
         .trim()
         .parse::<usize>()
         .ok()
-        .filter(|n| (1..=PRESETS.len()).contains(n))
+        .filter(|n| (1..=PROVIDER_PRESETS.len()).contains(n))
         .map(|n| n - 1)
         .unwrap_or(0);
-    let preset = &PRESETS[idx];
+    let preset = &PROVIDER_PRESETS[idx];
 
     // --- base url ---
     let base_url = prompt_default(
@@ -78,25 +58,21 @@ pub async fn run() -> Result<()> {
     )?;
 
     // --- api key (hidden) ---
-    let api_key = rpassword::prompt_password(format!(
-        "{} API key (input hidden): ",
-        preset.label
-    ))
-    .context("reading API key")?
-    .trim()
-    .to_string();
+    let api_key = rpassword::prompt_password(format!("{} API key (input hidden): ", preset.label))
+        .context("reading API key")?
+        .trim()
+        .to_string();
     if api_key.is_empty() {
         eprintln!(
             "{}",
-            style::yellow("  ⚠ empty API key — you can fill it in later, but calls will fail until you do.")
+            style::yellow(
+                "  ⚠ empty API key — you can fill it in later, but calls will fail until you do."
+            )
         );
     }
 
     // --- model ---
-    let model = prompt_default(
-        &format!("Model (default {}): ", preset.model),
-        preset.model,
-    )?;
+    let model = prompt_default(&format!("Model (default {}): ", preset.model), preset.model)?;
 
     // --- max tokens ---
     let max_tokens_raw = prompt_default("Max output tokens (default 16384): ", "16384")?;
@@ -104,7 +80,7 @@ pub async fn run() -> Result<()> {
 
     // --- assemble config from defaults, then set the active provider ---
     let mut cfg: Config =
-        toml::from_str(Config::default_config_toml()).context("seeding config from defaults")?;
+        toml::from_str(&Config::default_config_toml()).context("seeding config from defaults")?;
     cfg.default_provider = preset.key.to_string();
 
     let provider = ProviderConfig {
@@ -116,6 +92,7 @@ pub async fn run() -> Result<()> {
     match preset.key {
         "anthropic" => cfg.providers.anthropic = Some(provider),
         "openai" => cfg.providers.openai = Some(provider),
+        "deepseek" => cfg.providers.deepseek = Some(provider),
         _ => unreachable!("preset keys are fixed"),
     }
 
@@ -134,7 +111,9 @@ fn prompt_line(prompt: &str) -> Result<String> {
     eprint!("{prompt}");
     std::io::stderr().flush().ok();
     let mut s = String::new();
-    std::io::stdin().read_line(&mut s).context("reading input")?;
+    std::io::stdin()
+        .read_line(&mut s)
+        .context("reading input")?;
     Ok(s.trim().to_string())
 }
 

@@ -59,10 +59,7 @@ pub fn read_doc<T: DeserializeOwned>(path: &Path) -> Result<FrontmatterDoc<T>> {
 /// content originates from somewhere other than disk (`include_str!` of a
 /// bundled file, an HTTP body, a paste-from-chat). The `origin` label is
 /// only used to dress error messages.
-pub fn parse_doc_str<T: DeserializeOwned>(
-    origin: &str,
-    raw: &str,
-) -> Result<FrontmatterDoc<T>> {
+pub fn parse_doc_str<T: DeserializeOwned>(origin: &str, raw: &str) -> Result<FrontmatterDoc<T>> {
     parse_doc(Path::new(origin), raw)
 }
 
@@ -86,12 +83,10 @@ pub fn write_doc<T: Serialize>(path: &Path, doc: &FrontmatterDoc<T>) -> Result<(
 /// on POSIX. Falls back to non-atomic on Windows when rename fails.
 pub fn write_doc_atomic<T: Serialize>(path: &Path, doc: &FrontmatterDoc<T>) -> Result<()> {
     let serialized = serialize_doc(&doc.frontmatter, &doc.body)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| FrontmatterError::Io {
-            path: path.to_path_buf(),
-            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent"),
-        })?;
+    let parent = path.parent().ok_or_else(|| FrontmatterError::Io {
+        path: path.to_path_buf(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent"),
+    })?;
     std::fs::create_dir_all(parent).map_err(|source| FrontmatterError::Io {
         path: parent.to_path_buf(),
         source,

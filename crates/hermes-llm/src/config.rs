@@ -1,4 +1,4 @@
-//! Provider configuration loaded from `~/.small-rust-hermes/config.toml`.
+//! Provider configuration loaded from `~/.lebi-ai/config.toml`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -142,7 +142,7 @@ pub struct WorkspaceConfig {
     /// with `command: "npx"`/`"@modelcontextprotocol/server-filesystem"`)
     /// has its allowed-directory argument auto-rewritten to match.
     ///
-    /// Defaults to `~/.small-rust-hermes/workspace`.
+    /// Defaults to `~/.lebi-ai/workspace`.
     #[serde(default = "default_workspace_root")]
     pub root: std::path::PathBuf,
 }
@@ -156,9 +156,7 @@ impl Default for WorkspaceConfig {
 }
 
 fn default_workspace_root() -> std::path::PathBuf {
-    dirs::home_dir()
-        .map(|h| h.join(".small-rust-hermes").join("workspace"))
-        .unwrap_or_else(|| std::path::PathBuf::from("./workspace"))
+    hermes_core::data_path("workspace")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,8 +169,10 @@ pub struct ReflectConfig {
 
     /// When true, micro-reflection memory candidates that meet
     /// `auto_accept_min_confidence` (and have no conflicts/supersedes links)
-    /// are persisted automatically without user prompting. Skills and
-    /// conflict resolutions always require manual review.
+    /// are persisted automatically without user prompting. **Default false**
+    /// (P0: candidates must be user-confirmed); enabling it is an explicit
+    /// user opt-in. Skills and conflict resolutions always require manual
+    /// review.
     #[serde(default)]
     pub auto_accept_memories: bool,
 
@@ -183,14 +183,21 @@ pub struct ReflectConfig {
     /// bypass this floor — they persist regardless.
     #[serde(default = "default_min_confidence")]
     pub auto_accept_min_confidence: String,
+
+    /// When true, leaving a session may open the review modal (legacy, noisy).
+    /// **Default false**: quiet evolution — candidates go to the pending-review
+    /// inbox; user opens「待审」when ready.
+    #[serde(default)]
+    pub pop_inbox_on_leave: bool,
 }
 
 impl Default for ReflectConfig {
     fn default() -> Self {
         Self {
             min_turns: default_min_turns(),
-            auto_accept_memories: true,
+            auto_accept_memories: false,
             auto_accept_min_confidence: default_min_confidence(),
+            pop_inbox_on_leave: false,
         }
     }
 }
@@ -208,18 +215,31 @@ pub struct UiConfig {
     /// UI display language. Supported values: "en-US" and "zh-CN".
     #[serde(default = "default_ui_language")]
     pub language: String,
+    /// GUI color theme. Supported: "system" | "light" | "dark".
+    #[serde(default = "default_ui_theme")]
+    pub theme: String,
+    /// When false (default), thinking blocks are stripped before session JSONL
+    /// append — keeps transcripts small. Streaming UI still shows thinking live.
+    #[serde(default)]
+    pub persist_thinking: bool,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
             language: default_ui_language(),
+            theme: default_ui_theme(),
+            persist_thinking: false,
         }
     }
 }
 
 fn default_ui_language() -> String {
     "en-US".to_string()
+}
+
+fn default_ui_theme() -> String {
+    "system".to_string()
 }
 
 /// Configuration for the `web_search` / `web_fetch` tools.
@@ -285,6 +305,67 @@ pub struct ProvidersMap {
     pub anthropic: Option<ProviderConfig>,
     #[serde(default)]
     pub openai: Option<ProviderConfig>,
+    #[serde(default)]
+    pub deepseek: Option<ProviderConfig>,
+}
+
+impl ProvidersMap {
+    /// Look up a provider section by preset key (`deepseek` / `anthropic` /
+    /// `openai`). Unknown keys return `None` so callers can fall back to the
+    /// bundled preset instead of inventing tables.
+    pub fn get(&self, key: &str) -> Option<&ProviderConfig> {
+        match key {
+            "anthropic" => self.anthropic.as_ref(),
+            "openai" => self.openai.as_ref(),
+            "deepseek" => self.deepseek.as_ref(),
+            _ => None,
+        }
+    }
+}
+
+/// One bundled provider preset. Single source of truth shared by the default
+/// config template, `hermes init` and the GUI settings selector — adding a
+/// provider means adding one entry here (plus the matching `ProvidersMap`
+/// field and `active_provider`/`active_kind` branches).
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderPreset {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub base_url: &'static str,
+    pub model: &'static str,
+    pub max_tokens: u32,
+}
+
+/// Bundled provider presets, in recommendation order (DeepSeek first — the
+/// default for fresh installs and the top pick in `hermes init`).
+pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
+    ProviderPreset {
+        key: "deepseek",
+        label: "DeepSeek (recommended)",
+        base_url: "https://api.deepseek.com/v1",
+        model: "deepseek-v4-flash",
+        max_tokens: 16_384,
+    },
+    ProviderPreset {
+        key: "anthropic",
+        label: "Anthropic (Claude)",
+        base_url: "https://api.anthropic.com",
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 16_384,
+    },
+    ProviderPreset {
+        key: "openai",
+        label: "OpenAI (GPT)",
+        base_url: "https://api.openai.com",
+        model: "gpt-4o-mini",
+        max_tokens: 16_384,
+    },
+];
+
+impl ProviderPreset {
+    pub fn by_key(key: &str) -> Option<&'static ProviderPreset> {
+        PROVIDER_PRESETS.iter().find(|p| p.key == key)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,10 +382,9 @@ fn default_max_tokens() -> u32 {
 }
 
 impl Config {
-    /// Default config location: `~/.small-rust-hermes/config.toml`.
+    /// Default config location: `~/.lebi-ai/config.toml`.
     pub fn default_path() -> Result<PathBuf> {
-        let home = dirs::home_dir().ok_or_else(|| anyhow!("could not resolve $HOME"))?;
-        Ok(home.join(".small-rust-hermes").join("config.toml"))
+        Ok(hermes_core::data_path("config.toml"))
     }
 
     pub fn load_default() -> Result<Self> {
@@ -323,29 +403,48 @@ impl Config {
     pub fn load_from(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading config at {}", path.display()))?;
-        let cfg: Self = toml::from_str(&raw)
+        let mut cfg: Self = toml::from_str(&raw)
             .with_context(|| format!("parsing config at {}", path.display()))?;
+        cfg.rehome_workspace_if_needed();
         Ok(cfg)
     }
 
-    pub fn default_config_toml() -> &'static str {
-        r#"default_provider = "anthropic"
+    /// Keep workspace under the current product `data_root()` so products never
+    /// share upload/tool paths after data-dir isolation.
+    fn rehome_workspace_if_needed(&mut self) {
+        let expected = hermes_core::data_path("workspace");
+        let data = hermes_core::data_root();
+        if !self.workspace.root.starts_with(&data) {
+            tracing::warn!(
+                old = %self.workspace.root.display(),
+                new = %expected.display(),
+                "workspace.root re-homed under product data root"
+            );
+            self.workspace.root = expected;
+        }
+    }
 
-[providers.anthropic]
-base_url = "https://api.anthropic.com"
-api_key = ""
-model = "claude-sonnet-4-20250514"
-max_tokens = 16384
+    /// Fresh-install config template. Provider sections are generated from
+    /// [`PROVIDER_PRESETS`] so the GUI selector, `hermes init` and the on-disk
+    /// default can never drift apart.
+    pub fn default_config_toml() -> String {
+        let mut toml = String::from("default_provider = \"");
+        toml.push_str(PROVIDER_PRESETS[0].key);
+        toml.push_str("\"\n\n");
+        for preset in PROVIDER_PRESETS {
+            toml.push_str(&format!(
+                "[providers.{}]\nbase_url = {:?}\napi_key = \"\"\nmodel = {:?}\nmax_tokens = {}\n\n",
+                preset.key, preset.base_url, preset.model, preset.max_tokens
+            ));
+        }
+        toml.push_str(Self::DEFAULT_CONFIG_TAIL);
+        toml
+    }
 
-[providers.openai]
-base_url = "https://api.openai.com"
-api_key = ""
-model = "gpt-4o-mini"
-max_tokens = 16384
-
-[reflect]
+    /// Non-provider sections of the fresh-install template.
+    const DEFAULT_CONFIG_TAIL: &str = r#"[reflect]
 min_turns = 3
-auto_accept_memories = true
+auto_accept_memories = false
 auto_accept_min_confidence = "medium"
 
 [context]
@@ -367,6 +466,8 @@ deny = []
 
 [ui]
 language = "en-US"
+theme = "system"
+persist_thinking = false
 
 [web]
 search_backend = "scraper"   # scraper | tavily | brave_api
@@ -374,8 +475,7 @@ tavily_api_key = ""
 brave_api_key = ""
 cache_ttl_secs = 900
 extract_model = ""           # empty = reuse main model; e.g. a Haiku / mini tier
-"#
-    }
+"#;
 
     fn write_default_config(path: &Path) -> Result<()> {
         let dir = path
@@ -423,6 +523,9 @@ extract_model = ""           # empty = reuse main model; e.g. a Haiku / mini tie
                     anyhow!("default_provider=openai but [providers.openai] missing")
                 })
             }
+            "deepseek" => self.providers.deepseek.as_ref().ok_or_else(|| {
+                anyhow!("default_provider=deepseek but [providers.deepseek] missing")
+            }),
             other => Err(anyhow!("unknown default_provider {other:?}")),
         }
     }
@@ -431,6 +534,8 @@ extract_model = ""           # empty = reuse main model; e.g. a Haiku / mini tie
         match self.default_provider.as_str() {
             "anthropic" => Ok(ProviderKind::Anthropic),
             "openai" => Ok(ProviderKind::OpenAi),
+            // DeepSeek's official API is OpenAI-compatible (https://api.deepseek.com/v1).
+            "deepseek" => Ok(ProviderKind::OpenAi),
             other => Err(anyhow!("unknown default_provider {other:?}")),
         }
     }
@@ -475,21 +580,51 @@ impl ProviderConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{Config, ProviderPreset, PROVIDER_PRESETS};
 
     #[test]
     fn default_config_template_loads() {
-        let cfg: Config = toml::from_str(Config::default_config_toml()).unwrap();
+        let cfg: Config = toml::from_str(&Config::default_config_toml()).unwrap();
 
-        assert_eq!(cfg.default_provider, "anthropic");
+        assert_eq!(cfg.default_provider, "deepseek");
+        // P0: reflection candidates must be user-confirmed — the default
+        // config must never auto-write memories.
+        assert!(!cfg.reflect.auto_accept_memories);
         assert!(cfg.active_provider().is_ok());
         assert_eq!(cfg.reflect.min_turns, 3);
         assert_eq!(cfg.context.model_limit, 128_000);
         assert_eq!(cfg.ui.language, "en-US");
+        assert_eq!(cfg.ui.theme, "system");
+        assert!(!cfg.ui.persist_thinking);
         assert_eq!(cfg.limits.max_tool_rounds, 25);
         assert_eq!(cfg.web.search_backend, "scraper");
         assert_eq!(cfg.web.cache_ttl_secs, 900);
         assert!(cfg.web.extract_model.is_empty());
+    }
+
+    #[test]
+    fn provider_presets_drive_template_and_lookup() {
+        // Presets cover exactly the keys the engine can activate.
+        assert_eq!(PROVIDER_PRESETS.len(), 3);
+        for preset in PROVIDER_PRESETS {
+            assert!(matches!(preset.key, "deepseek" | "anthropic" | "openai"));
+        }
+        assert_eq!(PROVIDER_PRESETS[0].key, "deepseek");
+        assert!(ProviderPreset::by_key("openai").is_some());
+        assert!(ProviderPreset::by_key("nope").is_none());
+
+        // The fresh template must contain every preset section with matching
+        // values, and the default provider is the first preset.
+        let cfg: Config = toml::from_str(&Config::default_config_toml()).unwrap();
+        assert_eq!(cfg.default_provider, PROVIDER_PRESETS[0].key);
+        for preset in PROVIDER_PRESETS {
+            let section = cfg.providers.get(preset.key).unwrap();
+            assert_eq!(section.base_url, preset.base_url);
+            assert_eq!(section.model, preset.model);
+            assert_eq!(section.max_tokens, preset.max_tokens);
+            assert!(section.api_key.is_empty());
+        }
+        assert!(cfg.providers.get("nope").is_none());
     }
 
     #[test]
@@ -518,7 +653,7 @@ model = "claude-sonnet-4-20250514"
         Config::write_default_config(&path).unwrap();
         let cfg = Config::load_from(&path).unwrap();
 
-        assert_eq!(cfg.default_provider, "anthropic");
+        assert_eq!(cfg.default_provider, "deepseek");
 
         #[cfg(unix)]
         {

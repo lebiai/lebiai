@@ -5,10 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "small-rust-hermes GUI binary (Tauri 2.x desktop app)"
+description = "lebi-AI desktop GUI (Tauri 2.x desktop app)"
 
 [[bin]]
-name = "hermes-gui"
+name = "lebi-AI"
 path = "src/main.rs"
 
 [build-dependencies]
@@ -16,6 +16,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 hermes-core = { workspace = true }
+hermes-channel = { workspace = true }
+hermes-weixin = { workspace = true }
 hermes-llm = { workspace = true }
 hermes-mcp = { workspace = true }
 hermes-store = { workspace = true }
@@ -36,6 +38,9 @@ dirs = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+serde_yaml = { workspace = true }
 
 [lints]
 workspace = true

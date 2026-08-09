@@ -13,7 +13,7 @@
 1. `--token <值>`
 2. `--token-file <路径>`(文件里一行,自动 trim)
 3. 环境变量 `HERMES_SERVER_TOKEN`
-4. 持久化文件 `~/.small-rust-hermes/server.token`(不存在则**自动生成** 32 字节随机
+4. 持久化文件 `~/.lebi-ai/server.token`(不存在则**自动生成** 32 字节随机
    hex,权限 0600)
 
 **任何情况都会拿到一个非空 token——服务器永不"裸奔"。** 启动日志里会打印一次完整
@@ -28,7 +28,7 @@ INFO auth token (set this in the client's server settings; REST: Authorization h
 (`shared_preferences`),REST 自动带 `Authorization: Bearer <token>`,WS 自动带
 `?token=<token>`。
 
-**轮换 token**:删掉 `~/.small-rust-hermes/server.token` 重启 server,会生成新的;
+**轮换 token**:删掉 `~/.lebi-ai/server.token` 重启 server,会生成新的;
 记得在所有客户端更新。
 
 ## 2. 本机(默认,最安全)

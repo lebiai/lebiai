@@ -125,6 +125,7 @@ class ChatState {
     required this.usage,
     this.pendingConfirm,
     this.error,
+    this.notice,
     this.sessionId,
     this.sessionPath,
   });
@@ -134,6 +135,8 @@ class ChatState {
   final UsageStats usage;
   final PendingConfirm? pendingConfirm;
   final String? error;
+  /// Transient informational banner (background evolution notices).
+  final String? notice;
   final String? sessionId;
   final String? sessionPath;
 
@@ -147,6 +150,7 @@ class ChatState {
     UsageStats? usage,
     Object? pendingConfirm = _unset,
     Object? error = _unset,
+    Object? notice = _unset,
     Object? sessionId = _unset,
     Object? sessionPath = _unset,
   }) =>
@@ -158,6 +162,7 @@ class ChatState {
             ? this.pendingConfirm
             : pendingConfirm as PendingConfirm?,
         error: identical(error, _unset) ? this.error : error as String?,
+        notice: identical(notice, _unset) ? this.notice : notice as String?,
         sessionId:
             identical(sessionId, _unset) ? this.sessionId : sessionId as String?,
         sessionPath: identical(sessionPath, _unset)
@@ -261,6 +266,11 @@ class ChatNotifier extends Notifier<ChatState> {
     if (state.error != null) state = state.copyWith(error: null);
   }
 
+  /// Clear the informational notice banner.
+  void clearNotice() {
+    if (state.notice != null) state = state.copyWith(notice: null);
+  }
+
   void respondConfirm(String action, {String? toolName, String? reason}) {
     final pc = state.pendingConfirm;
     if (pc == null) return;
@@ -354,7 +364,22 @@ class ChatNotifier extends Notifier<ChatState> {
         state = state.copyWith(isRunning: false, error: message);
       case Done():
         _finishTurn();
-      case SkillCandidateProposed():
+      case SkillCandidateProposed(:final name):
+        state = state.copyWith(
+            notice: '已生成技能候选「$name」，可在桌面端审核');
+      case MicroReflection(
+          :final summary,
+          :final memoryCount,
+          :final skillCount,
+          :final autoAccepted
+        ):
+        final parts = <String>[];
+        if (autoAccepted > 0) parts.add('自动采纳 $autoAccepted 条记忆');
+        if (memoryCount > 0 || skillCount > 0) {
+          parts.add('$memoryCount 条记忆 / $skillCount 个技能候选待审');
+        }
+        final suffix = parts.isEmpty ? '' : '（${parts.join('，')}）';
+        state = state.copyWith(notice: '后台进化：$summary$suffix');
       case UnknownEvent():
         break;
     }

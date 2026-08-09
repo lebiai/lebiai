@@ -10,7 +10,7 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -55,8 +55,7 @@ pub enum ActionTaken {
 }
 
 pub fn default_log_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("resolving $HOME")?;
-    Ok(home.join(".small-rust-hermes").join("reflect-log.jsonl"))
+    Ok(hermes_core::data_path("reflect-log.jsonl"))
 }
 
 /// Append one entry. Best-effort — failures are logged but not propagated
@@ -73,10 +72,7 @@ fn try_append(entry: ReflectLogEntry) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let line = serde_json::to_string(&entry)?;
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
+    let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
     writeln!(f, "{line}")?;
     Ok(())
 }

@@ -9,7 +9,7 @@
 //! `skill_read_file(name, path)` to pull bundled scripts or references.
 //!
 //! `skill_create` is the direct-write counterpart of `propose_skill`: it
-//! materialises a skill immediately under `~/.small-rust-hermes/skills/`,
+//! materialises a skill immediately under `~/.lebi-ai/skills/`,
 //! intended for cases where the user says "save this as a skill" in the
 //! current conversation. `propose_skill` keeps its place for reflection-time
 //! distillation that goes through the approval UI.
@@ -56,7 +56,7 @@ pub async fn list_run(store: &dyn SkillStore) -> Result<ToolCallOutcome> {
     if skills.is_empty() {
         return Ok(ToolCallOutcome {
             content: "No skills installed. Use `skill_create` to add one, \
-                or place a SKILL.md under ~/.small-rust-hermes/skills/<name>/."
+                or place a SKILL.md under ~/.lebi-ai/skills/<name>/."
                 .into(),
             is_error: false,
         });
@@ -106,10 +106,7 @@ pub fn read_spec() -> ToolSpec {
     }
 }
 
-pub async fn read_run(
-    store: &dyn SkillStore,
-    args: serde_json::Value,
-) -> Result<ToolCallOutcome> {
+pub async fn read_run(store: &dyn SkillStore, args: serde_json::Value) -> Result<ToolCallOutcome> {
     let a: ReadArgs = serde_json::from_value(args)
         .map_err(|e| Error::ToolHost(format!("skill_read: bad args: {e}")))?;
 
@@ -317,7 +314,7 @@ pub fn create_spec() -> ToolSpec {
     ToolSpec {
         name: "skill_create".into(),
         description: "Create a new skill on disk under \
-            ~/.small-rust-hermes/skills/<name>/SKILL.md. Use this when the \
+            ~/.lebi-ai/skills/<name>/SKILL.md. Use this when the \
             user explicitly asks to save a workflow as a skill (\"save this \
             as a skill called X\", \"remember how to do this for next time\"). \
             The `description` is what future-you sees in the discovery index — \
@@ -358,7 +355,8 @@ pub fn create_spec() -> ToolSpec {
             },
             "required": ["name", "description", "body"]
         }),
-        requires_confirmation: true,
+        // Local skill draft — open; remote skill_install stays gated.
+        requires_confirmation: false,
     }
 }
 
@@ -475,10 +473,7 @@ pub async fn create_run(
             if let Some(parent) = target.parent() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
                     return Ok(ToolCallOutcome {
-                        content: format!(
-                            "skill_create: creating {}: {e}",
-                            parent.display()
-                        ),
+                        content: format!("skill_create: creating {}: {e}", parent.display()),
                         is_error: true,
                     });
                 }
@@ -500,7 +495,9 @@ pub async fn create_run(
         written.join(", ")
     );
     if a.extra_files.is_empty() {
-        out.push_str("\n  (single-file skill; add `extra_files` to bundle scripts / references / assets)");
+        out.push_str(
+            "\n  (single-file skill; add `extra_files` to bundle scripts / references / assets)",
+        );
     }
     Ok(ToolCallOutcome {
         content: out,
@@ -586,12 +583,7 @@ pub async fn install_run(
     let overwrite = a.overwrite;
     let git_ref = a.git_ref.clone();
     let outcome = tokio::task::spawn_blocking(move || {
-        hermes_skills::install_from_source(
-            store.as_ref(),
-            &source,
-            overwrite,
-            git_ref.as_deref(),
-        )
+        hermes_skills::install_from_source(store.as_ref(), &source, overwrite, git_ref.as_deref())
     })
     .await
     .map_err(|e| Error::ToolHost(format!("skill_install: join error: {e}")))?;
@@ -660,11 +652,10 @@ pub async fn delete_run(
         .map_err(|e| Error::ToolHost(format!("skill_delete: bad args: {e}")))?;
 
     let name = a.name.clone();
-    let outcome = tokio::task::spawn_blocking(move || {
-        hermes_skills::delete_skill(store.as_ref(), &name)
-    })
-    .await
-    .map_err(|e| Error::ToolHost(format!("skill_delete: join error: {e}")))?;
+    let outcome =
+        tokio::task::spawn_blocking(move || hermes_skills::delete_skill(store.as_ref(), &name))
+            .await
+            .map_err(|e| Error::ToolHost(format!("skill_delete: join error: {e}")))?;
 
     match outcome {
         Ok(o) => Ok(ToolCallOutcome {
@@ -793,12 +784,9 @@ mod tests {
         .unwrap();
 
         for bad in ["../../../etc/passwd", "/etc/passwd", "..\\foo"] {
-            let out = read_file_run(
-                &store,
-                serde_json::json!({"name": "demo", "path": bad}),
-            )
-            .await
-            .unwrap();
+            let out = read_file_run(&store, serde_json::json!({"name": "demo", "path": bad}))
+                .await
+                .unwrap();
             assert!(out.is_error, "path {bad:?} should be rejected, got {out:?}");
         }
     }

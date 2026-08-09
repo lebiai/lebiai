@@ -6,9 +6,7 @@
 //! calls). It's cheaper (~500 tokens in, ~200 out) and runs async so it
 //! never blocks the user's next input.
 
-use hermes_core::{
-    CompletionRequest, ContentBlock, LlmProvider, Message, Role,
-};
+use hermes_core::{CompletionRequest, ContentBlock, LlmProvider, Message, Role};
 use hermes_memory::LoadedMemory;
 use hermes_skills::LoadedSkill;
 
@@ -25,10 +23,7 @@ const REFLECT_INTERVAL: usize = 3;
 /// 2. **Periodic** — every `REFLECT_INTERVAL` turns, let the LLM decide
 ///    whether the turn was worth remembering. Cheap (~500 tokens) and the
 ///    LLM returns empty arrays for trivial turns.
-pub fn should_micro_reflect(
-    turn_messages: &[Message],
-    turns_since_last_reflect: usize,
-) -> bool {
+pub fn should_micro_reflect(turn_messages: &[Message], turns_since_last_reflect: usize) -> bool {
     if has_explicit_intent(turn_messages) {
         return true;
     }
@@ -157,9 +152,15 @@ fn build_micro_prompt(
                 ContentBlock::ToolUse { name, .. } => {
                     buf.push_str(&format!("[{role} tool_use] {name}\n"));
                 }
-                ContentBlock::ToolResult { content, is_error, .. } => {
+                ContentBlock::ToolResult {
+                    content, is_error, ..
+                } => {
                     let preview: String = content.chars().take(200).collect();
-                    let tag = if *is_error { "tool_error" } else { "tool_result" };
+                    let tag = if *is_error {
+                        "tool_error"
+                    } else {
+                        "tool_result"
+                    };
                     buf.push_str(&format!("[{role} {tag}] {preview}\n"));
                 }
                 ContentBlock::Thinking { .. } => {}
@@ -178,7 +179,10 @@ fn build_micro_prompt(
     if !skills.is_empty() {
         buf.push_str("\n=== Existing skills (avoid duplicates) ===\n");
         for s in skills.iter().take(10) {
-            buf.push_str(&format!("- {}: {}\n", s.frontmatter.name, s.frontmatter.description));
+            buf.push_str(&format!(
+                "- {}: {}\n",
+                s.frontmatter.name, s.frontmatter.description
+            ));
         }
     }
 
@@ -262,7 +266,10 @@ mod tests {
         }"#;
         let output: ReflectionOutput = serde_json::from_str(json).unwrap();
         assert_eq!(output.memory_candidates.len(), 1);
-        assert_eq!(output.memory_candidates[0].supersedes, vec!["mem_editor_pref"]);
+        assert_eq!(
+            output.memory_candidates[0].supersedes,
+            vec!["mem_editor_pref"]
+        );
         assert_eq!(output.conflicts.len(), 1);
         assert_eq!(output.conflicts[0].kind, "stale");
         assert_eq!(output.conflicts[0].with, "mem_editor_pref");

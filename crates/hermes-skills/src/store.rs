@@ -8,8 +8,8 @@
 //!     scripts/        # optional, untouched by this store
 //! ```
 //!
-//! `<root>` is `~/.small-rust-hermes/skills/` for [`Scope::User`] and
-//! `./.small-rust-hermes/skills/` for [`Scope::Project`]. Project-scoped
+//! `<root>` is `~/.lebi-ai/skills/` for [`Scope::User`] and
+//! `./.lebi-ai/skills/` for [`Scope::Project`]. Project-scoped
 //! skills override user-scoped skills with the same name.
 
 use std::path::{Path, PathBuf};
@@ -76,8 +76,8 @@ impl FsSkillStore {
         }
     }
 
-    /// Conventional locations: `~/.small-rust-hermes/skills` (user) and
-    /// `./.small-rust-hermes/skills` (project, if a `./.small-rust-hermes`
+    /// Conventional locations: `~/.lebi-ai/skills` (user) and
+    /// `./.lebi-ai/skills` (project, if a `./.lebi-ai`
     /// directory exists).
     pub fn standard() -> Result<Self> {
         let user = standard_user_root()?;
@@ -233,16 +233,14 @@ pub fn validate_skill_name(name: &str) -> Result<()> {
     validate_name(name)
 }
 
-/// `~/.small-rust-hermes/skills`.
+/// `~/.lebi-ai/skills`.
 pub fn standard_user_root() -> Result<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| SkillStoreError::Config("could not resolve $HOME".into()))?;
-    Ok(home.join(".small-rust-hermes").join("skills"))
+    Ok(hermes_core::data_path("skills"))
 }
 
-/// `./.small-rust-hermes/skills` if the project dir exists; else `None`.
+/// `./.lebi-ai/skills` if the project dir exists; else `None`.
 pub fn standard_project_root() -> Option<PathBuf> {
-    let p = PathBuf::from(".small-rust-hermes").join("skills");
+    let p = PathBuf::from(hermes_core::project_data_dirname()).join("skills");
     if p.exists() {
         Some(p)
     } else {
@@ -272,7 +270,9 @@ mod tests {
         let user = tempfile::tempdir().unwrap();
         let store = FsSkillStore::new(user.path().to_path_buf(), None);
 
-        let path = store.put(Scope::User, fm("alpha", "first"), "Body of alpha.\n").unwrap();
+        let path = store
+            .put(Scope::User, fm("alpha", "first"), "Body of alpha.\n")
+            .unwrap();
         assert!(path.ends_with("alpha/SKILL.md"));
 
         let loaded = store.get("alpha").unwrap().expect("alpha should exist");
@@ -324,7 +324,10 @@ mod tests {
 
         for bad in ["..", "../etc", "a/b", ".hidden", "", "with space", "weird?"] {
             let err = store.put(Scope::User, fm(bad, "x"), "y").unwrap_err();
-            assert!(matches!(err, SkillStoreError::InvalidName(_)), "name {bad:?} should be rejected, got {err:?}");
+            assert!(
+                matches!(err, SkillStoreError::InvalidName(_)),
+                "name {bad:?} should be rejected, got {err:?}"
+            );
         }
     }
 
@@ -345,8 +348,13 @@ mod tests {
 
         let loaded = store.get("with-extras").unwrap().unwrap();
         assert_eq!(
-            loaded.frontmatter.extra.get(serde_yaml::Value::String("model".into())),
-            Some(&serde_yaml::Value::String("claude-haiku-4-5-20251001".into()))
+            loaded
+                .frontmatter
+                .extra
+                .get(serde_yaml::Value::String("model".into())),
+            Some(&serde_yaml::Value::String(
+                "claude-haiku-4-5-20251001".into()
+            ))
         );
     }
 

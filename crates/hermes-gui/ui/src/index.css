@@ -1,2 +1,418 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+
+/*
+ * Class-based dark mode so Settings can force light/dark/system.
+ * `html.dark` is toggled by applyTheme().
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * lebi-AI GUI design tokens (Phase A/B).
+ */
+@theme {
+  --font-sans:
+    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+
+  --color-app-bg: #f4f6f9;
+  --color-app-sidebar: #f8fafc;
+  --color-app-surface: #ffffff;
+  --color-app-muted: #eef1f6;
+  --color-app-border: #e2e8f0;
+  --color-app-fg: #0f172a;
+  --color-app-fg-secondary: #64748b;
+  --color-app-fg-tertiary: #94a3b8;
+  --color-app-primary: #2563eb;
+  --color-app-primary-hover: #1d4ed8;
+  --color-app-primary-soft: #eff6ff;
+  --color-app-accent: #7c3aed;
+  --color-app-accent-soft: #f5f3ff;
+  --color-app-danger: #ef4444;
+  --color-app-success: #16a34a;
+  --color-app-user-bubble: #2563eb;
+
+  --radius-app: 0.75rem;
+  --shadow-app-card: 0 1px 2px rgb(15 23 42 / 0.04), 0 4px 16px rgb(15 23 42 / 0.04);
+  --shadow-app-composer: 0 4px 24px -4px rgb(15 23 42 / 0.14), 0 2px 8px rgb(15 23 42 / 0.06);
+
+  /* Motion system (P0 ritual UX) — single source; pages must not invent durations */
+  --motion-fast: 150ms;
+  --motion-base: 260ms;
+  --motion-ritual: 520ms;
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background-color: var(--color-app-bg);
+    color: var(--color-app-fg);
+  }
+
+  html.dark body {
+    background-color: #0b1220;
+    color: #e2e8f0;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(148 163 184 / 0.45) transparent;
+  }
+}
+
+.prose-chat {
+  --tw-prose-body: var(--color-app-fg);
+  --tw-prose-headings: var(--color-app-fg);
+  --tw-prose-links: var(--color-app-primary);
+  --tw-prose-code: var(--color-app-fg);
+  --tw-prose-pre-bg: #0f172a;
+  font-size: 0.875rem;
+  line-height: 1.65;
+}
+
+.prose-chat pre {
+  border-radius: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.prose-chat code {
+  font-size: 0.85em;
+}
+
+/* ─── Motion utilities (CSS / WAAPI companion classes) ─── */
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-safe-only {
+    animation: none !important;
+    transition: none !important;
+  }
+  .ambient-breathe,
+  .ambient-drift,
+  .ritual-seal-pop,
+  .ritual-ring,
+  .stagger-in,
+  .fade-up-in,
+  .msg-enter,
+  .stream-enter,
+  .session-enter,
+  .panel-enter {
+    animation: none !important;
+  }
+  .fold-panel {
+    transition: none !important;
+  }
+  .btn-press:active:not(:disabled) {
+    transform: none !important;
+  }
+}
+
+@keyframes ambient-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes ambient-drift {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(3%, -2%);
+  }
+}
+
+@keyframes fade-up-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ritual-seal-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.86);
+  }
+  55% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes ritual-ring {
+  0% {
+    opacity: 0.55;
+    transform: scale(0.7);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.55);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-up-in {
+  animation: fade-up-in var(--motion-base) var(--ease-out-soft) both;
+}
+
+/** Chat: only newly arrived turns (not history on session load). */
+.msg-enter {
+  animation: fade-up-in var(--motion-base) var(--ease-out-soft) both;
+}
+
+/** Streaming canvas mounts once per turn. */
+.stream-enter {
+  animation: fade-up-in var(--motion-base) var(--ease-out-soft) both;
+}
+
+/** Session switch / new chat: lighter than message enter (phase E). */
+@keyframes session-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.session-enter {
+  animation: session-enter var(--motion-base) var(--ease-out-soft) both;
+}
+
+/** Sidebar panel swap — faster, barely there. */
+.panel-enter {
+  animation: session-enter var(--motion-fast) var(--ease-out-soft) both;
+}
+
+/**
+ * Height fold for process / tool panels — pure CSS grid rows.
+ * Prefer over mount/unmount so open/close shares the same motion token.
+ */
+.fold-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--motion-base) var(--ease-out-soft);
+}
+.fold-panel[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.fold-panel-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/** Composer send/stop press feedback. */
+.btn-press {
+  transition:
+    transform var(--motion-fast) var(--ease-out-soft),
+    background-color var(--motion-fast) var(--ease-out-soft),
+    box-shadow var(--motion-fast) var(--ease-out-soft),
+    opacity var(--motion-fast) var(--ease-out-soft);
+}
+.btn-press:active:not(:disabled) {
+  transform: scale(0.94);
+}
+.btn-press:disabled {
+  transform: none;
+}
+
+.stagger-in > * {
+  animation: fade-up-in var(--motion-base) var(--ease-out-soft) both;
+}
+.stagger-in > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.stagger-in > *:nth-child(2) {
+  animation-delay: 50ms;
+}
+.stagger-in > *:nth-child(3) {
+  animation-delay: 100ms;
+}
+.stagger-in > *:nth-child(4) {
+  animation-delay: 150ms;
+}
+.stagger-in > *:nth-child(5) {
+  animation-delay: 200ms;
+}
+.stagger-in > *:nth-child(6) {
+  animation-delay: 250ms;
+}
+
+.ambient-breathe {
+  animation: ambient-breathe 8s var(--ease-out-soft) infinite;
+}
+
+.ambient-drift {
+  animation: ambient-drift 18s var(--ease-out-soft) infinite;
+}
+
+/** Soft edge darken so hero content reads on rich AmbientStage (phase D). */
+.ambient-vignette {
+  background: radial-gradient(
+    ellipse 75% 70% at 50% 42%,
+    transparent 0%,
+    transparent 45%,
+    rgb(15 23 42 / 0.04) 100%
+  );
+}
+html.dark .ambient-vignette {
+  background: radial-gradient(
+    ellipse 75% 70% at 50% 42%,
+    transparent 0%,
+    transparent 40%,
+    rgb(2 6 23 / 0.45) 100%
+  );
+}
+
+/** Ceremony mark ring — optional class on RitualMark wrapper. */
+.ritual-mark-ring {
+  box-shadow:
+    0 0 0 1px rgb(124 58 237 / 0.18),
+    0 8px 28px -8px rgb(124 58 237 / 0.35),
+    0 2px 8px rgb(15 23 42 / 0.06);
+}
+html.dark .ritual-mark-ring {
+  box-shadow:
+    0 0 0 1px rgb(167 139 250 / 0.22),
+    0 10px 32px -8px rgb(91 33 182 / 0.45),
+    0 2px 8px rgb(0 0 0 / 0.3);
+}
+.ritual-mark-ring-primary {
+  box-shadow:
+    0 0 0 1px rgb(37 99 235 / 0.16),
+    0 8px 28px -8px rgb(37 99 235 / 0.28),
+    0 2px 8px rgb(15 23 42 / 0.06);
+}
+html.dark .ritual-mark-ring-primary {
+  box-shadow:
+    0 0 0 1px rgb(96 165 250 / 0.2),
+    0 10px 32px -8px rgb(30 64 175 / 0.4),
+    0 2px 8px rgb(0 0 0 / 0.3);
+}
+
+.ritual-seal-pop {
+  animation: ritual-seal-pop var(--motion-ritual) var(--ease-out-soft) both;
+}
+
+.ritual-ring {
+  animation: ritual-ring var(--motion-ritual) var(--ease-out-soft) both;
+}
+
+.toast-in {
+  animation: toast-in var(--motion-fast) var(--ease-out-soft) both;
+}
+
+/** Memory list: brief accent pulse after a successful write (phase C). */
+@keyframes mem-highlight {
+  0% {
+    border-color: rgb(124 58 237 / 0.55);
+    box-shadow:
+      0 0 0 0 rgb(124 58 237 / 0.35),
+      var(--shadow-app-card);
+    background-color: rgb(237 233 254 / 0.65);
+  }
+  55% {
+    border-color: rgb(124 58 237 / 0.35);
+    box-shadow:
+      0 0 0 4px rgb(124 58 237 / 0.12),
+      var(--shadow-app-card);
+  }
+  100% {
+    border-color: var(--color-app-border, rgb(226 232 240));
+    box-shadow: var(--shadow-app-card);
+    background-color: transparent;
+  }
+}
+
+html.dark .mem-highlight {
+  animation-name: mem-highlight-dark;
+}
+
+@keyframes mem-highlight-dark {
+  0% {
+    border-color: rgb(167 139 250 / 0.55);
+    box-shadow:
+      0 0 0 0 rgb(139 92 246 / 0.35),
+      var(--shadow-app-card);
+    background-color: rgb(76 29 149 / 0.28);
+  }
+  55% {
+    border-color: rgb(167 139 250 / 0.3);
+    box-shadow:
+      0 0 0 4px rgb(139 92 246 / 0.12),
+      var(--shadow-app-card);
+  }
+  100% {
+    border-color: rgb(51 65 85);
+    box-shadow: var(--shadow-app-card);
+    background-color: transparent;
+  }
+}
+
+.mem-highlight {
+  animation: mem-highlight 1.8s var(--ease-out-soft) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mem-highlight {
+    animation: none !important;
+    border-color: rgb(124 58 237 / 0.45) !important;
+  }
+}
+
+.motion-lift {
+  transition:
+    transform var(--motion-fast) var(--ease-out-soft),
+    box-shadow var(--motion-fast) var(--ease-out-soft),
+    border-color var(--motion-fast) var(--ease-out-soft),
+    background-color var(--motion-fast) var(--ease-out-soft);
+}
+.motion-lift:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow:
+    0 4px 12px rgb(15 23 42 / 0.08),
+    0 2px 4px rgb(15 23 42 / 0.04);
+}
+@media (prefers-reduced-motion: reduce) {
+  .motion-lift:hover:not(:disabled) {
+    transform: none;
+  }
+}

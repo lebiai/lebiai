@@ -1,6 +1,6 @@
 //! Feishu credential storage.
 //!
-//! Storage path: `~/.small-rust-hermes/feishu.toml`, mode `0600`. The file
+//! Storage path: `~/.lebi-ai/feishu.toml`, mode `0600`. The file
 //! contains `app_id` and `app_secret` — treat them like API keys.
 
 use std::path::{Path, PathBuf};
@@ -24,8 +24,7 @@ fn default_domain() -> String {
 
 impl StoredCreds {
     pub fn default_path() -> Result<PathBuf> {
-        let home = dirs::home_dir().context("resolving $HOME")?;
-        Ok(home.join(".small-rust-hermes").join("feishu.toml"))
+        Ok(hermes_core::data_path("feishu.toml"))
     }
 
     /// Load credentials from `path`. Returns `Ok(None)` if the file does not
@@ -33,8 +32,8 @@ impl StoredCreds {
     pub fn load(path: &Path) -> Result<Option<Self>> {
         match std::fs::read_to_string(path) {
             Ok(s) => {
-                let c: Self = toml::from_str(&s)
-                    .with_context(|| format!("parsing {}", path.display()))?;
+                let c: Self =
+                    toml::from_str(&s).with_context(|| format!("parsing {}", path.display()))?;
                 Ok(Some(c))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

@@ -1,9 +1,7 @@
 //! Palace tools: zone navigation for the Memory Palace.
 
 use hermes_core::{Result, ToolCallOutcome, ToolSpec};
-use hermes_memory::{
-    get_zone, group_by_zone, load_zone_summary, MemoryEvent, MemoryStatEntry, MemoryStore,
-};
+use hermes_memory::{get_zone, group_by_zone, MemoryEvent, MemoryStatEntry, MemoryStore};
 use serde::Deserialize;
 
 // --- palace_zones ---
@@ -70,13 +68,6 @@ pub async fn read_zone_run(
 ) -> Result<ToolCallOutcome> {
     let a: ReadZoneArgs = serde_json::from_value(args)
         .map_err(|e| hermes_core::Error::ToolHost(format!("palace_read_zone: bad args: {e}")))?;
-
-    if let Ok(Some(summary)) = load_zone_summary(&a.zone) {
-        return Ok(ToolCallOutcome {
-            content: format!("[cached summary for zone '{}']\n{}", a.zone, summary),
-            is_error: false,
-        });
-    }
 
     let active = store
         .list_active()

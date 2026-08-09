@@ -7,7 +7,7 @@
 //!   1. Fetch a QR from `ilinkai.weixin.qq.com`.
 //!   2. Render it directly in this terminal as a unicode QR. Open WeChat
 //!      on your phone and scan it.
-//!   3. On confirmation, persist `bot_token` to `~/.small-rust-hermes/wechat.toml`.
+//!   3. On confirmation, persist `bot_token` to `~/.lebi-ai/wechat.toml`.
 //!
 //! The token value is NEVER printed to stdout/stderr.
 
@@ -50,7 +50,10 @@ async fn main() -> Result<()> {
         .save(&creds_path)
         .with_context(|| format!("saving creds to {}", creds_path.display()))?;
     if let Some(bot) = &creds.bot_id {
-        println!("✓ 登录成功 (bot_id={bot})。Token 已保存到 {}", creds_path.display());
+        println!(
+            "✓ 登录成功 (bot_id={bot})。Token 已保存到 {}",
+            creds_path.display()
+        );
     } else {
         println!("✓ 登录成功。Token 已保存到 {}", creds_path.display());
     }

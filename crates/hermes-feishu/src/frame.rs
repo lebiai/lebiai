@@ -197,7 +197,10 @@ impl Frame {
 
     /// Look up a header value by key.
     pub fn header(&self, key: &str) -> Option<&str> {
-        self.headers.iter().find(|h| h.key == key).map(|h| h.value.as_str())
+        self.headers
+            .iter()
+            .find(|h| h.key == key)
+            .map(|h| h.value.as_str())
     }
 
     /// Add or replace a header.

@@ -58,14 +58,14 @@ pub fn search_memories_scored<'a>(
     let q_tf = term_freq(&q_tokens);
     let q_vec = tfidf(&q_tf, &df, n);
 
-    // Score each memory by cosine similarity.
+    // Score each memory by cosine similarity, then C-SESS continuity boosts.
     let mut scored: Vec<(f64, &LoadedMemory)> = doc_tokens
         .into_iter()
         .zip(memories.iter())
         .map(|(tokens, m)| {
             let m_tf = term_freq(&tokens);
             let m_vec = tfidf(&m_tf, &df, n);
-            let score = cosine_similarity(&q_vec, &m_vec);
+            let score = cosine_similarity(&q_vec, &m_vec) * continuity_boost(m);
             (score, m)
         })
         .filter(|(score, _)| *score > 0.0)
@@ -75,8 +75,30 @@ pub fn search_memories_scored<'a>(
     scored.into_iter().take(k).map(|(s, m)| (m, s)).collect()
 }
 
+/// Prefer work episodes / standards when scores are close so Continuity hits.
+fn continuity_boost(m: &LoadedMemory) -> f64 {
+    let zone = m.frontmatter.zone.to_lowercase();
+    let tags = &m.frontmatter.tags;
+    let is_episode = zone == "work"
+        || zone == "episode"
+        || tags.iter().any(|t| {
+            let t = t.to_lowercase();
+            t == "work-episode" || t == "episode"
+        })
+        || m.body.contains("【工作情节】");
+    if is_episode {
+        return 1.4;
+    }
+    let is_standard =
+        zone == "standards" || tags.iter().any(|t| t.eq_ignore_ascii_case("standard"));
+    if is_standard {
+        return 1.15;
+    }
+    1.0
+}
+
 /// Like `search_memories_scored` but multiplies each score by the memory's
-/// effectiveness factor before ranking.
+/// effectiveness factor and time-decay before ranking.
 pub fn search_memories_with_effectiveness<'a>(
     memories: &'a [LoadedMemory],
     query: &str,
@@ -88,12 +110,13 @@ pub fn search_memories_with_effectiveness<'a>(
         return raw.into_iter().take(k).collect();
     }
     let eff = effectiveness.unwrap();
+    let now = chrono::Utc::now();
     let mut adjusted: Vec<(&LoadedMemory, f64)> = raw
         .into_iter()
         .map(|(m, score)| {
             let factor = eff
                 .get(&m.frontmatter.id)
-                .map(|e| e.factor())
+                .map(|e| e.factor() * e.decay_factor(now))
                 .unwrap_or(1.0);
             (m, score * factor)
         })
@@ -156,6 +179,10 @@ fn memory_tokens(m: &LoadedMemory) -> Vec<String> {
     for tag in &m.frontmatter.tags {
         tokens.extend(tokenise(tag));
     }
+    // Zone name participates in matching (work / standards / preferences).
+    if !m.frontmatter.zone.is_empty() {
+        tokens.extend(tokenise(&m.frontmatter.zone));
+    }
     tokens
 }
 
@@ -171,11 +198,7 @@ fn term_freq(tokens: &[String]) -> HashMap<String, f64> {
     tf
 }
 
-fn tfidf(
-    tf: &HashMap<String, f64>,
-    df: &HashMap<String, usize>,
-    n: f64,
-) -> HashMap<String, f64> {
+fn tfidf(tf: &HashMap<String, f64>, df: &HashMap<String, usize>, n: f64) -> HashMap<String, f64> {
     let mut vec = HashMap::new();
     for (term, &freq) in tf {
         let d = df.get(term).copied().unwrap_or(0) as f64;
@@ -216,7 +239,12 @@ mod tests {
     use std::path::PathBuf;
 
     fn memory(id: &str, body: &str, tags: &[&str]) -> LoadedMemory {
-        let mut fm = MemoryFrontmatter::new(Source::User, Confidence::Medium, tags.iter().copied().map(String::from).collect(), "general".to_string());
+        let mut fm = MemoryFrontmatter::new(
+            Source::User,
+            Confidence::Medium,
+            tags.iter().copied().map(String::from).collect(),
+            "general".to_string(),
+        );
         fm.id = id.to_string();
         LoadedMemory {
             frontmatter: fm,
@@ -229,8 +257,16 @@ mod tests {
     #[test]
     fn ranks_by_relevance() {
         let mems = vec![
-            memory("m1", "Always use anyhow for error handling in Rust applications", &["rust", "error"]),
-            memory("m2", "Prefer dark theme in all editors and IDEs", &["theme"]),
+            memory(
+                "m1",
+                "Always use anyhow for error handling in Rust applications",
+                &["rust", "error"],
+            ),
+            memory(
+                "m2",
+                "Prefer dark theme in all editors and IDEs",
+                &["theme"],
+            ),
         ];
         let hits = search_memories(&mems, "rust error handling", 3);
         assert_eq!(hits.len(), 1);
@@ -267,6 +303,24 @@ mod tests {
         ];
         let hits = search_memories(&mems, "rust", 2);
         assert_eq!(hits.len(), 2);
+    }
+
+    #[test]
+    fn continuity_boost_prefers_work_episode() {
+        let mut ep = memory("ep", "【工作情节】项目复盘 三段结构开场", &["work-episode"]);
+        ep.frontmatter.zone = "work".into();
+        let generic = memory("g", "random note about weather", &[]);
+        // Lexical overlap on 复盘/开场; boost should keep the episode in top-k.
+        let mems = vec![
+            memory("g2", "writing tips generic fluff text about documents", &[]),
+            ep,
+            generic,
+        ];
+        let hits = search_memories(&mems, "写复盘 开场", 2);
+        assert!(
+            hits.iter().any(|m| m.frontmatter.id == "ep"),
+            "work episode should appear in top results for similar work query"
+        );
     }
 
     #[test]

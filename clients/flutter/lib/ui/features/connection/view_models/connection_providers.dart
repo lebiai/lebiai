@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:hermes_app/data/models/health.dart';
@@ -31,22 +32,27 @@ class ServerUrlNotifier extends Notifier<String> {
 }
 
 /// Bearer token the server requires (printed once on `hermes serve` startup).
-/// Empty string ⇒ unauthenticated (the server will 401 every request).
+/// Stored in OS secure storage (iOS/macOS Keychain, Android Keystore) — never
+/// plaintext prefs. Empty string ⇒ unauthenticated (server will 401 every request).
 final serverTokenProvider =
     NotifierProvider<ServerTokenNotifier, String>(ServerTokenNotifier.new);
 
 class ServerTokenNotifier extends Notifier<String> {
-  ServerTokenNotifier([this._prefs, this._initial]);
+  ServerTokenNotifier([this._storage, this._initial]);
 
-  final SharedPreferences? _prefs;
+  final FlutterSecureStorage? _storage;
   final String? _initial;
 
   @override
   String build() => _initial ?? '';
 
-  void set(String token) {
+  Future<void> set(String token) async {
     state = token;
-    _prefs?.setString(serverTokenKey, token);
+    if (token.isEmpty) {
+      await _storage?.delete(key: serverTokenKey);
+    } else {
+      await _storage?.write(key: serverTokenKey, value: token);
+    }
   }
 }
 

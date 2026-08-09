@@ -47,8 +47,13 @@ pub fn resolve(workspace: &Path, user_path: &str) -> Result<PathBuf> {
     };
 
     if !norm_canon.starts_with(&ws_canon) {
+        let hint = if user_path.contains("memories") || user_path.contains("memory") {
+            " Use memory_save for durable memories (not write/edit)."
+        } else {
+            ""
+        };
         return Err(Error::ToolHost(format!(
-            "path escapes workspace: {} resolves to {} which is outside {}",
+            "path escapes workspace: {} resolves to {} which is outside {}{hint}",
             user_path,
             norm_canon.display(),
             ws_canon.display()
@@ -59,9 +64,8 @@ pub fn resolve(workspace: &Path, user_path: &str) -> Result<PathBuf> {
 
 /// Like `std::fs::canonicalize` but doesn't fail on macOS `/tmp` → `/private/tmp`.
 fn dunce_canonicalize(p: &Path) -> Result<PathBuf> {
-    std::fs::canonicalize(p).map_err(|e| {
-        Error::ToolHost(format!("cannot canonicalize {}: {e}", p.display()))
-    })
+    std::fs::canonicalize(p)
+        .map_err(|e| Error::ToolHost(format!("cannot canonicalize {}: {e}", p.display())))
 }
 
 /// Normalize `..` and `.` components without touching the filesystem.

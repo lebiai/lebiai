@@ -1,18 +1,34 @@
-# Hermes
+# lebi-AI（乐彼AI）
 
-A self-evolving AI agent built in Rust.
+**Feels more like your hand every time.** Local. Sharper every yes.
 
-Hermes learns from every conversation — distilling reusable skills, accumulating memories, and resolving conflicts — so it gets better the more you use it.
+> 越用越像你的手感。  
+> 接得住你的想法，推得动你的事，必要时敢顶你——第二次更准。
+
+Not a chatbot toy. Not a sycophant. Not a lawyer suite. Not a coding-only IDE.  
+A **local work buddy**: understands how you think and work, moves real work forward, pushes back when it matters—and gets tighter with your standards after you approve what to keep.
+
+Product card: [`PRODUCT_PRINCIPLES.md`](./PRODUCT_PRINCIPLES.md) · Blueprint: [`docs/work-companion-solution.md`](./docs/work-companion-solution.md).
+
+> **权威文档（仓库根仅此 4 份，冲突时按序号小的覆盖大的）**
+> - [PRODUCT_PRINCIPLES.md](./PRODUCT_PRINCIPLES.md) — P0 产品原则
+> - [DEVELOPMENT_RULES.md](./DEVELOPMENT_RULES.md) — P1 开发规则与变更流程
+> - [AGENTS.md](./AGENTS.md) — P2 AI / 协作者入口
+> - [README.md](./README.md) — P3 本简介
+>
+> **其他所有说明文档** → [`docs/`](./docs/)（索引：[`docs/README.md`](./docs/README.md)；
+> 变更台账：[`docs/records/`](./docs/records/)）
 
 ## Features
 
-- **Self-evolution** — Reflection pipeline extracts skills and memories from conversations, with human approval
-- **Micro-reflection** — Lightweight per-turn background analysis (~500 tokens) that never blocks input
+- **Work & companion** — Do real work, advise, remember with evidence, optional care after delivery (see product protocol in `hermes-core`)
+- **Better with use** — Reflection extracts work episodes, standards, preferences, and skills — with human approval
+- **Micro-reflection** — Lightweight per-turn background analysis that never blocks input
 - **MCP tools** — Connect any [Model Context Protocol](https://modelcontextprotocol.io/) server (stdio or Streamable HTTP)
 - **Multi-provider** — Anthropic Claude, DeepSeek, any OpenAI-compatible API
 - **Plain-file storage** — Memories and skills are Markdown + YAML frontmatter, human-readable and git-friendly
 - **Single binary** — No database, no message queue; ships as a single static binary (Docker image also available)
-- **CLI and desktop GUI** — Same engine, same files; pick the surface that fits the task
+- **CLI and desktop GUI** — Same engine, same files; GUI primary surface is **Dialogue** (对话), not idle chat
 
 ## Quick Start
 
@@ -23,8 +39,8 @@ cd small-rust-hermes
 cargo build --release
 
 # Configure (requires an API key)
-mkdir -p ~/.small-rust-hermes
-cat > ~/.small-rust-hermes/config.toml << 'EOF'
+mkdir -p ~/.lebi-ai
+cat > ~/.lebi-ai/config.toml << 'EOF'
 default_provider = "anthropic"
 
 [providers.anthropic]
@@ -32,7 +48,7 @@ base_url = "https://api.anthropic.com"
 api_key = "sk-ant-..."
 model = "claude-sonnet-4-20250514"
 EOF
-chmod 600 ~/.small-rust-hermes/config.toml
+chmod 600 ~/.lebi-ai/config.toml
 
 # Run
 cargo run -p hermes-cli -- chat
@@ -44,8 +60,8 @@ cargo run -p hermes-cli -- chat
 
 ```bash
 # 1. 准备配置（同上 Quick Start 的 config.toml）
-mkdir -p ~/.small-rust-hermes
-# ... 写好 ~/.small-rust-hermes/config.toml ...
+mkdir -p ~/.lebi-ai
+# ... 写好 ~/.lebi-ai/config.toml ...
 
 # 2. 构建 + 扫码登录微信（一次性）
 docker compose build
@@ -60,7 +76,7 @@ docker compose logs -f
 
 ```bash
 docker run --rm -it \
-  -v ~/.small-rust-hermes:/data/.small-rust-hermes \
+  -v ~/.lebi-ai:/data/.lebi-ai \
   -e HOME=/data \
   hermes:latest ask "解释这段错误"
 ```
@@ -69,7 +85,7 @@ docker run --rm -it \
 
 ## 消息渠道
 
-Hermes 支持通过微信和飞书与 AI 对话——在手机上发消息，Hermes 在后台自动回复。
+乐彼AI（lebi-AI）支持通过微信、飞书和 Telegram 与 AI 对话——在手机上发消息，乐彼AI 在后台自动回复。
 
 ### 微信 (WeChat)
 
@@ -81,7 +97,7 @@ hermes wechat login
 hermes wechat run
 ```
 
-凭证保存在 `~/.small-rust-hermes/wechat.toml`（mode 600）。
+凭证保存在 `~/.lebi-ai/wechat.toml`（mode 600）。
 
 ### 飞书 (Feishu / Lark)
 
@@ -104,28 +120,63 @@ hermes feishu auth
 # 按提示输入 App ID 和 App Secret，自动验证并保存
 
 # 方式二：手动填写配置文件
-cat > ~/.small-rust-hermes/feishu.toml << 'EOF'
+cat > ~/.lebi-ai/feishu.toml << 'EOF'
 app_id = "cli_xxxxxxxxxxxx"
 app_secret = "xxxxxxxxxxxxxxxxxxxxxxxx"
 domain = "https://open.feishu.cn"
 EOF
-chmod 600 ~/.small-rust-hermes/feishu.toml
+chmod 600 ~/.lebi-ai/feishu.toml
 
 # 启动飞书长连接
 hermes feishu run
 ```
 
-运行后 Hermes 会通过 WebSocket 连接到飞书服务器，收到文本消息时自动调用 AI 回复。每个飞书用户拥有独立的会话历史，保存在 `~/.small-rust-hermes/sessions/feishu/{user_id}/` 下。
+运行后 乐彼AI 会通过 WebSocket 连接到飞书服务器，收到文本消息时自动调用 AI 回复。每个飞书用户拥有独立的会话历史，保存在 `~/.lebi-ai/sessions/feishu/{user_id}/` 下。
 
 工具调用时会在飞书中实时推送 🔧 摘要消息，让你知道 AI 正在做什么。
+
+### Telegram
+
+Telegram 通过 Bot API 长轮询接收消息，无需公网回调地址，适合本地开发和内网部署。
+
+#### 前置准备
+
+1. 在 Telegram 中找 **@BotFather**，发送 `/newbot` 按提示创建 bot，得到 **Bot Token**
+2. （可选）在 BotFather 用 `/setprivacy` 设为 Disabled，让 bot 能收到群里 @ 之外的指令
+
+#### 配置与运行
+
+```bash
+# 方式一：交互式配置（推荐，自动验证 token 并保存）
+hermes telegram auth
+# 按提示输入 Bot Token
+
+# 方式二：手动填写配置文件
+cat > ~/.lebi-ai/telegram.toml << 'EOF'
+bot_token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+EOF
+chmod 600 ~/.lebi-ai/telegram.toml
+
+# 启动长轮询
+hermes telegram run
+```
+
+运行后 乐彼AI 会长轮询 Telegram Bot API，收到文本消息时自动调用 AI 回复。每个 chat 拥有
+独立的会话历史，保存在 `~/.lebi-ai/sessions/telegram/{chat_id}/` 下。长轮询游标
+持久化在 `~/.lebi-ai/telegram-offset.txt`，重启后不会重复回复已处理的消息。
+
+工具调用时会在 Telegram 中实时推送 🔧 摘要消息，让你知道 AI 正在做什么。目前只支持文本消息，
+贴纸 / 图片 / 语音等会收到「目前只支持文本消息。」的提示。
 
 ## Usage
 
 ```bash
-# One-shot question
+# One-shot question — lightweight single turn, no session identity, no
+# memory/skills injection, no confirmation prompt (all tool calls auto-approved).
+# Prefer `hermes chat` for anything involving memory, skills, or dangerous tools.
 hermes ask "explain this error: cannot borrow as mutable"
 
-# Interactive chat (with reflection at session end)
+# Interactive chat (session-end full reflection when min turns met; /reflect always)
 hermes chat
 
 # Autonomous agent: iterate until goal is complete
@@ -155,7 +206,7 @@ hermes memory delete mem_a1b2c3d4
 
 # Sessions
 hermes session list
-hermes session show ~/.small-rust-hermes/sessions/abc123.jsonl
+hermes session show ~/.lebi-ai/sessions/abc123.jsonl
 
 # Reflection stats
 hermes reflect-stats --last 20
@@ -172,7 +223,7 @@ hermes mcp test
 hermes mcp test filesystem
 ```
 
-Configure MCP servers in `~/.small-rust-hermes/mcp.json`:
+Configure MCP servers in `~/.lebi-ai/mcp.json`:
 
 ```json
 {
@@ -192,36 +243,43 @@ Configure MCP servers in `~/.small-rust-hermes/mcp.json`:
 
 ## Desktop GUI
 
-The GUI is a Tauri 2 desktop app that talks to the exact same engine, config file, skills, memories, and sessions as the CLI. Anything you create in the GUI shows up under `~/.small-rust-hermes/` on disk, and vice versa.
+The GUI is a Tauri 2 desktop app that talks to the exact same engine, config file, skills, memories, and sessions as the CLI. Anything you create in the GUI shows up under `~/.lebi-ai/` on disk, and vice versa.
 
 What the GUI gives you that the CLI doesn't:
 
 - **Tool confirmation modal** — when the model wants to run a tool that requires prompting, you get Allow / Always-allow (session) / Deny with an optional reason
+- **Session-end reflection** — leaving the current chat (new session, switch history, delete active, or quit the window) runs full reflection when `reflect.min_turns` is met; candidates are reviewed in a modal before anything is written (same approve gate as the Reflect panel)
 - **Memory sidebar with zones** — left-side zone navigator (All / Pinned / one row per zone), search, and an inline create form with scope + zone + pinned
 - **Skill CRUD** — create / edit / delete skills inline, no need to drop into `$EDITOR`
 - **Editable settings** — model, max-tokens, base URL, API key (write-only), reflect min-turns, auto-accept, context limit, and permission allow/deny rules; writes round-trip via `toml_edit` so comments and unknown keys in `config.toml` survive
 - **Reflection conflict UI** — for each conflict candidate: Keep new / Keep old / Merge (inline textarea) / Scope split / Skip; mirrors the CLI's `apply_conflict_action`
 
-### Run in dev
+### Run the desktop GUI (default path — avoids white screen)
 
-Two processes — vite on `5173`, then the Tauri shell that loads it:
+The window loads **`crates/hermes-gui/ui/dist`**, not Vite on port 5173.
+If you only `cargo run -p hermes-gui` while `devUrl` pointed at 5173 and Vite
+was not running, you get a **blank webview**. Default config does **not** use 5173.
 
 ```bash
-# Terminal 1 — frontend dev server (hot reload)
-cd crates/hermes-gui/ui
-npm install      # first time only
-npm run dev
+# Recommended (build frontend + start)
+scripts/run-gui.sh
 
-# Terminal 2 — Tauri window
+# Equivalent
+cd crates/hermes-gui/ui && npm install && npm run build && cd -
 cargo run -p hermes-gui
 ```
+
+After editing `ui/src/**`, run `npm run build` again (or re-run `scripts/run-gui.sh`).
+
+Optional hot-reload (collaborators only, not the product path): see [docs/gui-run.md](docs/gui-run.md).
 
 ### Build a release bundle
 
 ```bash
-cd crates/hermes-gui/ui && npm run build && cd -
+# beforeBuildCommand in tauri.conf.json also runs `npm run build` under ui/
+cd crates/hermes-gui/ui && npm install && npm run build && cd -
 cargo build -p hermes-gui --release
-# binary: target/release/hermes-gui
+# binary: target/release/lebi-AI
 ```
 
 ### Package a macOS DMG
@@ -229,29 +287,50 @@ cargo build -p hermes-gui --release
 ```bash
 # one-time: cargo install tauri-cli --version "^2.0" --locked
 scripts/build-dmg.sh
-# output: target/release/bundle/dmg/Hermes_<version>_<arch>.dmg
+# output: target/release/bundle/dmg/lebi-AI_<version>_<arch>.dmg
 ```
 
 Set `TAURI_TARGET=universal-apple-darwin` to build a universal (Intel + Apple Silicon) DMG. The resulting DMG is unsigned — for distribution add codesigning + notarization separately.
 
-Config is shared with the CLI (`~/.small-rust-hermes/config.toml`, mode 600). The GUI writes the file atomically and preserves its mode. Changes take effect on next launch — there is no hot reload yet.
+### Package a Windows EXE
+
+```powershell
+# On a Windows machine (Tauri cannot cross-compile installers from macOS):
+# one-time: cargo install tauri-cli --version "^2.0" --locked
+.\scripts\build-exe.ps1
+# output: target\release\bundle\nsis\lebi-AI_<version>_<arch>-setup.exe
+```
+
+Or build both installers on CI (tag `v*` or manual run): `.github/workflows/release.yml`
+(macOS → DMG, Windows → NSIS EXE). Both are unsigned — SmartScreen/Gatekeeper will
+prompt once on first launch.
+
+### After downloading an installer
+
+Install, first-launch allowlist (unsigned app), API-key setup, where your data lives,
+uninstall and FAQ: see [docs/install.md](docs/install.md)（用户拿到安装包后怎么操作）。
+
+Config is shared with the CLI (`~/.lebi-ai/config.toml`, mode 600). The GUI writes the file atomically and preserves its mode. Changes take effect on next launch — there is no hot reload yet.
 
 ## Architecture
 
 ```
 hermes-core        Core abstractions: Session, LlmProvider, ToolHost, context compaction
+hermes-channel     Shared chat-channel driver (CLI/GUI): Channel trait, ServeCtx, per-user sessions
 hermes-llm         Anthropic + OpenAI-compatible provider implementations
 hermes-turn        Turn execution engine: tool loop, parallel execution, permissions
 hermes-tools       Built-in tools: read/write/edit/bash/grep/glob/git/think/todo/palace
 hermes-mcp         MCP client (rmcp): stdio and Streamable HTTP transports
 hermes-store       JSONL session persistence, frontmatter parsing
-hermes-skills      Skill loading, storage, relevance matching (BM25 + triggers)
+hermes-skills      Skill loading, storage, relevance matching (token overlap + triggers, optional embedding hybrid)
 hermes-memory      Memory palace: zone-based storage, supersedes chain, effectiveness tracking
 hermes-reflect     Full + micro reflection pipeline, profile compilation
 hermes-cli         CLI entry point and subcommands
-hermes-weixin      WeChat (iLink Bot) bridge: QR login, long-poll, send message
+hermes-weixin      WeChat (iLink Bot) bridge: QR login, shared long-poll serve loop, send message
 hermes-feishu      Feishu (Lark) bridge: WS long-connection, protobuf frames, send message
+hermes-server      HTTP/WS backend for the mobile client (bearer-token auth; routes 1:1 with GUI commands)
 hermes-gui         Desktop GUI (Tauri)
+hermes-telegram   Telegram bridge (shares the channel driver with wechat/feishu)
 ```
 
 ### How Reflection Works
@@ -278,11 +357,13 @@ During a session, **micro-reflection** runs asynchronously after qualifying turn
 ## File Layout
 
 ```
-~/.small-rust-hermes/
+~/.lebi-ai/
 ├── config.toml          # API keys, provider config (mode 600)
 ├── mcp.json             # MCP server definitions
 ├── wechat.toml          # WeChat bot token (mode 600)
 ├── feishu.toml          # Feishu app_id/app_secret (mode 600)
+├── telegram.toml       # Telegram bot token (mode 600)
+├── server.token        # hermes-server bearer token (mode 600, auto-generated)
 ├── skills/              # Learned skills (Markdown + YAML frontmatter)
 ├── memories/            # Accumulated memories (Markdown + YAML frontmatter)
 ├── sessions/            # JSONL transcripts

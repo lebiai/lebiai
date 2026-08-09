@@ -1,0 +1,73 @@
+name: Release Installers
+
+# Build distributable desktop installers:
+#   macOS  → .dmg   (scripts/build-dmg.sh)
+#   Windows → NSIS .exe installer (scripts/build-exe.ps1)
+#
+# Trigger: push a tag `v*` or run manually (Actions → Release Installers →
+# Run workflow). Artifacts are unsigned — codesigning/notarization is a
+# distribution follow-up, documented in docs/install.md.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos-dmg:
+    name: macOS DMG
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version '^2' --locked
+
+      - name: Build DMG
+        run: scripts/build-dmg.sh
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: lebi-ai-macos-dmg
+          path: target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  windows-nsis:
+    name: Windows EXE (NSIS)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version '^2' --locked
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: .\scripts\build-exe.ps1
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: lebi-ai-windows-nsis
+          path: target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

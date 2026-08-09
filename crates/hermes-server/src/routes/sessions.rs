@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use axum::extract::{Query, State};
 use axum::Json;
-use hermes_core::{Session, SessionEvent, SessionMeta};
+use hermes_core::{
+    derive_title_from_messages, session_has_user_text, Session, SessionMeta, DEFAULT_SESSION_TITLE,
+};
 use hermes_store::{self, SessionWriter};
 use serde::{Deserialize, Serialize};
 
@@ -63,9 +65,7 @@ pub enum ContentBlockData {
         is_error: bool,
     },
     #[serde(rename_all = "camelCase")]
-    Image {
-        source: ImageSourceData,
-    },
+    Image { source: ImageSourceData },
 }
 
 #[derive(Serialize, Clone)]
@@ -85,9 +85,9 @@ pub struct PathQuery {
 fn content_block_to_data(block: &hermes_core::ContentBlock) -> ContentBlockData {
     match block {
         hermes_core::ContentBlock::Text { text } => ContentBlockData::Text { text: text.clone() },
-        hermes_core::ContentBlock::Thinking { thinking, .. } => {
-            ContentBlockData::Thinking { thinking: thinking.clone() }
-        }
+        hermes_core::ContentBlock::Thinking { thinking, .. } => ContentBlockData::Thinking {
+            thinking: thinking.clone(),
+        },
         hermes_core::ContentBlock::ToolUse { id, name, input } => ContentBlockData::ToolUse {
             id: id.clone(),
             name: name.clone(),
@@ -112,44 +112,39 @@ fn content_block_to_data(block: &hermes_core::ContentBlock) -> ContentBlockData 
     }
 }
 
+fn display_title(session: &Session) -> String {
+    if let Some(t) = session
+        .meta
+        .title
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        return t.to_string();
+    }
+    derive_title_from_messages(&session.messages)
+}
+
 pub async fn list_sessions() -> Result<Json<Vec<SessionSummary>>, ApiError> {
-    let home = dirs::home_dir().ok_or_else(|| ApiError::Internal("no $HOME".into()))?;
-    let sessions_dir = home.join(".small-rust-hermes").join("sessions");
+    let sessions_dir = hermes_core::data_path("sessions");
     if !sessions_dir.exists() {
         return Ok(Json(Vec::new()));
     }
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(&sessions_dir)
-        .map_err(|e| ApiError::Session(e.to_string()))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|ext| ext == "jsonl"))
-        .collect();
-    paths.sort_by(|a, b| b.cmp(a));
+    let _ = hermes_store::purge_empty_sessions(&sessions_dir);
+
+    let mut paths =
+        hermes_store::list_sessions(&sessions_dir).map_err(|e| ApiError::Session(e.to_string()))?;
     paths.truncate(50);
 
     let mut entries = Vec::new();
     for path in paths {
         if let Ok(session) = hermes_store::read_session(&path) {
-            let title = session
-                .messages
-                .iter()
-                .find(|m| m.role == hermes_core::Role::User)
-                .and_then(|m| {
-                    m.content.iter().find_map(|b| match b {
-                        hermes_core::ContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                })
-                .unwrap_or_else(|| "New Chat".into());
-            let title = if title.chars().count() > 60 {
-                let head: String = title.chars().take(57).collect();
-                format!("{head}...")
-            } else {
-                title
-            };
+            if !session_has_user_text(&session.messages) {
+                continue;
+            }
             entries.push(SessionSummary {
                 id: session.meta.id.clone(),
-                title,
+                title: display_title(&session),
                 created_at: session.meta.created_at.to_rfc3339(),
                 path: path.to_string_lossy().into_owned(),
             });
@@ -158,18 +153,31 @@ pub async fn list_sessions() -> Result<Json<Vec<SessionSummary>>, ApiError> {
     Ok(Json(entries))
 }
 
-pub async fn new_session(State(state): State<Arc<AppState>>) -> Result<Json<SessionSummary>, ApiError> {
-    let model = state.model().to_string();
-    let provider = state.config.default_provider.clone();
+pub async fn new_session(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<SessionSummary>, ApiError> {
+    let _ = hermes_store::purge_empty_sessions(hermes_core::data_path("sessions"));
+
+    let mut sessions = state.sessions.lock().await;
+    if let Some(id) = sessions
+        .iter()
+        .find(|(_, a)| a.session.messages.is_empty())
+        .map(|(id, _)| id.clone())
+    {
+        let active = sessions.get(&id).expect("id just found");
+        return Ok(Json(SessionSummary {
+            id: id.clone(),
+            title: DEFAULT_SESSION_TITLE.into(),
+            created_at: active.session.meta.created_at.to_rfc3339(),
+            path: active.path.to_string_lossy().into_owned(),
+        }));
+    }
+    sessions.retain(|_, a| !a.session.messages.is_empty());
+
+    let model = state.model();
+    let provider = state.config.read().unwrap().default_provider.clone();
     let meta = SessionMeta::new(model, provider);
     let path = session_path_for(&meta).map_err(|e| ApiError::Session(e.to_string()))?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| ApiError::Session(e.to_string()))?;
-    }
-    let mut writer = SessionWriter::create(&path).map_err(|e| ApiError::Session(e.to_string()))?;
-    writer
-        .append(&SessionEvent::Meta(meta.clone()))
-        .map_err(|e| ApiError::Session(e.to_string()))?;
 
     let id = meta.id.clone();
     let created_at = meta.created_at.to_rfc3339();
@@ -179,18 +187,18 @@ pub async fn new_session(State(state): State<Arc<AppState>>) -> Result<Json<Sess
         total_input_tokens: 0,
         total_output_tokens: 0,
     };
-    state.sessions.lock().await.insert(
+    sessions.insert(
         id.clone(),
         ActiveSession {
             session,
-            writer,
+            writer: None,
             path: path.clone(),
         },
     );
 
     Ok(Json(SessionSummary {
         id,
-        title: "New Chat".into(),
+        title: DEFAULT_SESSION_TITLE.into(),
         created_at,
         path: path.to_string_lossy().into_owned(),
     }))
@@ -224,13 +232,12 @@ pub async fn load_session(
         output_tokens: session.total_output_tokens,
     };
 
-    let writer =
-        SessionWriter::open_append(&path).map_err(|e| ApiError::Session(e.to_string()))?;
+    let writer = SessionWriter::open_append(&path).map_err(|e| ApiError::Session(e.to_string()))?;
     state.sessions.lock().await.insert(
         id,
         ActiveSession {
             session,
-            writer,
+            writer: Some(writer),
             path,
         },
     );

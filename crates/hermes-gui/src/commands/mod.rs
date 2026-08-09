@@ -1,7 +1,12 @@
 pub mod chat;
 pub mod config;
+pub mod inbox;
 pub mod mcp;
 pub mod memory;
+pub mod micro;
+pub mod onboarding;
 pub mod reflect;
 pub mod session;
 pub mod skills;
+pub mod upload;
+pub mod wechat;

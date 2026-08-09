@@ -2,22 +2,21 @@
 //!
 //! Two subcommands:
 //!   - `auth` — validate app_id/app_secret and persist them to
-//!     `~/.small-rust-hermes/feishu.toml`.
+//!     `~/.lebi-ai/feishu.toml`.
 //!   - `run`  — establish the WS long-connection, receive events, reply to
 //!     inbound text messages via the shared [`serve_inbound`] driver. Each
 //!     Feishu user gets their own session JSONL under
-//!     `~/.small-rust-hermes/sessions/feishu/{user_id}/`.
+//!     `~/.lebi-ai/sessions/feishu/{user_id}/`.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
-use async_trait::async_trait;
+use anyhow::{anyhow, Context, Result};
 use hermes_feishu::auth::StoredCreds;
 use hermes_feishu::client::{EventPayload, FeishuClient, MessageReceiveEvent};
 
-use super::channel::{Channel, ServeCtx, UserState, serve_inbound};
+use hermes_channel::{serve_inbound, Channel, ServeCtx, UserState};
 
 // ===== auth =================================================================
 
@@ -75,25 +74,6 @@ fn prompt_secret(label: &str) -> Result<String> {
     }
 }
 
-// ===== Channel impl =========================================================
-
-/// A Feishu reply is addressed by the sender's `open_id`.
-#[async_trait]
-impl Channel for FeishuClient {
-    type Reply = String;
-
-    fn name(&self) -> &str {
-        "feishu"
-    }
-
-    async fn send(&self, reply: &String, text: &str) -> Result<()> {
-        self.send_text(reply.as_str(), text)
-            .await
-            .context("feishu send_text")?;
-        Ok(())
-    }
-}
-
 // ===== run ==================================================================
 
 pub async fn run() -> Result<()> {
@@ -115,7 +95,7 @@ pub async fn run() -> Result<()> {
     );
 
     // ----- shared serve context (provider/host/tools/memory/skills) ----
-    let ctx = ServeCtx::build().await?;
+    let ctx = super::chat::build_channel_ctx().await?;
 
     // ----- ctrl-c handling ---------------------------------------------
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -183,9 +163,12 @@ async fn handle_event(
         return Ok(());
     }
 
-    let event_data = payload.event.as_ref().ok_or_else(|| anyhow!("event body missing"))?;
-    let msg_event: MessageReceiveEvent = serde_json::from_value(event_data.clone())
-        .context("parsing im.message.receive_v1")?;
+    let event_data = payload
+        .event
+        .as_ref()
+        .ok_or_else(|| anyhow!("event body missing"))?;
+    let msg_event: MessageReceiveEvent =
+        serde_json::from_value(event_data.clone()).context("parsing im.message.receive_v1")?;
 
     let open_id = msg_event
         .sender

@@ -20,16 +20,26 @@ pub fn spec() -> ToolSpec {
             Parent directories are created automatically. WARNING: this replaces \
             the entire file — use `edit` instead to modify parts of an existing file. \
             For large content (>150 lines), write a skeleton first, then use `edit` \
-            to fill in sections incrementally.".into(),
+            to fill in sections incrementally.\n\
+            **Generated artifacts (product default):** When the user asks you to *generate* \
+            a new deliverable (report, minutes, summary, export, draft doc) and does **not** \
+            name a path, write under `outputs/` (e.g. `outputs/meeting-notes.md`). \
+            Do **not** move edits of *existing* files into `outputs/`. \
+            If the user specifies a path, use that path."
+            .into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path relative to workspace"},
+                "path": {
+                    "type": "string",
+                    "description": "File path relative to workspace. For new generated deliverables without a user-specified path, prefer outputs/<name>.ext"
+                },
                 "content": {"type": "string", "description": "Content to write"}
             },
             "required": ["path", "content"]
         }),
-        requires_confirmation: true,
+        // Workspace-scoped writes are normal; path escape is hard-blocked in safety.
+        requires_confirmation: false,
     }
 }
 
@@ -45,20 +55,24 @@ pub async fn run(workspace: &Path, args: serde_json::Value) -> Result<ToolCallOu
         } else {
             workspace.join(&a.path)
         };
-        safety::resolve(workspace, &candidate.to_string_lossy())
-            .or_else(|_| {
-                // Last resort: just join and check prefix manually.
-                let ws_canon = std::fs::canonicalize(workspace)
-                    .map_err(|e| hermes_core::Error::ToolHost(e.to_string()))?;
-                let norm = crate::safety::normalize_join(workspace, &a.path);
-                if !norm.starts_with(&ws_canon) && !norm.starts_with(workspace) {
-                    return Err(hermes_core::Error::ToolHost(format!(
-                        "write: path escapes workspace: {}",
-                        a.path
-                    )));
-                }
-                Ok(norm)
-            })
+        safety::resolve(workspace, &candidate.to_string_lossy()).or_else(|_| {
+            // Last resort: just join and check prefix manually.
+            let ws_canon = std::fs::canonicalize(workspace)
+                .map_err(|e| hermes_core::Error::ToolHost(e.to_string()))?;
+            let norm = crate::safety::normalize_join(workspace, &a.path);
+            if !norm.starts_with(&ws_canon) && !norm.starts_with(workspace) {
+                let hint = if a.path.contains("memories") || a.path.contains("memory") {
+                    " To save a durable fact/preference, use the memory_save tool — not write."
+                } else {
+                    ""
+                };
+                return Err(hermes_core::Error::ToolHost(format!(
+                    "write: path escapes workspace: {}{hint}",
+                    a.path
+                )));
+            }
+            Ok(norm)
+        })
     })?;
 
     if let Some(parent) = path.parent() {

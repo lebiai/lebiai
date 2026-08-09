@@ -57,7 +57,10 @@ pub async fn install(source: &str, overwrite: bool, git_ref: Option<&str>) -> Re
     .await
     .map_err(|e| anyhow::anyhow!("join error: {e}"))??;
 
-    println!("✓ Installed {} (ref={})", outcome.name, outcome.resolved_ref);
+    println!(
+        "✓ Installed {} (ref={})",
+        outcome.name, outcome.resolved_ref
+    );
     println!("  Description: {}", outcome.description);
     println!(
         "  {} file{} ({} bytes total):",

@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Trash2, Plus, Pencil, Save, X } from "lucide-react";
+import { Trash2, Plus, Pencil, Save, X, Zap } from "lucide-react";
 import { useUiStore } from "../../store/uiStore";
+import { Button, EmptyState, ui } from "../common/ui";
+import { ConfirmPopover } from "../common/ConfirmPopover";
+import { toast } from "../../utils/toast";
 
 interface SkillItem {
   name: string;
@@ -47,6 +50,7 @@ export function SkillPanel() {
   const [draft, setDraft] = useState<DraftSkill>(EMPTY_DRAFT);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   const fetchSkills = async () => {
     const items = await invoke<SkillItem[]>("list_skills");
@@ -86,8 +90,8 @@ export function SkillPanel() {
     setError(null);
     const triggers = draft.triggers
       .split(",")
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
+      .map((x) => x.trim())
+      .filter((x) => x.length > 0);
     if (!draft.name.trim()) {
       setError(t("skills.nameRequired"));
       return;
@@ -102,33 +106,47 @@ export function SkillPanel() {
         scope: draft.scope,
       });
       await fetchSkills();
-      const next = await invoke<SkillItem | null>("get_skill", { name: draft.name.trim() });
+      const next = await invoke<SkillItem | null>("get_skill", {
+        name: draft.name.trim(),
+      });
       if (next) setSelected(next);
       setMode("view");
+      toast.success(t("toast.skillSaved"));
     } catch (e) {
-      setError(String(e));
+      const msg = String(e);
+      setError(msg);
+      toast.error(msg);
     } finally {
       setBusy(false);
     }
   };
 
   const handleDelete = async (name: string, scope: string) => {
-    await invoke("delete_skill", { name, scope });
-    if (selected?.name === name) {
-      setSelected(null);
-      setMode("view");
+    try {
+      await invoke("delete_skill", { name, scope });
+      if (selected?.name === name) {
+        setSelected(null);
+        setMode("view");
+      }
+      setConfirmDelete(null);
+      await fetchSkills();
+      toast.success(t("toast.skillDeleted"));
+    } catch (e) {
+      toast.error(String(e));
     }
-    fetchSkills();
   };
 
   return (
-    <div className="flex-1 flex h-full">
-      <div className="w-64 border-r border-gray-200 dark:border-gray-700 flex flex-col">
-        <header className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-lg font-semibold">{t("skills.title")}</h2>
+    <div className={`flex-1 flex h-full ${ui.page}`}>
+      <div className="w-64 border-r border-app-border dark:border-slate-800 flex flex-col bg-app-sidebar dark:bg-slate-900/50">
+        <header className={`${ui.header} !px-3`}>
+          <h2 className="text-base font-semibold text-app-fg dark:text-slate-100">
+            {t("skills.title")}
+          </h2>
           <button
+            type="button"
             onClick={startCreate}
-            className="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
+            className="p-1.5 rounded-lg hover:bg-app-muted dark:hover:bg-slate-800 text-app-fg-secondary transition-colors duration-[var(--motion-fast)]"
             title={t("skills.newTitle")}
           >
             <Plus size={16} />
@@ -136,72 +154,93 @@ export function SkillPanel() {
         </header>
         <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
           {skills.length === 0 && (
-            <p className="text-sm text-gray-500 text-center mt-8">{t("skills.empty")}</p>
+            <EmptyState
+              icon={<Zap size={22} strokeWidth={1.75} />}
+              title={t("skills.emptyTitle")}
+              description={t("skills.empty")}
+              action={
+                <Button size="sm" onClick={startCreate}>
+                  <Plus size={14} />
+                  {t("skills.newTitle")}
+                </Button>
+              }
+            />
           )}
-          {skills.map((skill) => (
-            <div
-              key={`${skill.scope}/${skill.name}`}
-              className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm ${
-                selected?.name === skill.name && mode === "view"
-                  ? "bg-gray-200 dark:bg-gray-700"
-                  : "hover:bg-gray-100 dark:hover:bg-gray-700/50"
-              }`}
-              onClick={() => select(skill)}
-            >
-              <span className="truncate flex-1 font-mono">{skill.name}</span>
-              <span className="text-[10px] uppercase text-gray-400">
-                {displayScope(skill.scope, t).slice(0, 1)}
-              </span>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDelete(skill.name, skill.scope);
-                }}
-                className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-500"
-                title={t("skills.delete")}
+          {skills.map((skill) => {
+            const key = `${skill.scope}/${skill.name}`;
+            return (
+              <div
+                key={key}
+                className={`group relative flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm ${
+                  selected?.name === skill.name && mode === "view"
+                    ? ui.sessionActive
+                    : ui.sessionIdle
+                }`}
+                onClick={() => select(skill)}
               >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
+                <span className="truncate flex-1 font-mono">{skill.name}</span>
+                <span className="text-[10px] uppercase text-app-fg-tertiary">
+                  {displayScope(skill.scope, t).slice(0, 1)}
+                </span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setConfirmDelete(key);
+                  }}
+                  className="opacity-0 group-hover:opacity-100 p-1 hover:text-app-danger"
+                  title={t("skills.delete")}
+                >
+                  <Trash2 size={12} />
+                </button>
+                <ConfirmPopover
+                  open={confirmDelete === key}
+                  message={t("skills.deleteConfirm")}
+                  onCancel={() => setConfirmDelete(null)}
+                  onConfirm={() => void handleDelete(skill.name, skill.scope)}
+                />
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto p-5">
         {mode === "view" && selected && (
-          <div className="space-y-4">
+          <div className="space-y-4 max-w-3xl">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <h3 className="text-lg font-semibold font-mono truncate">{selected.name}</h3>
-                <p className="text-sm text-gray-500 mt-1">{selected.description}</p>
+                <h3 className="text-lg font-semibold font-mono truncate text-app-fg dark:text-slate-100">
+                  {selected.name}
+                </h3>
+                <p className="text-sm text-app-fg-secondary mt-1">{selected.description}</p>
               </div>
-              <button
-                onClick={startEdit}
-                className="shrink-0 inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800"
-              >
+              <Button size="sm" variant="secondary" onClick={startEdit}>
                 <Pencil size={12} />
                 {t("skills.edit")}
-              </button>
+              </Button>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs text-gray-400">{displayScope(selected.scope, t)}</span>
-              {selected.triggers.map((t) => (
+              <span className="text-xs text-app-fg-tertiary">
+                {displayScope(selected.scope, t)}
+              </span>
+              {selected.triggers.map((tr) => (
                 <span
-                  key={t}
-                  className="text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300"
+                  key={tr}
+                  className="text-xs px-1.5 py-0.5 rounded-md bg-app-primary-soft dark:bg-blue-950/40 text-app-primary dark:text-blue-300"
                 >
-                  {t}
+                  {tr}
                 </span>
               ))}
             </div>
-            <pre className="text-sm whitespace-pre-wrap font-mono p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 overflow-y-auto max-h-[60vh]">
+            <pre className={`${ui.card} p-4 text-sm whitespace-pre-wrap font-mono overflow-y-auto max-h-[60vh] text-app-fg dark:text-slate-200`}>
               {selected.body}
             </pre>
           </div>
         )}
 
         {mode === "view" && !selected && (
-          <p className="text-sm text-gray-500 text-center mt-8">
+          <p className="text-sm text-app-fg-secondary text-center mt-12">
             {t("skills.selectHint")}
           </p>
         )}
@@ -222,7 +261,15 @@ export function SkillPanel() {
   );
 }
 
-interface SkillEditorProps {
+function SkillEditor({
+  draft,
+  onChange,
+  mode,
+  busy,
+  error,
+  onSave,
+  onCancel,
+}: {
   draft: DraftSkill;
   onChange: (d: DraftSkill) => void;
   mode: Mode;
@@ -230,9 +277,7 @@ interface SkillEditorProps {
   error: string | null;
   onSave: () => void;
   onCancel: () => void;
-}
-
-function SkillEditor({ draft, onChange, mode, busy, error, onSave, onCancel }: SkillEditorProps) {
+}) {
   const t = useUiStore((state) => state.t);
   const set = <K extends keyof DraftSkill>(k: K, v: DraftSkill[K]) =>
     onChange({ ...draft, [k]: v });
@@ -240,37 +285,29 @@ function SkillEditor({ draft, onChange, mode, busy, error, onSave, onCancel }: S
   return (
     <div className="space-y-4 max-w-2xl">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">
+        <h3 className="text-lg font-semibold text-app-fg dark:text-slate-100">
           {mode === "create" ? t("skills.editorNew") : t("skills.editorEdit")}
         </h3>
         <div className="flex gap-2">
-          <button
-            onClick={onCancel}
-            disabled={busy}
-            className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800"
-          >
+          <Button size="sm" variant="secondary" onClick={onCancel} disabled={busy}>
             <X size={12} />
             {t("skills.cancel")}
-          </button>
-          <button
-            onClick={onSave}
-            disabled={busy}
-            className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-          >
+          </Button>
+          <Button size="sm" onClick={onSave} disabled={busy}>
             <Save size={12} />
             {busy ? t("skills.saving") : t("skills.save")}
-          </button>
+          </Button>
         </div>
       </div>
 
       {error && (
-        <p className="text-sm text-red-500 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded px-3 py-2">
+        <p className="text-sm text-red-600 dark:text-red-300 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl px-3 py-2">
           {error}
         </p>
       )}
 
       <div className="space-y-1">
-        <label className="block text-xs uppercase tracking-wide text-gray-500">
+        <label className="block text-xs uppercase tracking-wide text-app-fg-secondary">
           {t("skills.name")}
         </label>
         <input
@@ -279,15 +316,13 @@ function SkillEditor({ draft, onChange, mode, busy, error, onSave, onCancel }: S
           onChange={(e) => set("name", e.target.value)}
           disabled={mode === "edit"}
           placeholder={t("skills.namePlaceholder")}
-          className="w-full font-mono rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+          className={`${ui.input} font-mono disabled:opacity-60`}
         />
-        <p className="text-[11px] text-gray-400">
-          {t("skills.nameHint")}
-        </p>
+        <p className="text-[11px] text-app-fg-tertiary">{t("skills.nameHint")}</p>
       </div>
 
       <div className="space-y-1">
-        <label className="block text-xs uppercase tracking-wide text-gray-500">
+        <label className="block text-xs uppercase tracking-wide text-app-fg-secondary">
           {t("skills.description")}
         </label>
         <input
@@ -295,12 +330,12 @@ function SkillEditor({ draft, onChange, mode, busy, error, onSave, onCancel }: S
           value={draft.description}
           onChange={(e) => set("description", e.target.value)}
           placeholder={t("skills.descriptionPlaceholder")}
-          className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className={ui.input}
         />
       </div>
 
       <div className="space-y-1">
-        <label className="block text-xs uppercase tracking-wide text-gray-500">
+        <label className="block text-xs uppercase tracking-wide text-app-fg-secondary">
           {t("skills.triggers")}
         </label>
         <input
@@ -308,19 +343,19 @@ function SkillEditor({ draft, onChange, mode, busy, error, onSave, onCancel }: S
           value={draft.triggers}
           onChange={(e) => set("triggers", e.target.value)}
           placeholder={t("skills.triggersPlaceholder")}
-          className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className={ui.input}
         />
       </div>
 
       <div className="space-y-1">
-        <label className="block text-xs uppercase tracking-wide text-gray-500">
+        <label className="block text-xs uppercase tracking-wide text-app-fg-secondary">
           {t("skills.scope")}
         </label>
         <select
           value={draft.scope}
           onChange={(e) => set("scope", e.target.value)}
           disabled={mode === "edit"}
-          className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+          className={`${ui.input} disabled:opacity-60`}
         >
           <option value="User">{t("skills.userScopeOption")}</option>
           <option value="Project">{t("skills.projectScopeOption")}</option>
@@ -328,14 +363,14 @@ function SkillEditor({ draft, onChange, mode, busy, error, onSave, onCancel }: S
       </div>
 
       <div className="space-y-1">
-        <label className="block text-xs uppercase tracking-wide text-gray-500">
+        <label className="block text-xs uppercase tracking-wide text-app-fg-secondary">
           {t("skills.body")}
         </label>
         <textarea
           value={draft.body}
           onChange={(e) => set("body", e.target.value)}
           rows={16}
-          className="w-full resize-y rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className={`${ui.input} resize-y font-mono`}
         />
       </div>
     </div>

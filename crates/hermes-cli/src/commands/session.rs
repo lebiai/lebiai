@@ -2,16 +2,13 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use hermes_core::{ContentBlock, Role};
 
 pub fn list(limit: usize) -> Result<()> {
-    let dir = dirs::home_dir()
-        .context("resolving $HOME")?
-        .join(".small-rust-hermes")
-        .join("sessions");
-    let paths = hermes_store::list_sessions(&dir)
-        .map_err(|e| anyhow::anyhow!("listing sessions: {e}"))?;
+    let dir = hermes_core::data_path("sessions");
+    let paths =
+        hermes_store::list_sessions(&dir).map_err(|e| anyhow::anyhow!("listing sessions: {e}"))?;
     if paths.is_empty() {
         println!("(no sessions in {})", dir.display());
         return Ok(());
@@ -32,8 +29,8 @@ pub fn list(limit: usize) -> Result<()> {
 }
 
 pub fn show(path: &Path) -> Result<()> {
-    let session = hermes_store::read_session(path)
-        .map_err(|e| anyhow::anyhow!("reading session: {e}"))?;
+    let session =
+        hermes_store::read_session(path).map_err(|e| anyhow::anyhow!("reading session: {e}"))?;
     println!("# {}", session.meta.id);
     println!("model:    {}", session.meta.model);
     println!("provider: {}", session.meta.provider);

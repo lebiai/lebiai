@@ -13,7 +13,9 @@ struct Args {
 pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "glob".into(),
-        description: "Find files matching a glob pattern inside the workspace (e.g. **/*.rs, src/**/*.ts).".into(),
+        description:
+            "Find files matching a glob pattern inside the workspace (e.g. **/*.rs, src/**/*.ts)."
+                .into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {

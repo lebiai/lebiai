@@ -1,4 +1,4 @@
-//! Shared application state for the Hermes server.
+//! Shared application state for the lebi-AI server.
 //!
 //! 1:1 with `hermes-gui/src/state.rs` — same `AppState`, type aliases,
 //! `init()`, and `load_tool_host()`. The only difference is no Tauri
@@ -16,7 +16,9 @@ use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore};
 use hermes_reflect::SkillCandidate;
 use hermes_skills::{FsSkillStore, LoadedSkill, SkillStore};
 use hermes_store::SessionWriter;
-use hermes_tools::{BuiltinToolHost, CompositeToolHost, ProposeContext, SearchBackend, WebToolsContext};
+use hermes_tools::{
+    BuiltinToolHost, CompositeToolHost, ProposeContext, SearchBackend, WebToolsContext,
+};
 use tokio::sync::Mutex;
 
 pub type Sessions = Arc<Mutex<HashMap<String, ActiveSession>>>;
@@ -31,27 +33,56 @@ pub type ProposeMessages = Arc<RwLock<Vec<hermes_core::Message>>>;
 pub type ProposeQueue = Arc<std::sync::Mutex<Vec<SkillCandidate>>>;
 
 pub struct AppState {
-    pub provider: Arc<dyn LlmProvider>,
+    /// Active model provider. `update_config` hot-swaps this after saving so
+    /// provider/API-key changes apply without restarting the server.
+    pub provider: RwLock<Arc<dyn LlmProvider>>,
     pub host: Arc<dyn ToolHost>,
-    pub config: Config,
+    /// Latest on-disk config; hot-swapped alongside `provider`.
+    pub config: RwLock<Config>,
     pub skill_store: Arc<FsSkillStore>,
-    pub memory_store: FsMemoryStore,
+    pub memory_store: Arc<FsMemoryStore>,
     pub sessions: Sessions,
     pub cancel_tokens: CancelTokens,
     pub confirm_tokens: ConfirmTokens,
     pub always_allowed_tools: AlwaysAllowedTools,
     pub tools: Mutex<Vec<ToolSpec>>,
     pub skills: Mutex<Vec<LoadedSkill>>,
-    pub pinned_memories: Mutex<Vec<LoadedMemory>>,
-    pub active_memories: Mutex<Vec<LoadedMemory>>,
+    pub pinned_memories: Arc<Mutex<Vec<LoadedMemory>>>,
+    pub active_memories: Arc<Mutex<Vec<LoadedMemory>>>,
     pub propose_messages: ProposeMessages,
     pub propose_queue: ProposeQueue,
+    pub micro_turns_since: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 pub struct ActiveSession {
     pub session: Session,
-    pub writer: SessionWriter,
+    /// Deferred until first user message (same as GUI).
+    pub writer: Option<SessionWriter>,
     pub path: PathBuf,
+}
+
+impl ActiveSession {
+    pub fn ensure_writer(&mut self) -> Result<&mut SessionWriter, hermes_store::SessionError> {
+        if self.writer.is_none() {
+            if let Some(parent) = self.path.parent() {
+                std::fs::create_dir_all(parent).map_err(|source| {
+                    hermes_store::SessionError::Io {
+                        path: parent.to_path_buf(),
+                        source,
+                    }
+                })?;
+            }
+            let w = if self.path.exists() {
+                SessionWriter::open_append(&self.path)?
+            } else {
+                let mut w = SessionWriter::create(&self.path)?;
+                w.append(&hermes_core::SessionEvent::Meta(self.session.meta.clone()))?;
+                w
+            };
+            self.writer = Some(w);
+        }
+        Ok(self.writer.as_mut().expect("writer present after ensure"))
+    }
 }
 
 impl AppState {
@@ -61,10 +92,22 @@ impl AppState {
             .build_active_provider()
             .context("building provider")?;
 
-        let home = dirs::home_dir().context("resolving $HOME")?;
-        let base = home.join(".small-rust-hermes");
+        let base = hermes_core::data_root();
         let workspace_root = base.join("workspace");
         std::fs::create_dir_all(&workspace_root)?;
+
+        match hermes_core::quarantine_lawyer_workspace_files(&base, &workspace_root) {
+            Ok(n) if n > 0 => {
+                tracing::info!(moved = n, "quarantined lawyer workspace leftovers");
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(%e, "workspace lawyer quarantine skipped"),
+        }
+        if let Ok(n) = hermes_store::purge_empty_sessions(base.join("sessions")) {
+            if n > 0 {
+                tracing::info!(removed = n, "purged empty session drafts");
+            }
+        }
 
         let propose_messages: ProposeMessages = Arc::new(RwLock::new(Vec::new()));
         let propose_queue: ProposeQueue = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -75,7 +118,8 @@ impl AppState {
         });
 
         let skill_store: Arc<FsSkillStore> = Arc::new(FsSkillStore::new(base.join("skills"), None));
-        let memory_store = FsMemoryStore::new(base.join("memories"), None);
+        let memory_store: Arc<FsMemoryStore> =
+            Arc::new(FsMemoryStore::new(base.join("memories"), None));
 
         let web_ctx = Arc::new(WebToolsContext {
             extract_provider: provider.clone(),
@@ -89,6 +133,7 @@ impl AppState {
 
         let host = load_tool_host(
             &workspace_root,
+            Some(memory_store.clone() as Arc<dyn MemoryStore>),
             Some(skill_store.clone() as Arc<dyn SkillStore>),
             Some(propose_ctx),
             Some(web_ctx),
@@ -105,9 +150,9 @@ impl AppState {
             .collect();
 
         Ok(Self {
-            provider,
+            provider: RwLock::new(provider),
             host,
-            config,
+            config: RwLock::new(config),
             skill_store,
             memory_store,
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -116,39 +161,59 @@ impl AppState {
             always_allowed_tools: Arc::new(Mutex::new(HashSet::new())),
             tools: Mutex::new(tools),
             skills: Mutex::new(skills),
-            pinned_memories: Mutex::new(pinned),
-            active_memories: Mutex::new(all_memories),
+            pinned_memories: Arc::new(Mutex::new(pinned)),
+            active_memories: Arc::new(Mutex::new(all_memories)),
             propose_messages,
             propose_queue,
+            micro_turns_since: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
-    pub fn model(&self) -> &str {
+    pub fn model(&self) -> String {
         self.config
+            .read()
+            .unwrap()
             .active_provider()
-            .map(|p| p.model.as_str())
-            .unwrap_or("claude-sonnet-4-20250514")
+            .map(|p| p.model.clone())
+            .unwrap_or_else(|_| {
+                hermes_llm::PROVIDER_PRESETS
+                    .first()
+                    .map(|p| p.model.to_string())
+                    .unwrap_or_default()
+            })
     }
 
     pub fn max_tokens(&self) -> u32 {
         self.config
+            .read()
+            .unwrap()
             .active_provider()
             .map(|p| p.max_tokens)
             .unwrap_or(16_384)
     }
 
     pub fn workspace_root(&self) -> String {
-        self.config.workspace.root.to_string_lossy().into_owned()
+        self.config
+            .read()
+            .unwrap()
+            .workspace
+            .root
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
 async fn load_tool_host(
     workspace_root: &Path,
+    memory_store: Option<Arc<dyn MemoryStore>>,
     skill_store: Option<Arc<dyn SkillStore>>,
     propose_ctx: Option<Arc<ProposeContext>>,
     web_ctx: Option<Arc<WebToolsContext>>,
 ) -> Result<Arc<dyn ToolHost>> {
     let mut builtin = BuiltinToolHost::new(workspace_root.to_path_buf());
+    if let Some(store) = memory_store {
+        builtin = builtin.with_memory_store(store);
+    }
     if let Some(store) = skill_store {
         builtin = builtin.with_skill_store(store);
     }
@@ -200,11 +265,7 @@ fn rewrite_filesystem_servers(cfg: &mut McpConfig, workspace_root: &Path) {
 }
 
 pub fn session_path_for(meta: &SessionMeta) -> Result<PathBuf> {
-    let home = dirs::home_dir().context("resolving $HOME")?;
     let stamp = meta.created_at.format("%Y-%m-%dT%H-%M-%S");
     let short_id = &meta.id[..8.min(meta.id.len())];
-    Ok(home
-        .join(".small-rust-hermes")
-        .join("sessions")
-        .join(format!("{stamp}-{short_id}.jsonl")))
+    Ok(hermes_core::data_path("sessions").join(format!("{stamp}-{short_id}.jsonl")))
 }

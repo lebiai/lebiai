@@ -1,8 +1,11 @@
 //! `hermes ask` — one-shot prompt: send a single user message, print reply.
 //!
-//! Supports MCP tool use: if the LLM requests tool calls, they are executed
-//! automatically (up to `cfg.limits.max_tool_rounds` rounds) before the final
-//! text is printed.
+//! Deliberately lightweight: no session identity, no memory/skill injection,
+//! no reflection. Tool calls are executed automatically (up to
+//! `cfg.limits.max_tool_rounds` rounds) and **all confirmation prompts are
+//! auto-approved** — including high-risk tools such as `skill_install` and
+//! `bash`. Prefer `hermes chat` for anything involving memory, skills, or
+//! dangerous tools (see README "Usage").
 
 use std::io::Write;
 
@@ -38,7 +41,10 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
         system,
         max_tokens: provider_cfg.max_tokens,
         max_tool_rounds: cfg.limits.max_tool_rounds,
-        permissions: hermes_turn::PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
+        permissions: hermes_turn::PermissionChecker::new(
+            &cfg.permissions.allow,
+            &cfg.permissions.deny,
+        ),
     };
 
     let history = vec![Message::user_text(prompt)];
@@ -57,66 +63,88 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
     let thinking_buf = std::sync::Mutex::new(String::new());
     use std::sync::atomic::Ordering::Relaxed;
 
-    let on_event = |event: TurnEvent| {
-        match event {
-            TurnEvent::TextDelta(text) => {
-                if thinking_started.load(Relaxed) {
-                    eprint!("\r\x1b[K");
-                    let mut buf = thinking_buf.lock().unwrap();
-                    if !buf.is_empty() {
-                        eprintln!("{}", style::dim("  💭 ──────"));
-                        for line in buf.lines() {
-                            eprintln!("{}", style::dim(&format!("  │ {line}")));
-                        }
-                    }
-                    buf.clear();
-                    thinking_started.store(false, Relaxed);
-                }
-                text_started.store(true, Relaxed);
-                print!("{text}");
-                std::io::stdout().flush().ok();
-            }
-            TurnEvent::ThinkingDelta(text) => {
-                if !text_started.load(Relaxed) {
-                    let mut buf = thinking_buf.lock().unwrap();
-                    buf.push_str(&text);
-                    let preview: String = buf.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
-                    let preview = preview.replace('\n', " ");
-                    drop(buf);
-                    eprint!("\r\x1b[K{}", style::dim(&format!("  💭 {preview}")));
-                    std::io::stderr().flush().ok();
-                    thinking_started.store(true, Relaxed);
-                }
-            }
-            TurnEvent::ToolUseStart { name, .. } => {
-                if thinking_started.load(Relaxed) {
-                    eprint!("\r\x1b[K");
-                    let mut buf = thinking_buf.lock().unwrap();
-                    if !buf.is_empty() {
-                        eprintln!("{}", style::dim("  💭 ──────"));
-                        for line in buf.lines() {
-                            eprintln!("{}", style::dim(&format!("  │ {line}")));
-                        }
-                    }
-                    buf.clear();
-                    thinking_started.store(false, Relaxed);
-                }
-                eprint!("{}", style::yellow(&format!("  {}", toolfmt::friendly_tool_desc(&name))));
-                std::io::stderr().flush().ok();
-            }
-            TurnEvent::ToolExecStart { name, input, .. } => {
+    let on_event = |event: TurnEvent| match event {
+        TurnEvent::TextDelta(text) => {
+            if thinking_started.load(Relaxed) {
                 eprint!("\r\x1b[K");
-                eprintln!("{}", style::yellow(&format!("  {}", toolfmt::friendly_tool_result(&name, &input, &workspace_root))));
-            }
-            TurnEvent::ToolUseResult { content, is_error, .. } => {
-                if is_error {
-                    eprintln!("{}", style::red(&format!("  ✗ {}", content.lines().next().unwrap_or(""))));
+                let mut buf = thinking_buf.lock().unwrap();
+                if !buf.is_empty() {
+                    eprintln!("{}", style::dim("  💭 ──────"));
+                    for line in buf.lines() {
+                        eprintln!("{}", style::dim(&format!("  │ {line}")));
+                    }
                 }
+                buf.clear();
+                thinking_started.store(false, Relaxed);
             }
-            TurnEvent::Usage { .. } | TurnEvent::Done | TurnEvent::ToolConfirmPending { .. } => {}
-            TurnEvent::Error(msg) => {
-                eprintln!("{}", style::red(&format!("  error: {msg}")));
+            text_started.store(true, Relaxed);
+            print!("{text}");
+            std::io::stdout().flush().ok();
+        }
+        TurnEvent::ThinkingDelta(text) => {
+            if !text_started.load(Relaxed) {
+                let mut buf = thinking_buf.lock().unwrap();
+                buf.push_str(&text);
+                let preview: String = buf
+                    .chars()
+                    .rev()
+                    .take(60)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                let preview = preview.replace('\n', " ");
+                drop(buf);
+                eprint!("\r\x1b[K{}", style::dim(&format!("  💭 {preview}")));
+                std::io::stderr().flush().ok();
+                thinking_started.store(true, Relaxed);
             }
+        }
+        TurnEvent::ToolUseStart { name, .. } => {
+            if thinking_started.load(Relaxed) {
+                eprint!("\r\x1b[K");
+                let mut buf = thinking_buf.lock().unwrap();
+                if !buf.is_empty() {
+                    eprintln!("{}", style::dim("  💭 ──────"));
+                    for line in buf.lines() {
+                        eprintln!("{}", style::dim(&format!("  │ {line}")));
+                    }
+                }
+                buf.clear();
+                thinking_started.store(false, Relaxed);
+            }
+            eprint!(
+                "{}",
+                style::yellow(&format!("  {}", toolfmt::friendly_tool_desc(&name)))
+            );
+            std::io::stderr().flush().ok();
+        }
+        TurnEvent::ToolExecStart { name, input, .. } => {
+            eprint!("\r\x1b[K");
+            eprintln!(
+                "{}",
+                style::yellow(&format!(
+                    "  {}",
+                    toolfmt::friendly_tool_result(&name, &input, &workspace_root)
+                ))
+            );
+        }
+        TurnEvent::ToolUseResult {
+            content, is_error, ..
+        } => {
+            if is_error {
+                eprintln!(
+                    "{}",
+                    style::red(&format!("  ✗ {}", content.lines().next().unwrap_or("")))
+                );
+            }
+        }
+        TurnEvent::Usage { .. }
+        | TurnEvent::Done
+        | TurnEvent::Cancelled
+        | TurnEvent::ToolConfirmPending { .. } => {}
+        TurnEvent::Error(msg) => {
+            eprintln!("{}", style::red(&format!("  error: {msg}")));
         }
     };
 

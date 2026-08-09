@@ -36,7 +36,10 @@ fn to_item(m: &hermes_memory::LoadedMemory) -> MemoryItem {
 
 #[tauri::command]
 pub fn list_memories(state: State<'_, AppState>) -> Result<Vec<MemoryItem>, GuiError> {
-    let memories = state.memory_store.list_active().map_err(|e| GuiError::Internal(e.to_string()))?;
+    let memories = state
+        .memory_store
+        .list_active()
+        .map_err(|e| GuiError::Internal(e.to_string()))?;
     Ok(memories.iter().map(to_item).collect())
 }
 
