@@ -10,11 +10,19 @@ name: Release Installers
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach installers to"
+        required: false
+        default: "v0.1.1"
   push:
     tags: ["v*"]
 
 env:
   CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
 
 jobs:
   macos-dmg:
@@ -71,3 +79,24 @@ jobs:
           name: lebi-ai-windows-nsis
           path: target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
+
+  publish:
+    name: Publish installers to GitHub Release
+    needs: [macos-dmg, windows-nsis]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: lebi-ai-macos-dmg
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: lebi-ai-windows-nsis
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          files: dist/**/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
