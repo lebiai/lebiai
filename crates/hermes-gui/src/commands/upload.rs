@@ -30,11 +30,15 @@ fn converter_cfg(app: &AppHandle) -> ConverterPathConfig {
 
 /// Prefer Tauri resource dir (release .app); fall back to crate resources (dev).
 fn resolve_bundled_markitdown(app: &AppHandle) -> Option<PathBuf> {
-    // 1) Packaged app: Contents/Resources/markitdown-sidecar/markitdown
+    // Windows ships a `.cmd` wrapper (runs the bundled embeddable Python);
+    // macOS/Linux ship a bash wrapper named `markitdown`.
+    let file_name = if cfg!(windows) { "markitdown.cmd" } else { "markitdown" };
+
+    // 1) Packaged app: Resources/markitdown-sidecar/markitdown[.cmd]
     if let Ok(resource_dir) = app.path().resource_dir() {
         for rel in [
-            "markitdown-sidecar/markitdown",
-            "resources/markitdown-sidecar/markitdown",
+            format!("markitdown-sidecar/{file_name}"),
+            format!("resources/markitdown-sidecar/{file_name}"),
         ] {
             let p = resource_dir.join(rel);
             if p.is_file() {
@@ -44,8 +48,9 @@ fn resolve_bundled_markitdown(app: &AppHandle) -> Option<PathBuf> {
     }
 
     // 2) Dev / cargo run: next to hermes-gui crate
-    let dev =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/markitdown-sidecar/markitdown");
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources/markitdown-sidecar")
+        .join(file_name);
     if dev.is_file() {
         return Some(dev);
     }

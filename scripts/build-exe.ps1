@@ -8,10 +8,11 @@
 # Notes:
 # - The resulting installer is unsigned. Windows SmartScreen will warn on
 #   first run — see docs/install.md for the "More info → Run anyway" path.
-# - The markitdown document-converter sidecar is bundled on macOS only
-#   (see tauri.macos.conf.json). On Windows, document import falls back to
-#   the data-dir binary (%USERPROFILE%\.lebi-ai\bin\markitdown.exe) or the
-#   HERMES_MARKITDOWN env var.
+# - The markitdown document-converter sidecar is bundled on both macOS and
+#   Windows (tauri.macos.conf.json / tauri.windows.conf.json resources).
+#   On Windows it ships a self-contained embeddable Python + wheels
+#   (scripts/prepare-markitdown-bundle.ps1), so document import works
+#   out of the box. HERMES_MARKITDOWN still overrides as a dev escape hatch.
 # - First run takes 5–10 minutes (Tauri pulls in WebView2 bindings and the
 #   release profile compiles the whole workspace).
 
@@ -45,7 +46,12 @@ Push-Location $UiDir
 npm run build
 Pop-Location
 
-# 3. NSIS installer (no markitdown sidecar on Windows — see header note)
+# 3. markitdown sidecar (self-contained embeddable Python + wheels)
+Write-Host "==> Preparing markitdown-sidecar"
+& (Join-Path $Root "scripts\prepare-markitdown-bundle.ps1")
+if ($LASTEXITCODE -ne 0) { Write-Error "prepare-markitdown-bundle.ps1 failed" }
+
+# 4. NSIS installer (bundles the sidecar via tauri.windows.conf.json resources)
 Write-Host "==> Building NSIS installer (first run can take several minutes)"
 Push-Location $GuiDir
 cargo tauri build --bundles nsis

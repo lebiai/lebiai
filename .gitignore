@@ -18,3 +18,5 @@ crates/hermes-gui/resources/markitdown-sidecar/venv/
 crates/hermes-gui/resources/markitdown-sidecar/markitdown
 crates/hermes-gui/resources/markitdown-sidecar/VERSION
 crates/hermes-gui/resources/markitdown-sidecar/REQUIREMENTS.txt
+crates/hermes-gui/resources/markitdown-sidecar/python/
+crates/hermes-gui/resources/markitdown-sidecar/markitdown.cmd

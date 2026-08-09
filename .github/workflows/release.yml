@@ -69,6 +69,10 @@ jobs:
       - name: Install tauri-cli
         run: cargo install tauri-cli --version '^2' --locked
 
+      - name: Prepare markitdown sidecar (self-contained Python)
+        shell: pwsh
+        run: .\scripts\prepare-markitdown-bundle.ps1
+
       - name: Build NSIS installer
         shell: pwsh
         run: .\scripts\build-exe.ps1
@@ -97,6 +101,7 @@ jobs:
         with:
           tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
           files: dist/**/*
+          overwrite: true
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

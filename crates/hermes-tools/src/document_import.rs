@@ -17,6 +17,20 @@ const MIN_MD_CHARS: usize = 1;
 const CONVERSION_TIMEOUT_SECS: u64 = 120;
 const ENV_MARKITDOWN: &str = "HERMES_MARKITDOWN";
 
+/// Build the command that runs the MarkItDown converter for the current
+/// platform. On Windows the bundled sidecar is a `.cmd` wrapper (self-contained
+/// embeddable Python), which must go through `cmd /C call`; macOS/Linux run
+/// the bash wrapper directly.
+fn markitdown_command(binary: &Path) -> Command {
+    if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg("call").arg(binary);
+        c
+    } else {
+        Command::new(binary)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -383,7 +397,7 @@ fn resolve_converter(cfg: &ConverterPathConfig) -> ConverterStatus {
             last_err = Some(format!("not found: {}", cand.display()));
             continue;
         }
-        match Command::new(&cand).arg("--version").output() {
+        match markitdown_command(&cand).arg("--version").output() {
             Ok(out) if out.status.success() => {
                 let version = String::from_utf8_lossy(&out.stdout)
                     .lines()
@@ -443,7 +457,7 @@ fn run_markitdown_blocking(
     let dest = dest_md.to_path_buf();
 
     let handle = std::thread::spawn(move || {
-        Command::new(&binary)
+        markitdown_command(Path::new(&binary))
             .arg(&src)
             .arg("-o")
             .arg(&dest)
