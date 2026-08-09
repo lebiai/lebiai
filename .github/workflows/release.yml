@@ -14,7 +14,7 @@ on:
       tag:
         description: "Release tag to attach installers to"
         required: false
-        default: "v0.1.1"
+        default: "v1.0.0"
   push:
     tags: ["v*"]
 
@@ -100,6 +100,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          body_path: docs/release-notes.md
           files: dist/**/*
           overwrite: true
           fail_on_unmatched_files: true
