@@ -87,7 +87,10 @@ pub fn save_prefs(prefs: &ReviewPrefs) -> std::io::Result<()> {
     let dir = hermes_core::data_path("reviews");
     fs::create_dir_all(&dir)?;
     let tmp = dir.join("prefs.json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(prefs).unwrap_or_else(|_| b"{}".to_vec()))?;
+    fs::write(
+        &tmp,
+        serde_json::to_vec_pretty(prefs).unwrap_or_else(|_| b"{}".to_vec()),
+    )?;
     fs::rename(tmp, prefs_path())?;
     Ok(())
 }
@@ -167,9 +170,7 @@ pub fn load_index() -> Vec<ReviewIndexEntry> {
 pub fn reviewed_span(from: NaiveDate, to: NaiveDate) -> bool {
     let a = from.to_string();
     let b = to.to_string();
-    load_index()
-        .iter()
-        .any(|e| e.from == a && e.to == b)
+    load_index().iter().any(|e| e.from == a && e.to == b)
 }
 
 /// One 交差账 per interval. Re-steaming the same span replaces the old row.
@@ -189,7 +190,10 @@ pub fn write_review_file(
     let b = to.to_string();
     let path_str = path.to_string_lossy().into_owned();
     let mut idx = load_index();
-    for e in idx.iter().filter(|e| e.from == a && e.to == b && e.path != path_str) {
+    for e in idx
+        .iter()
+        .filter(|e| e.from == a && e.to == b && e.path != path_str)
+    {
         let _ = fs::remove_file(&e.path);
     }
     idx.retain(|e| !(e.from == a && e.to == b));
@@ -433,7 +437,10 @@ mod tests {
     #[test]
     fn week_start_is_monday() {
         let wed = NaiveDate::from_ymd_opt(2026, 8, 12).unwrap();
-        assert_eq!(week_start(wed), NaiveDate::from_ymd_opt(2026, 8, 10).unwrap());
+        assert_eq!(
+            week_start(wed),
+            NaiveDate::from_ymd_opt(2026, 8, 10).unwrap()
+        );
     }
 
     #[test]

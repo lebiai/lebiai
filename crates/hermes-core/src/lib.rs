@@ -24,14 +24,12 @@ pub use license::{
     dev_simulate_expired, dev_tools_enabled, load_status, mark_nudge_seen, LicenseError,
     LicensePhase, LicenseStatus, LicenseUrgency, PRODUCT_ID, TRIAL_DAYS, WECHAT_CONTACT,
 };
-pub use message::{
-    sanitize_history_for_provider, ContentBlock, ImageSource, Message, Role,
-};
+pub use message::{sanitize_history_for_provider, ContentBlock, ImageSource, Message, Role};
 pub use paths::{
     clear_data_dir_pointer, data_dir_pointer_path, data_path, data_root, ensure_data_root,
     is_user_chosen_data_root, maybe_migrate_data_root, project_data_dirname, read_data_dir_pointer,
-    write_data_dir_pointer, DEFAULT_DATA_DIRNAME,
-    ENV_DATA_DIR, LEGACY_DATA_DIRNAME, WORKSPACE_OUTPUTS_DIR,
+    write_data_dir_pointer, DEFAULT_DATA_DIRNAME, ENV_DATA_DIR, LEGACY_DATA_DIRNAME,
+    WORKSPACE_OUTPUTS_DIR,
 };
 pub use provider::{
     Capabilities, CompletionRequest, CompletionResponse, LlmProvider, StopReason, StreamEvent,

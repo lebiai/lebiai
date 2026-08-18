@@ -250,4 +250,3 @@ fn gather_sessions(from: NaiveDate, to: NaiveDate) -> (Vec<(String, String)>, Ve
     }
     (sessions, outputs)
 }
-

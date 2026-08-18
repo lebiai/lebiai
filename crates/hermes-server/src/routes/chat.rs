@@ -294,8 +294,7 @@ async fn handle_send(
 
         // Repair incomplete tool pairs so resume after crash/cancel does not
         // 400 on OpenAI-compatible providers.
-        let repaired =
-            hermes_core::sanitize_history_for_provider(&active_session.session.messages);
+        let repaired = hermes_core::sanitize_history_for_provider(&active_session.session.messages);
         active_session.session.messages = repaired;
         (active_session.session.messages.clone(), turn_system)
     };

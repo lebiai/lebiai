@@ -254,9 +254,8 @@ where
 
     // Prepend a current-time header to the last user message (model-only;
     // not persisted to the session log).
-    let history_for_turn = inject_time_header(hermes_core::sanitize_history_for_provider(
-        &state.history,
-    ));
+    let history_for_turn =
+        inject_time_header(hermes_core::sanitize_history_for_provider(&state.history));
 
     // Channel for streaming tool-call summaries back to the user.
     let (tool_tx, mut tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -361,7 +360,14 @@ mod whitelist_tests {
 
     #[test]
     fn im_cannot_open_or_write() {
-        for denied in ["open", "write", "edit", "bash", "memory_save", "skill_create"] {
+        for denied in [
+            "open",
+            "write",
+            "edit",
+            "bash",
+            "memory_save",
+            "skill_create",
+        ] {
             assert!(
                 !IM_TOOL_WHITELIST.contains(&denied),
                 "IM must not expose {denied}"

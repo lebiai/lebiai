@@ -164,10 +164,7 @@ pub fn list_sessions(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
     Ok(entries.into_iter().map(|(_, p)| p).collect())
 }
 
-fn collect_jsonl(
-    dir: &Path,
-    out: &mut Vec<(std::time::SystemTime, PathBuf)>,
-) -> Result<()> {
+fn collect_jsonl(dir: &Path, out: &mut Vec<(std::time::SystemTime, PathBuf)>) -> Result<()> {
     let rd = std::fs::read_dir(dir).map_err(|source| SessionError::Io {
         path: dir.to_path_buf(),
         source,

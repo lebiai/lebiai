@@ -152,12 +152,9 @@ mod tests {
     #[tokio::test]
     async fn rejects_workspace_escape() {
         let dir = tempdir().unwrap();
-        let out = run(
-            dir.path(),
-            serde_json::json!({"target": "/etc/passwd"}),
-        )
-        .await
-        .unwrap();
+        let out = run(dir.path(), serde_json::json!({"target": "/etc/passwd"}))
+            .await
+            .unwrap();
         assert!(out.is_error);
     }
 

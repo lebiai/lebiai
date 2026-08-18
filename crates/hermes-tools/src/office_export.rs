@@ -202,9 +202,7 @@ fn split_md_row(line: &str) -> Vec<String> {
     let s = line.trim();
     let s = s.strip_prefix('|').unwrap_or(s);
     let s = s.strip_suffix('|').unwrap_or(s);
-    s.split('|')
-        .map(|c| strip_md_inline(c.trim()))
-        .collect()
+    s.split('|').map(|c| strip_md_inline(c.trim())).collect()
 }
 
 fn strip_md_inline(s: &str) -> String {
@@ -520,7 +518,8 @@ mod tests {
 
     #[test]
     fn docx_markdown_becomes_heading_and_table() {
-        let md = "# 今日要点\n\n**摘要**一段话\n\n| 项目 | 金额 |\n| --- | --- |\n| 差旅 | 1200 |\n";
+        let md =
+            "# 今日要点\n\n**摘要**一段话\n\n| 项目 | 金额 |\n| --- | --- |\n| 差旅 | 1200 |\n";
         let bytes = package_docx(md);
         let s = String::from_utf8_lossy(&bytes);
         assert!(s.contains("今日要点"));

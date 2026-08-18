@@ -106,7 +106,10 @@ pub fn normalize_join(workspace: &Path, user_path: &str) -> PathBuf {
 /// (`Desktop/`, `Documents/`, `Downloads/`, `桌面/`).
 pub fn expand_user_path(user_path: &str) -> PathBuf {
     let p = user_path.trim();
-    let p = p.strip_prefix('～').map(|r| format!("~{r}")).unwrap_or_else(|| p.to_string());
+    let p = p
+        .strip_prefix('～')
+        .map(|r| format!("~{r}"))
+        .unwrap_or_else(|| p.to_string());
     if let Some(rest) = p.strip_prefix("$HOME/") {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);
@@ -128,14 +131,7 @@ pub fn expand_user_path(user_path: &str) -> PathBuf {
         }
     }
     if let Some(home) = dirs::home_dir() {
-        const EXPORT: &[&str] = &[
-            "Desktop",
-            "Documents",
-            "Downloads",
-            "桌面",
-            "文稿",
-            "下载",
-        ];
+        const EXPORT: &[&str] = &["Desktop", "Documents", "Downloads", "桌面", "文稿", "下载"];
         for name in EXPORT {
             let prefix = format!("{name}/");
             if let Some(rest) = p.strip_prefix(&prefix) {
@@ -153,14 +149,7 @@ pub fn expand_user_path(user_path: &str) -> PathBuf {
 pub fn user_export_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(home) = dirs::home_dir() {
-        for name in [
-            "Desktop",
-            "Documents",
-            "Downloads",
-            "桌面",
-            "文稿",
-            "下载",
-        ] {
+        for name in ["Desktop", "Documents", "Downloads", "桌面", "文稿", "下载"] {
             roots.push(home.join(name));
         }
     }
@@ -312,9 +301,16 @@ pub fn path_looks_outside_workspace(user_path: &str) -> bool {
     {
         return true;
     }
-    ["Desktop/", "Documents/", "Downloads/", "桌面/", "文稿/", "下载/"]
-        .iter()
-        .any(|n| p.starts_with(n))
+    [
+        "Desktop/",
+        "Documents/",
+        "Downloads/",
+        "桌面/",
+        "文稿/",
+        "下载/",
+    ]
+    .iter()
+    .any(|n| p.starts_with(n))
 }
 
 #[cfg(test)]
@@ -366,8 +362,7 @@ mod tests {
     #[test]
     fn bare_desktop_folder_is_home_desktop() {
         let ws = tempfile::tempdir().unwrap();
-        let (path, is_export) =
-            resolve_for_write(ws.path(), "Desktop/lebi-bare.docx").unwrap();
+        let (path, is_export) = resolve_for_write(ws.path(), "Desktop/lebi-bare.docx").unwrap();
         assert!(is_export, "path={}", path.display());
         assert!(
             !path.starts_with(ws.path()),

@@ -73,8 +73,13 @@ pub struct CommitmentList {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase", tag = "status")]
 pub enum CreateCommitmentOutcome {
-    Created { item: CommitmentView },
-    Near { existing: CommitmentView, score: f64 },
+    Created {
+        item: CommitmentView,
+    },
+    Near {
+        existing: CommitmentView,
+        score: f64,
+    },
 }
 
 #[tauri::command]
@@ -86,33 +91,29 @@ pub fn list_commitments(state: State<'_, AppState>) -> Result<CommitmentList, Gu
     let today = chrono::Local::now().date_naive();
     let owed_count = live.iter().filter(|c| c.status.is_owed()).count();
     let overdue_count = live.iter().filter(|c| c.is_overdue(today)).count();
-    let merge_hint = if let Some((a, b, _)) = state
-        .commitment_store
-        .lexical_merge_pair()
-        .ok()
-        .flatten()
-    {
-        Some(MergeHint {
-            keep_id: a.id,
-            keep_title: a.title,
-            other_id: b.id,
-            other_title: b.title,
-        })
-    } else if let Ok(Some((aid, bid))) = state.commitment_store.semantic_pair() {
-        let a = live.iter().find(|c| c.id == aid);
-        let b = live.iter().find(|c| c.id == bid);
-        match (a, b) {
-            (Some(a), Some(b)) if a.status.is_owed() && b.status.is_owed() => Some(MergeHint {
-                keep_id: a.id.clone(),
-                keep_title: a.title.clone(),
-                other_id: b.id.clone(),
-                other_title: b.title.clone(),
-            }),
-            _ => None,
-        }
-    } else {
-        None
-    };
+    let merge_hint =
+        if let Some((a, b, _)) = state.commitment_store.lexical_merge_pair().ok().flatten() {
+            Some(MergeHint {
+                keep_id: a.id,
+                keep_title: a.title,
+                other_id: b.id,
+                other_title: b.title,
+            })
+        } else if let Ok(Some((aid, bid))) = state.commitment_store.semantic_pair() {
+            let a = live.iter().find(|c| c.id == aid);
+            let b = live.iter().find(|c| c.id == bid);
+            match (a, b) {
+                (Some(a), Some(b)) if a.status.is_owed() && b.status.is_owed() => Some(MergeHint {
+                    keep_id: a.id.clone(),
+                    keep_title: a.title.clone(),
+                    other_id: b.id.clone(),
+                    other_title: b.title.clone(),
+                }),
+                _ => None,
+            }
+        } else {
+            None
+        };
     let recent_done = state
         .commitment_store
         .list_recent_done(14)
@@ -122,13 +123,20 @@ pub fn list_commitments(state: State<'_, AppState>) -> Result<CommitmentList, Gu
         owed_count,
         overdue_count,
         crowded: owed_count >= OPEN_CROWD,
-        recent_done: recent_done.iter().take(12).map(CommitmentView::from).collect(),
+        recent_done: recent_done
+            .iter()
+            .take(12)
+            .map(CommitmentView::from)
+            .collect(),
         merge_hint,
     })
 }
 
 fn apply_due(item: &mut Commitment, phrase: Option<String>) -> Result<(), GuiError> {
-    let Some(phrase) = phrase.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
+    let Some(phrase) = phrase
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    else {
         return Err(GuiError::Internal("due_required".into()));
     };
     let today = chrono::Local::now().date_naive();
@@ -182,11 +190,7 @@ pub fn create_commitment(
     } else {
         SaveMode::Ask
     };
-    match state
-        .commitment_store
-        .save(item, mode)
-        .map_err(map_store)?
-    {
+    match state.commitment_store.save(item, mode).map_err(map_store)? {
         SaveOutcome::Created(c) | SaveOutcome::Folded { into: c } => {
             Ok(CreateCommitmentOutcome::Created {
                 item: CommitmentView::from(&c),
@@ -219,7 +223,10 @@ pub fn accept_commitment(
 }
 
 #[tauri::command]
-pub fn reject_commitment(state: State<'_, AppState>, id: String) -> Result<CommitmentView, GuiError> {
+pub fn reject_commitment(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<CommitmentView, GuiError> {
     let c = state
         .commitment_store
         .reject_suggested(&id)
@@ -343,7 +350,8 @@ pub fn find_session_path(
     if !root.exists() {
         return Ok(None);
     }
-    let paths = hermes_store::list_sessions(&root).map_err(|e| GuiError::Internal(e.to_string()))?;
+    let paths =
+        hermes_store::list_sessions(&root).map_err(|e| GuiError::Internal(e.to_string()))?;
     for path in paths {
         if let Ok(s) = hermes_store::read_session(&path) {
             if s.meta.id == session_id {
@@ -411,5 +419,3 @@ pub fn spawn_residue_scan(app: AppHandle, state: &AppState, session: Session) {
         }
     });
 }
-
-

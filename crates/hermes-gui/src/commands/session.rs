@@ -144,8 +144,7 @@ pub async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSumm
                     dt.to_rfc3339()
                 })
                 .unwrap_or_else(|| session.meta.created_at.to_rfc3339());
-            let channel = hermes_store::channel_of_session_path(&path)
-                .map(|s| s.to_string());
+            let channel = hermes_store::channel_of_session_path(&path).map(|s| s.to_string());
             let read_only = channel.is_some();
             entries.push(SessionSummary {
                 id: session.meta.id.clone(),
@@ -235,8 +234,8 @@ pub async fn load_session(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<LoadedSessionData, GuiError> {
-    let path = hermes_store::ensure_session_path(&path)
-        .map_err(|e| GuiError::Session(e.to_string()))?;
+    let path =
+        hermes_store::ensure_session_path(&path).map_err(|e| GuiError::Session(e.to_string()))?;
     let mut session =
         hermes_store::read_session(&path).map_err(|e| GuiError::Session(e.to_string()))?;
     // Repair incomplete tool pairs so continue-chat does not 400 on providers.
@@ -286,8 +285,8 @@ pub async fn load_session(
 
 #[tauri::command]
 pub async fn delete_session(state: State<'_, AppState>, path: String) -> Result<(), GuiError> {
-    let path = hermes_store::ensure_session_path(&path)
-        .map_err(|e| GuiError::Session(e.to_string()))?;
+    let path =
+        hermes_store::ensure_session_path(&path).map_err(|e| GuiError::Session(e.to_string()))?;
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| GuiError::Session(e.to_string()))?;
     }

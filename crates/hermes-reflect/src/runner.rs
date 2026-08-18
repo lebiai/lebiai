@@ -86,7 +86,9 @@ async fn reflect_with_max_tokens(
     let json_str = strip_code_fence(&text);
 
     match serde_json::from_str(json_str) {
-        Ok(out) => Ok(crate::episode::finalize_reflection_output_with(out, memories)),
+        Ok(out) => Ok(crate::episode::finalize_reflection_output_with(
+            out, memories,
+        )),
         Err(first_err) => {
             // Try to repair truncated JSON by closing unclosed brackets.
             if let Some(repaired) = repair_truncated_json(json_str) {

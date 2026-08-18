@@ -27,8 +27,7 @@ pub use deferred::{
 };
 pub use episode::{
     episode_is_self_contained, finalize_reflection_output, finalize_reflection_output_with,
-    is_internal_noise_text, is_work_episode,
-    normalize_candidate, seed_episode_from_summary,
+    is_internal_noise_text, is_work_episode, normalize_candidate, seed_episode_from_summary,
 };
 pub use focused::reflect_focused;
 pub use inbox::{

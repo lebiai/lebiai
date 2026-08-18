@@ -402,7 +402,11 @@ pub fn load_status_at(path: &Path) -> Result<LicenseStatus, LicenseError> {
     let mut dirty = ensure_trial_started(&mut file);
     let now = now_unix();
     // Soft clock tracking
-    if file.last_seen_unix.map(|t| now + 86400 < t).unwrap_or(false) {
+    if file
+        .last_seen_unix
+        .map(|t| now + 86400 < t)
+        .unwrap_or(false)
+    {
         tracing::warn!("system clock appears to have moved backwards significantly");
     }
     if file.last_seen_unix != Some(now) {

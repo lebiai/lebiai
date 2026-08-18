@@ -137,11 +137,17 @@ fn intercept_open_target(command: &str) -> Option<String> {
         "open" | "xdg-open" => {}
         "start" => {}
         "cmd" => {
-            let next = tokens.get(1).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+            let next = tokens
+                .get(1)
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
             if next != "/c" && next != "/k" {
                 return None;
             }
-            let third = tokens.get(2).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+            let third = tokens
+                .get(2)
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
             if third != "start" {
                 return None;
             }

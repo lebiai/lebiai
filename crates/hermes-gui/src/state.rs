@@ -5,13 +5,11 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use hermes_channel::{
-    compose_system_prompt, PromptKind, ServeCtx, UserState, IM_TOOL_WHITELIST,
-};
+use hermes_channel::{compose_system_prompt, PromptKind, ServeCtx, UserState, IM_TOOL_WHITELIST};
+use hermes_commitments::CommitmentStore;
 use hermes_core::{LlmProvider, Session, SessionMeta, ToolHost, ToolSpec};
 use hermes_llm::Config;
 use hermes_mcp::{McpConfig, McpToolHost, ServerSpec};
-use hermes_commitments::CommitmentStore;
 use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryEffectiveness, MemoryStore};
 use hermes_reflect::SkillCandidate;
 use hermes_skills::{FsSkillStore, LoadedSkill, SkillEffectiveness, SkillStore};

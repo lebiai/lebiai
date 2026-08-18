@@ -114,7 +114,9 @@ pub async fn micro_reflect(
     let json_str = crate::runner::strip_code_fence_pub(&text);
 
     match serde_json::from_str(json_str) {
-        Ok(out) => Ok(crate::episode::finalize_reflection_output_with(out, memories)),
+        Ok(out) => Ok(crate::episode::finalize_reflection_output_with(
+            out, memories,
+        )),
         Err(first_err) => {
             if let Some(repaired) = crate::runner::repair_truncated_json(json_str) {
                 if let Ok(out) = serde_json::from_str(&repaired) {

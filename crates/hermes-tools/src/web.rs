@@ -86,9 +86,7 @@ impl WebToolsContext {
             SearchBackend::BraveApi if self.brave_api_key.trim().is_empty() => {
                 SearchBackend::Scraper
             }
-            SearchBackend::Searxng if self.searxng_url.trim().is_empty() => {
-                SearchBackend::Scraper
-            }
+            SearchBackend::Searxng if self.searxng_url.trim().is_empty() => SearchBackend::Scraper,
             other => other,
         }
     }

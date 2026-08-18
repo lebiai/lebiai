@@ -233,14 +233,9 @@ pub fn bash_high_risk_reason(command: &str) -> Option<String> {
             "This command downloads then executes remote content (curl/wget + shell).".into(),
         );
     }
-    if c.contains("bash <(")
-        || c.contains("sh <(")
-        || c.contains("source <(")
-        || c.contains(". <(")
+    if c.contains("bash <(") || c.contains("sh <(") || c.contains("source <(") || c.contains(". <(")
     {
-        return Some(
-            "This command uses process substitution to run a downloaded script.".into(),
-        );
+        return Some("This command uses process substitution to run a downloaded script.".into());
     }
     // Inline interpreter RCE often used to bypass simple blacklists.
     if c.contains("python -c")
@@ -259,9 +254,7 @@ pub fn bash_high_risk_reason(command: &str) -> Option<String> {
     if (c.contains("base64") && (c.contains("|") || c.contains("decode")))
         && (c.contains("sh") || c.contains("bash") || c.contains("eval"))
     {
-        return Some(
-            "This command looks like encoded payload decoded into a shell.".into(),
-        );
+        return Some("This command looks like encoded payload decoded into a shell.".into());
     }
 
     None

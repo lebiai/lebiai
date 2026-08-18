@@ -58,10 +58,8 @@ impl<'a> ContextSources<'a> {
 
         let living: Vec<hermes_memory::LoadedMemory> =
             hermes_memory::living_rules(self.active.to_vec());
-        let episodic: Vec<&LoadedMemory> = living
-            .iter()
-            .filter(|m| !m.frontmatter.pinned)
-            .collect();
+        let episodic: Vec<&LoadedMemory> =
+            living.iter().filter(|m| !m.frontmatter.pinned).collect();
         if !episodic.is_empty() {
             buf.push_str("## Active memory index (living rules — one per kind of work)\n");
             for m in episodic.iter().take(self.limits.active_memory_index_cap) {
@@ -159,10 +157,7 @@ If none truly match, do not pretend you remember.\n\n",
             .iter()
             .filter(|c| c.status.is_owed())
             .collect();
-        let titles: Vec<&str> = owed
-            .iter()
-            .flat_map(|c| c.phrases())
-            .collect();
+        let titles: Vec<&str> = owed.iter().flat_map(|c| c.phrases()).collect();
         let hits = companion::query_hits_zaiban_title(user_query, &titles);
         if !companion::should_inject_zaiban_index(
             user_query,
@@ -176,7 +171,10 @@ If none truly match, do not pretend you remember.\n\n",
         for c in owed.iter().take(INDEX_CAP) {
             let extra = match (c.status, c.soft_due.as_deref()) {
                 (hermes_commitments::Status::Waiting, due) => {
-                    format!(" waiting{}", due.map(|d| format!(" {d}")).unwrap_or_default())
+                    format!(
+                        " waiting{}",
+                        due.map(|d| format!(" {d}")).unwrap_or_default()
+                    )
                 }
                 (_, Some(due)) => format!(" due={due}"),
                 _ => String::new(),
@@ -324,8 +322,9 @@ mod tests {
 
     #[test]
     fn injects_open_work_on_query() {
-        let mut item = hermes_commitments::Commitment::new("周五交改稿", hermes_commitments::Source::User)
-            .unwrap();
+        let mut item =
+            hermes_commitments::Commitment::new("周五交改稿", hermes_commitments::Source::User)
+                .unwrap();
         item.id = "cmt_test".into();
         let sources = ContextSources {
             base: None,

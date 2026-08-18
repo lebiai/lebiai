@@ -88,8 +88,8 @@ pub fn split_spec() -> ToolSpec {
 pub fn update_spec() -> ToolSpec {
     ToolSpec {
         name: "commitment_update".into(),
-        description: "Update an open-work row: retitle, doneWhen, softDue, waiting note, or reopen."
-            .into(),
+        description:
+            "Update an open-work row: retitle, doneWhen, softDue, waiting note, or reopen.".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -109,8 +109,7 @@ pub fn update_spec() -> ToolSpec {
 pub fn drop_spec() -> ToolSpec {
     ToolSpec {
         name: "commitment_drop".into(),
-        description: "Drop a piece of open work they decided not to do."
-            .into(),
+        description: "Drop a piece of open work they decided not to do.".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -234,7 +233,10 @@ async fn save_run(store: &CommitmentStore, args: serde_json::Value) -> Result<To
         {
             SaveOutcome::Folded { into } => {
                 return Ok(ToolCallOutcome {
-                    content: format!("Folded into existing open work [{}]: {}", into.id, into.title),
+                    content: format!(
+                        "Folded into existing open work [{}]: {}",
+                        into.id, into.title
+                    ),
                     is_error: false,
                 });
             }

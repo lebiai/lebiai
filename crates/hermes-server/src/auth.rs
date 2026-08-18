@@ -113,11 +113,7 @@ pub struct AuthState {
 }
 
 /// axum middleware: accept Bearer, short-lived `?ticket=`, or legacy `?token=`.
-pub async fn auth_middleware(
-    State(auth): State<AuthState>,
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn auth_middleware(State(auth): State<AuthState>, req: Request, next: Next) -> Response {
     if let Some(p) = bearer_from_headers(req.headers()) {
         if ct_eq(&p, auth.token.as_str()) {
             return next.run(req).await;

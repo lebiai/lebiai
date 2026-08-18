@@ -97,7 +97,9 @@ impl Message {
 
     /// A real send from the person (not tool results, not engine nudges).
     pub fn is_human_send(&self) -> bool {
-        if self.role != Role::User || self.is_tool_result_only() || self.is_internal_instruction_only()
+        if self.role != Role::User
+            || self.is_tool_result_only()
+            || self.is_internal_instruction_only()
         {
             return false;
         }
@@ -213,8 +215,7 @@ fn synthetic_tool_results(ids: &[String]) -> Message {
             .iter()
             .map(|id| ContentBlock::ToolResult {
                 tool_use_id: id.clone(),
-                content: "Tool call was interrupted or never completed (history repair)."
-                    .into(),
+                content: "Tool call was interrupted or never completed (history repair).".into(),
                 is_error: true,
             })
             .collect(),
@@ -294,10 +295,11 @@ mod sanitize_tests {
         ];
         let fixed = sanitize_history_for_provider(&history);
         assert_eq!(fixed.len(), 2);
-        assert!(!fixed.iter().any(|m| m
-            .content
+        assert!(!fixed
             .iter()
-            .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("[lebi-AI Care]")))));
+            .any(|m| m.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text } if text.contains("[lebi-AI Care]"))
+            )));
     }
 }
 

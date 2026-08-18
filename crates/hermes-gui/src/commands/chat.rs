@@ -3,10 +3,10 @@ use hermes_llm::Config;
 use hermes_memory::MemoryStore;
 use hermes_store::SessionWriter;
 use hermes_turn::{ConfirmAction, TurnConfig, TurnEvent};
-use tauri::ipc::Channel;
-use tauri::{AppHandle, Emitter, State};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tauri::ipc::Channel;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::commands::micro;
 use crate::context::ContextSources;
@@ -228,8 +228,7 @@ async fn begin_turn(
 
     // Repair incomplete tool_use / tool_result pairs so OpenAI-compatible
     // providers (DeepSeek etc.) do not 400 on resume.
-    let history =
-        hermes_core::sanitize_history_for_provider(&active_session.session.messages);
+    let history = hermes_core::sanitize_history_for_provider(&active_session.session.messages);
     // Keep in-memory session aligned so subsequent turns stay clean.
     active_session.session.messages = history.clone();
     drop(sessions);
@@ -286,8 +285,7 @@ async fn begin_turn(
         let confirm_tokens = confirm_tokens_arc.clone();
         let ui_lang_ev = ui_lang.clone();
         let app_ev = app.clone();
-        let tool_names: Arc<Mutex<HashMap<String, String>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let tool_names: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
         let tool_names_ev = tool_names.clone();
         let on_turn_event = move |event: TurnEvent| match event {
             TurnEvent::TextDelta(text) => {
@@ -305,11 +303,7 @@ async fn begin_turn(
                 if let Ok(mut m) = tool_names_ev.lock() {
                     m.insert(id.clone(), name.clone());
                 }
-                let _ = evt.send(ChatStreamEvent::ToolExecStart {
-                    id,
-                    name,
-                    summary,
-                });
+                let _ = evt.send(ChatStreamEvent::ToolExecStart { id, name, summary });
             }
             TurnEvent::ToolConfirmPending {
                 id,

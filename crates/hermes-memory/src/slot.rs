@@ -105,10 +105,8 @@ pub fn infer_slot(zone: &str, tags: &[String], body: &str) -> Option<WorkSlot> {
         return Some(WorkSlot::Tone);
     }
 
-    if contains_any(
-        &raw,
-        &["普法号", "微信公众号是", "法务部门", "内容号"],
-    ) && !contains_any(&t, &["写作思路", "短句"])
+    if contains_any(&raw, &["普法号", "微信公众号是", "法务部门", "内容号"])
+        && !contains_any(&t, &["写作思路", "短句"])
     {
         return Some(WorkSlot::Identity);
     }
@@ -126,8 +124,10 @@ pub fn is_worthless_for_living(body: &str) -> bool {
     if f.is_empty() || f.chars().count() < 8 {
         return true;
     }
-    if f.ends_with('：') || f.ends_with(':') || f.contains("工作场景：。") || f.contains("工作场景：")
-        && f.chars().count() < 16
+    if f.ends_with('：')
+        || f.ends_with(':')
+        || f.contains("工作场景：。")
+        || f.contains("工作场景：") && f.chars().count() < 16
     {
         return true;
     }
@@ -241,7 +241,12 @@ fn should_replace(old: &LoadedMemory, new: &LoadedMemory) -> bool {
 }
 
 /// Existing active memory ids that occupy the same slot as `body`.
-pub fn same_slot_ids(active: &[LoadedMemory], zone: &str, tags: &[String], body: &str) -> Vec<String> {
+pub fn same_slot_ids(
+    active: &[LoadedMemory],
+    zone: &str,
+    tags: &[String],
+    body: &str,
+) -> Vec<String> {
     let Some(slot) = infer_slot(zone, tags, body) else {
         return Vec::new();
     };

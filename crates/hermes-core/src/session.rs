@@ -282,7 +282,9 @@ mod title_tests {
 
     #[test]
     fn care_only_session_has_no_user_text() {
-        let msgs = vec![Message::user_text(crate::companion::care_after_tools_nudge())];
+        let msgs = vec![Message::user_text(
+            crate::companion::care_after_tools_nudge(),
+        )];
         assert!(!session_has_user_text(&msgs));
         assert_eq!(derive_title_from_messages(&msgs), DEFAULT_SESSION_TITLE);
     }

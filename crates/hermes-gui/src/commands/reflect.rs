@@ -74,7 +74,11 @@ pub enum SessionEndReflectionOutcome {
 }
 
 fn count_user_text_turns(session: &Session) -> usize {
-    session.messages.iter().filter(|m| m.is_human_send()).count()
+    session
+        .messages
+        .iter()
+        .filter(|m| m.is_human_send())
+        .count()
 }
 
 fn reflection_result_from_output(output: ReflectionOutput) -> ReflectionResult {
@@ -409,10 +413,7 @@ async fn distill_wechat_file_if_idle(
 fn wechat_session_is_idle(session: &Session, path: &Path) -> bool {
     let (_seq, at) = last_human_send(&session.messages);
     if let Some(at) = at {
-        return chrono::Utc::now()
-            .signed_duration_since(at)
-            .num_seconds()
-            >= 15 * 60;
+        return chrono::Utc::now().signed_duration_since(at).num_seconds() >= 15 * 60;
     }
     std::fs::metadata(path)
         .and_then(|m| m.modified())

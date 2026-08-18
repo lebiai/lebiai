@@ -495,9 +495,7 @@ impl CommitmentStore {
                     .phrases()
                     .flat_map(|a| owed[j].phrases().map(move |b| score_near(a, b)))
                     .fold(0.0_f64, f64::max);
-                if score >= NEAR_ASK
-                    && best.as_ref().map(|(_, _, s)| score > *s).unwrap_or(true)
-                {
+                if score >= NEAR_ASK && best.as_ref().map(|(_, _, s)| score > *s).unwrap_or(true) {
                     best = Some((owed[i].clone(), owed[j].clone(), score));
                 }
             }
@@ -642,23 +640,11 @@ mod tests {
     #[test]
     fn merge_ids_drops_other() {
         let s = store();
-        let a = match s
-            .save(
-                owed("周五交改稿"),
-                SaveMode::ForceNew,
-            )
-            .unwrap()
-        {
+        let a = match s.save(owed("周五交改稿"), SaveMode::ForceNew).unwrap() {
             SaveOutcome::Created(c) => c,
             _ => panic!(),
         };
-        let b = match s
-            .save(
-                owed("约设计"),
-                SaveMode::ForceNew,
-            )
-            .unwrap()
-        {
+        let b = match s.save(owed("约设计"), SaveMode::ForceNew).unwrap() {
             SaveOutcome::Created(c) => c,
             _ => panic!(),
         };
@@ -672,13 +658,7 @@ mod tests {
     #[test]
     fn split_makes_two() {
         let s = store();
-        let a = match s
-            .save(
-                owed("一堆事"),
-                SaveMode::ForceNew,
-            )
-            .unwrap()
-        {
+        let a = match s.save(owed("一堆事"), SaveMode::ForceNew).unwrap() {
             SaveOutcome::Created(c) => c,
             _ => panic!(),
         };

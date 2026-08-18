@@ -167,19 +167,13 @@ pub fn user_prompt(session: &Session, skills: &[LoadedSkill], memories: &[Loaded
     }
 
     buf.push_str("\n=== Current living memories (id, slot, fact) ===\n");
-    buf.push_str(
-        "Same slot → you MUST supersede these ids, not add a peer.\n",
-    );
+    buf.push_str("Same slot → you MUST supersede these ids, not add a peer.\n");
     let living = hermes_memory::living_rules(memories.to_vec());
     if living.is_empty() {
         buf.push_str("(none)\n");
     } else {
         for m in &living {
-            let slot = hermes_memory::infer_slot(
-                &m.frontmatter.zone,
-                &m.frontmatter.tags,
-                &m.body,
-            );
+            let slot = hermes_memory::infer_slot(&m.frontmatter.zone, &m.frontmatter.tags, &m.body);
             let slot_s = slot.map(|s| s.as_str()).unwrap_or("unslotted");
             let body_preview = m.body.lines().next().unwrap_or("").trim();
             buf.push_str(&format!(

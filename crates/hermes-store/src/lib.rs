@@ -14,6 +14,5 @@ pub use frontmatter::{
 pub use path_guard::{ensure_session_path, sessions_root};
 pub use session::{
     channel_of_session_path, list_sessions, purge_empty_sessions, read_session, rewrite_session,
-    update_session_title,
-    SessionError, SessionWriter,
+    update_session_title, SessionError, SessionWriter,
 };

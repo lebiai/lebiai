@@ -119,7 +119,9 @@ async fn search_with_fallback(
                     .await
                     .map(|s| (s, "searxng"))
             }
-            SearchBackend::Scraper | SearchBackend::Searxng | SearchBackend::Tavily
+            SearchBackend::Scraper
+            | SearchBackend::Searxng
+            | SearchBackend::Tavily
             | SearchBackend::BraveApi => scraper_search(query, limit)
                 .await
                 .map(|s| (s, "brave_html")),
@@ -297,16 +299,15 @@ impl QueryTokens {
 
 fn query_content_tokens(query: &str) -> QueryTokens {
     const STOP_EN: &[&str] = &[
-        "the", "and", "for", "are", "but", "not", "you", "all", "can", "had", "her", "was",
-        "one", "our", "out", "has", "how", "what", "when", "who", "why", "from", "with",
-        "this", "that", "have", "been", "they", "will", "about", "which", "their",
+        "the", "and", "for", "are", "but", "not", "you", "all", "can", "had", "her", "was", "one",
+        "our", "out", "has", "how", "what", "when", "who", "why", "from", "with", "this", "that",
+        "have", "been", "they", "will", "about", "which", "their",
     ];
     const STOP_CJK: &[&str] = &[
-        "最近", "有哪", "哪些", "什么", "怎么", "如何", "帮我", "查询", "一下", "今天",
-        "这个", "那个", "可以", "一个", "我们", "他们", "自己", "进行", "相关", "关于",
-        "以及", "或者", "如果", "因为", "所以", "但是", "还是", "不是", "没有", "就是",
-        "请问", "看看", "搜搜", "找找", "下今", "的事", "有没", "没有", "一些", "这些",
-        "那些", "是否", "需要", "帮查",
+        "最近", "有哪", "哪些", "什么", "怎么", "如何", "帮我", "查询", "一下", "今天", "这个",
+        "那个", "可以", "一个", "我们", "他们", "自己", "进行", "相关", "关于", "以及", "或者",
+        "如果", "因为", "所以", "但是", "还是", "不是", "没有", "就是", "请问", "看看", "搜搜",
+        "找找", "下今", "的事", "有没", "没有", "一些", "这些", "那些", "是否", "需要", "帮查",
     ];
 
     let mut english = Vec::new();
@@ -389,11 +390,17 @@ fn result_on_topic(r: &SearchResult, tokens: &QueryTokens) -> bool {
         return true;
     }
     // Short query: a single leftover 2-gram ("具身") is the whole topic.
-    if tokens.trigrams.is_empty() && tokens.english.is_empty() && tokens.bigrams.len() <= 2 && bi >= 1
+    if tokens.trigrams.is_empty()
+        && tokens.english.is_empty()
+        && tokens.bigrams.len() <= 2
+        && bi >= 1
     {
         return true;
     }
-    if tokens.bigrams.is_empty() && tokens.trigrams.is_empty() && tokens.english.len() == 1 && en >= 1
+    if tokens.bigrams.is_empty()
+        && tokens.trigrams.is_empty()
+        && tokens.english.len() == 1
+        && en >= 1
     {
         return true;
     }
@@ -499,9 +506,9 @@ async fn searxng_search(query: &str, limit: usize, base_url: &str) -> Result<Str
         "{base}/search?q={}&format=json&categories=general",
         urlencoding::encode(query)
     );
-    let body = http_get_text(&url).await.map_err(|e| {
-        hermes_core::Error::ToolHost(format!("searxng: {e}"))
-    })?;
+    let body = http_get_text(&url)
+        .await
+        .map_err(|e| hermes_core::Error::ToolHost(format!("searxng: {e}")))?;
     let v: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| hermes_core::Error::ToolHost(format!("searxng json: {e}")))?;
     let results = v
@@ -527,7 +534,8 @@ async fn searxng_search(query: &str, limit: usize, base_url: &str) -> Result<Str
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    format_usable(results, query).map_err(|_| hermes_core::Error::ToolHost("searxng: no results".into()))
+    format_usable(results, query)
+        .map_err(|_| hermes_core::Error::ToolHost("searxng: no results".into()))
 }
 
 async fn duckduckgo_search(query: &str, limit: usize) -> Result<String> {
@@ -559,7 +567,8 @@ async fn bing_search(query: &str, limit: usize) -> Result<String> {
     );
     let body = http_get_text(&url).await?;
     let results = parse_bing_html(&body, limit);
-    format_usable(results, query).map_err(|_| hermes_core::Error::ToolHost("bing: no results".into()))
+    format_usable(results, query)
+        .map_err(|_| hermes_core::Error::ToolHost("bing: no results".into()))
 }
 
 async fn bing_search_curl(query: &str, limit: usize) -> Result<String> {
@@ -592,8 +601,11 @@ fn parse_bing_html(html: &str, limit: usize) -> Vec<SearchResult> {
             .find("<h2")
             .and_then(|i| {
                 let s = &slice[i..];
-                s.find('>')
-                    .and_then(|j| s[j + 1..].find("</h2>").map(|e| strip_tags(&s[j + 1..j + 1 + e])))
+                s.find('>').and_then(|j| {
+                    s[j + 1..]
+                        .find("</h2>")
+                        .map(|e| strip_tags(&s[j + 1..j + 1 + e]))
+                })
             })
             .unwrap_or_default();
         let snippet = slice
@@ -601,8 +613,11 @@ fn parse_bing_html(html: &str, limit: usize) -> Vec<SearchResult> {
             .or_else(|| slice.find("class=\"b_lineclamp"))
             .and_then(|i| {
                 let s = &slice[i..];
-                s.find('>')
-                    .and_then(|j| s[j + 1..].find("</p>").map(|e| strip_tags(&s[j + 1..j + 1 + e])))
+                s.find('>').and_then(|j| {
+                    s[j + 1..]
+                        .find("</p>")
+                        .map(|e| strip_tags(&s[j + 1..j + 1 + e]))
+                })
             })
             .unwrap_or_default();
         if !title.is_empty() && href.starts_with("http") {
@@ -645,8 +660,11 @@ fn parse_duckduckgo_html(html: &str, limit: usize) -> Vec<SearchResult> {
             .find("result__snippet")
             .and_then(|i| {
                 let s = &slice[i..];
-                s.find('>')
-                    .and_then(|j| s[j + 1..].find("</").map(|e| strip_tags(&s[j + 1..j + 1 + e])))
+                s.find('>').and_then(|j| {
+                    s[j + 1..]
+                        .find("</")
+                        .map(|e| strip_tags(&s[j + 1..j + 1 + e]))
+                })
             })
             .unwrap_or_default();
         let url = decode_ddg_redirect(&href);
@@ -801,7 +819,9 @@ async fn tavily_search(query: &str, limit: usize, api_key: &str) -> Result<Strin
         out.push_str(&format!("Answer: {ans}\n\nSources:\n"));
     }
     if results.is_empty() && out.is_empty() {
-        return Err(hermes_core::Error::ToolHost("tavily: no usable results".into()));
+        return Err(hermes_core::Error::ToolHost(
+            "tavily: no usable results".into(),
+        ));
     }
     out.push_str(&format_results(&results));
     Ok(out)
@@ -1043,7 +1063,9 @@ mod tests {
         assert!(is_junk_url("https://statics.teams.cdn.office.net/x.css"));
         assert!(is_junk_url("https://www.bing.com/ck/a?!&&u=a1"));
         assert!(is_junk_url("https://hanyu.baidu.com/zici/s?wd=x"));
-        assert!(!is_junk_url("https://www.reuters.com/world/china-2026-08-14/"));
+        assert!(!is_junk_url(
+            "https://www.reuters.com/world/china-2026-08-14/"
+        ));
     }
 
     #[test]

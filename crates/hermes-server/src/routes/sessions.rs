@@ -207,8 +207,8 @@ pub async fn load_session(
     State(state): State<Arc<AppState>>,
     Query(q): Query<PathQuery>,
 ) -> Result<Json<LoadedSessionData>, ApiError> {
-    let path = hermes_store::ensure_session_path(&q.path)
-        .map_err(|e| ApiError::Session(e.to_string()))?;
+    let path =
+        hermes_store::ensure_session_path(&q.path).map_err(|e| ApiError::Session(e.to_string()))?;
     let session =
         hermes_store::read_session(&path).map_err(|e| ApiError::Session(e.to_string()))?;
     let id = session.meta.id.clone();
@@ -246,8 +246,8 @@ pub async fn load_session(
 }
 
 pub async fn delete_session(Query(q): Query<PathQuery>) -> Result<Json<()>, ApiError> {
-    let path = hermes_store::ensure_session_path(&q.path)
-        .map_err(|e| ApiError::Session(e.to_string()))?;
+    let path =
+        hermes_store::ensure_session_path(&q.path).map_err(|e| ApiError::Session(e.to_string()))?;
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| ApiError::Session(e.to_string()))?;
     }

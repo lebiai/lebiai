@@ -51,8 +51,21 @@ pub fn parse_due(phrase: &str, today: NaiveDate) -> Result<(String, NaiveDate), 
 
 fn is_vague(s: &str) -> bool {
     const WORDS: &[&str] = &[
-        "以后", "有空", "尽快", "回头", "再说", "随时", "抽空", "得空", "有时间", "空了",
-        "later", "soon", "someday", "whenever", "asap",
+        "以后",
+        "有空",
+        "尽快",
+        "回头",
+        "再说",
+        "随时",
+        "抽空",
+        "得空",
+        "有时间",
+        "空了",
+        "later",
+        "soon",
+        "someday",
+        "whenever",
+        "asap",
     ];
     let t = s.trim().to_lowercase();
     WORDS.iter().any(|w| t == *w || t == format!("{w}吧"))
@@ -63,10 +76,7 @@ fn matches_any(s: &str, words: &[&str]) -> bool {
 }
 
 fn parse_weekday(s: &str) -> Option<Weekday> {
-    let s = s
-        .replace("星期", "")
-        .replace("礼拜", "")
-        .replace("周", "");
+    let s = s.replace("星期", "").replace("礼拜", "").replace("周", "");
     match s.trim() {
         "一" | "1" | "mon" | "monday" => Some(Weekday::Mon),
         "二" | "2" | "tue" | "tuesday" => Some(Weekday::Tue),
@@ -91,10 +101,7 @@ fn this_or_next_weekday(today: NaiveDate, target: Weekday) -> NaiveDate {
 
 fn parse_md(s: &str, today: NaiveDate) -> Option<NaiveDate> {
     let s = s.replace('月', "-").replace(['日', '号'], "");
-    let parts: Vec<&str> = s
-        .split(['-', '/', '.'])
-        .filter(|p| !p.is_empty())
-        .collect();
+    let parts: Vec<&str> = s.split(['-', '/', '.']).filter(|p| !p.is_empty()).collect();
     let (m, d) = match parts.as_slice() {
         [m, d] => ((*m).parse::<u32>().ok()?, (*d).parse::<u32>().ok()?),
         _ => return None,
@@ -124,7 +131,8 @@ pub fn is_content_deliverable(path: &str) -> bool {
     let ext = lower.rsplit('.').next().unwrap_or("");
     matches!(
         ext,
-        "doc" | "docx"
+        "doc"
+            | "docx"
             | "pdf"
             | "md"
             | "txt"
@@ -188,6 +196,8 @@ mod tests {
         assert!(is_content_deliverable("~/Desktop/热点.doc"));
         assert!(!is_content_deliverable("outputs/make_galbot_docx.py"));
         assert!(!is_content_deliverable("/tmp/outside-lebi.txt"));
-        assert!(!is_content_deliverable("/Users/a/Desktop/.lebi_write_test.txt"));
+        assert!(!is_content_deliverable(
+            "/Users/a/Desktop/.lebi_write_test.txt"
+        ));
     }
 }

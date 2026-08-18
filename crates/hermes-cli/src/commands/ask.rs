@@ -54,8 +54,7 @@ pub async fn run(
     let history = vec![Message::user_text(prompt)];
     let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
     let confirm_tx = if auto_allow {
-        let (tx, mut confirm_rx) =
-            tokio::sync::mpsc::channel::<hermes_turn::ConfirmRequest>(8);
+        let (tx, mut confirm_rx) = tokio::sync::mpsc::channel::<hermes_turn::ConfirmRequest>(8);
         tokio::spawn(async move {
             while let Some(req) = confirm_rx.recv().await {
                 let _ = req.reply.send(hermes_turn::ConfirmAction::Allow);

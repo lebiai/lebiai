@@ -4,8 +4,8 @@
 //! enforce workspace-root boundaries for all file operations.
 
 pub mod bash;
-pub mod commitment;
 pub mod bash_sandbox;
+pub mod commitment;
 pub mod document_import;
 pub mod edit;
 pub mod git;
@@ -48,7 +48,9 @@ pub use skill_propose::{ProposeContext, SessionMessages, SkillProposeQueue};
 pub use subagent::SubagentContext;
 pub use web::{SearchBackend, WebToolsContext};
 
-const BASIC_TOOLS: &[&str] = &["read", "write", "edit", "bash", "glob", "grep", "git", "open"];
+const BASIC_TOOLS: &[&str] = &[
+    "read", "write", "edit", "bash", "glob", "grep", "git", "open",
+];
 
 pub struct BuiltinToolHost {
     workspace: PathBuf,

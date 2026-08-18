@@ -403,8 +403,7 @@ pub fn should_inject_zaiban_index(
     query_hits_title: bool,
     first_human_today: bool,
 ) -> bool {
-    has_open
-        && (looks_like_zaiban_query(user_text) || query_hits_title || first_human_today)
+    has_open && (looks_like_zaiban_query(user_text) || query_hits_title || first_human_today)
 }
 
 pub fn zaiban_index_clause() -> &'static str {

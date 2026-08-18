@@ -217,9 +217,8 @@ async fn load_tool_host(
     if let Some(store) = memory_store {
         builtin = builtin.with_memory_store(store);
     }
-    builtin = builtin.with_commitment_store(Arc::new(
-        hermes_commitments::CommitmentStore::standard(),
-    ));
+    builtin =
+        builtin.with_commitment_store(Arc::new(hermes_commitments::CommitmentStore::standard()));
     if let Some(store) = skill_store {
         builtin = builtin.with_skill_store(store);
     }

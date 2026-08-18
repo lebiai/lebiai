@@ -16,9 +16,7 @@ pub mod danger;
 pub mod permissions;
 
 pub use agent::{run_agent, AgentConfig, AgentEvent, AgentOutput};
-pub use danger::{
-    assess_confirmation, bash_high_risk_reason, is_absolute_risk, ConfirmAssessment,
-};
+pub use danger::{assess_confirmation, bash_high_risk_reason, is_absolute_risk, ConfirmAssessment};
 pub use permissions::{Permission, PermissionChecker};
 
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 25;
@@ -1082,7 +1080,10 @@ mod tests {
             TurnEvent::ToolUseResult { content, is_error: false, .. }
                 if content == "approved-executed"
         )));
-        assert_eq!(text_of(out.new_messages.last().unwrap()), "after fail-closed");
+        assert_eq!(
+            text_of(out.new_messages.last().unwrap()),
+            "after fail-closed"
+        );
     }
 
     #[tokio::test]
