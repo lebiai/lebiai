@@ -46,6 +46,12 @@ jobs:
       - name: Install tauri-cli
         run: cargo install tauri-cli --version '^2' --locked
 
+      - name: Check updater signing secrets
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: scripts/check-updater-secrets.sh
+
       - name: Build DMG
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -82,6 +88,12 @@ jobs:
       - name: Prepare markitdown sidecar (self-contained Python)
         shell: pwsh
         run: .\scripts\prepare-markitdown-bundle.ps1
+
+      - name: Check updater signing secrets
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: scripts/check-updater-secrets.sh
 
       - name: Build NSIS installer
         shell: pwsh

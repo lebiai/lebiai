@@ -5,6 +5,7 @@
 # Does not print the key. Safe to source.
 
 if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+  echo "updater signing key from env (len=${#TAURI_SIGNING_PRIVATE_KEY})"
   return 0 2>/dev/null || exit 0
 fi
 
