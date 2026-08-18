@@ -1,4 +1,13 @@
 /** Result of Tauri `import_document` (hermes_tools::ImportResult). */
+export type KeptMaterial = {
+  item: {
+    id: string;
+    title: string;
+    readable?: boolean;
+  };
+  kind: "created" | "duplicate" | "new_version" | string;
+};
+
 export type FileImportResult = {
   ok: boolean;
   fileId: string;
@@ -11,6 +20,7 @@ export type FileImportResult = {
   bytesMd: number;
   originalDeleted: boolean;
   warning?: string;
+  kept?: KeptMaterial;
 };
 
 export type ConverterStatus = {

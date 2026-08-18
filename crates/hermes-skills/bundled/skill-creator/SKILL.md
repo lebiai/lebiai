@@ -6,7 +6,11 @@ always_active: false
 
 # Skill Creator
 
-_Adapted from [anthropics/skills/skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator). The runtime primitives are rewired for Hermes:_
+**Desktop (乐彼AI GUI) has no `subagent` tool.** Do not call it. Capture intent, draft, and `skill_create` once. Ask them to try the skill in a new dialogue. Skip eval / grader / A/B loops on desktop.
+
+On **CLI** (`hermes chat`) the `subagent` tool exists; the eval loop below applies there only.
+
+_Adapted from [anthropics/skills/skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator). The runtime primitives are rewired for lebi-AI:_
 
 - _`subagent` tool replaces upstream's `claude -p` for spawning fresh child contexts (eval runs, graders, comparators)._
 - _`skill_create(extra_files=...)` replaces upstream's directory-write packaging — one tool call writes the whole multi-file bundle atomically._

@@ -292,6 +292,7 @@ fn parse_sse_stream(
     // polls. Easiest expressed as an async-stream via `stream::unfold`.
     struct State {
         bytes: BoxStream<'static, std::result::Result<bytes::Bytes, reqwest::Error>>,
+        utf8: crate::utf8::Utf8Carry,
         // Pending bytes we haven't yet split into lines.
         line_buf: String,
         // Pending events emitted but not yet drained to the consumer.
@@ -307,6 +308,7 @@ fn parse_sse_stream(
 
     let state = State {
         bytes,
+        utf8: crate::utf8::Utf8Carry::new(),
         line_buf: String::new(),
         pending: std::collections::VecDeque::new(),
         blocks: Vec::new(),
@@ -327,15 +329,10 @@ fn parse_sse_stream(
 
             // Pull more bytes.
             match s.bytes.next().await {
-                Some(Ok(chunk)) => match std::str::from_utf8(&chunk) {
-                    Ok(text) => s.line_buf.push_str(text),
-                    Err(_) => {
-                        // Partial UTF-8 at chunk boundary — try lossy decode
-                        // rather than aborting the entire stream.
-                        let text = String::from_utf8_lossy(&chunk);
-                        s.line_buf.push_str(&text);
-                    }
-                },
+                Some(Ok(chunk)) => {
+                    let text = s.utf8.push(&chunk);
+                    s.line_buf.push_str(&text);
+                }
                 Some(Err(e)) => {
                     // Transient network/decode error on one chunk. Log and
                     // try to continue — the stream may recover on the next
@@ -344,7 +341,9 @@ fn parse_sse_stream(
                     continue;
                 }
                 None => {
-                    // EOF — flush whatever line is buffered, then emit Final.
+                    // EOF — flush leftover UTF-8, then whatever line is buffered.
+                    let tail = s.utf8.finish();
+                    s.line_buf.push_str(&tail);
                     if !s.line_buf.is_empty() {
                         let line_buf = std::mem::take(&mut s.line_buf);
                         process_lines(

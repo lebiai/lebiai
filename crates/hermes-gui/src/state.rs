@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -13,6 +13,7 @@ use hermes_mcp::{McpConfig, McpToolHost, ServerSpec};
 use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryEffectiveness, MemoryStore};
 use hermes_reflect::SkillCandidate;
 use hermes_skills::{FsSkillStore, LoadedSkill, SkillEffectiveness, SkillStore};
+use hermes_sources::SourceStore;
 use hermes_store::SessionWriter;
 use hermes_tools::{
     BuiltinToolHost, CompositeToolHost, ProposeContext, SearchBackend, WebToolsContext,
@@ -67,6 +68,9 @@ pub struct AppState {
     /// Shared with BuiltinToolHost so agent tools (`memory_save` etc.) hit the same store.
     pub memory_store: Arc<FsMemoryStore>,
     pub commitment_store: Arc<CommitmentStore>,
+    pub source_store: Arc<SourceStore>,
+    /// Last material ids used in a session (follow-up "那逾期呢").
+    pub source_focus: Arc<Mutex<HashMap<String, Vec<String>>>>,
     pub sessions: Sessions,
     pub cancel_tokens: CancelTokens,
     pub confirm_tokens: ConfirmTokens,
@@ -82,12 +86,13 @@ pub struct AppState {
     pub micro_turns_since: Arc<Mutex<HashMap<String, usize>>>,
     /// WeChat (iLink Bot) connection state.
     pub wechat: WechatState,
-    /// One in-flight idle WeChat distill at a time, plus a cooldown so
-    /// sidebar refreshes do not spawn parallel LLM jobs.
+    /// One in-flight idle WeChat distill at a time (boot drain, after delay).
     pub idle_wechat_distill: Arc<IdleDistillGate>,
+    /// Live desktop turns own the model. Background distill waits.
+    pub live_llm: Arc<LiveLlmGate>,
 }
 
-/// Single-flight + cooldown for `spawn_idle_wechat_distill`.
+/// Single-flight + cooldown for delayed WeChat distill.
 pub struct IdleDistillGate {
     inflight: AtomicBool,
     last_finished: std::sync::Mutex<Option<Instant>>,
@@ -123,6 +128,51 @@ impl IdleDistillGate {
             *last = Some(Instant::now());
         }
         self.inflight.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Counts in-flight user turns so housekeeping can yield the model.
+pub struct LiveLlmGate {
+    live: AtomicUsize,
+}
+
+pub struct LiveLlmGuard(Arc<LiveLlmGate>);
+
+impl Drop for LiveLlmGuard {
+    fn drop(&mut self) {
+        self.0.leave();
+    }
+}
+
+impl LiveLlmGate {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            live: AtomicUsize::new(0),
+        })
+    }
+
+    pub fn enter(self: &Arc<Self>) -> LiveLlmGuard {
+        self.live.fetch_add(1, Ordering::SeqCst);
+        LiveLlmGuard(self.clone())
+    }
+
+    fn leave(&self) {
+        self.live
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                Some(n.saturating_sub(1))
+            })
+            .ok();
+    }
+
+    pub fn is_live(&self) -> bool {
+        self.live.load(Ordering::SeqCst) > 0
+    }
+
+    /// Park background LLM work until the user is not mid-reply.
+    pub async fn wait_idle(&self) {
+        while self.is_live() {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
     }
 }
 
@@ -204,6 +254,8 @@ impl AppState {
         let memory_store: Arc<FsMemoryStore> =
             Arc::new(FsMemoryStore::new(base.join("memories"), None));
         let commitment_store: Arc<CommitmentStore> = Arc::new(CommitmentStore::standard());
+        let source_store: Arc<SourceStore> =
+            Arc::new(SourceStore::standard().context("opening sources store")?);
 
         let web_ctx = Arc::new(WebToolsContext {
             extract_provider: provider.clone(),
@@ -220,6 +272,7 @@ impl AppState {
             &workspace_root,
             Some(memory_store.clone() as Arc<dyn MemoryStore>),
             Some(commitment_store.clone()),
+            Some(source_store.clone()),
             Some(skill_store.clone() as Arc<dyn SkillStore>),
             Some(propose_ctx),
             Some(web_ctx),
@@ -242,6 +295,8 @@ impl AppState {
             skill_store,
             memory_store,
             commitment_store,
+            source_store,
+            source_focus: Arc::new(Mutex::new(HashMap::new())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             cancel_tokens: Arc::new(Mutex::new(HashMap::new())),
             confirm_tokens: Arc::new(Mutex::new(HashMap::new())),
@@ -265,6 +320,7 @@ impl AppState {
                 })),
             },
             idle_wechat_distill: IdleDistillGate::new(),
+            live_llm: LiveLlmGate::new(),
         })
     }
 
@@ -379,6 +435,7 @@ async fn load_tool_host(
     workspace_root: &Path,
     memory_store: Option<Arc<dyn MemoryStore>>,
     commitment_store: Option<Arc<CommitmentStore>>,
+    source_store: Option<Arc<SourceStore>>,
     skill_store: Option<Arc<dyn SkillStore>>,
     propose_ctx: Option<Arc<ProposeContext>>,
     web_ctx: Option<Arc<WebToolsContext>>,
@@ -389,6 +446,9 @@ async fn load_tool_host(
     }
     if let Some(store) = commitment_store {
         builtin = builtin.with_commitment_store(store);
+    }
+    if let Some(store) = source_store {
+        builtin = builtin.with_source_store(store);
     }
     if let Some(store) = skill_store {
         builtin = builtin.with_skill_store(store);
@@ -444,4 +504,20 @@ pub fn session_path_for(meta: &SessionMeta) -> Result<PathBuf> {
     let stamp = meta.created_at.format("%Y-%m-%dT%H-%M-%S");
     let short_id = &meta.id[..8.min(meta.id.len())];
     Ok(hermes_core::data_path("sessions").join(format!("{stamp}-{short_id}.jsonl")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_gate_tracks_occupancy() {
+        let gate = LiveLlmGate::new();
+        assert!(!gate.is_live());
+        {
+            let _g = gate.enter();
+            assert!(gate.is_live());
+        }
+        assert!(!gate.is_live());
+    }
 }

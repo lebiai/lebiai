@@ -486,6 +486,7 @@ fn parse_openai_stream(
 
     let state = State {
         bytes,
+        utf8: crate::utf8::Utf8Carry::new(),
         line_buf: String::new(),
         pending: std::collections::VecDeque::new(),
         finished: false,
@@ -506,18 +507,17 @@ fn parse_openai_stream(
             }
 
             match s.bytes.next().await {
-                Some(Ok(chunk)) => match std::str::from_utf8(&chunk) {
-                    Ok(text) => s.line_buf.push_str(text),
-                    Err(_) => {
-                        let text = String::from_utf8_lossy(&chunk);
-                        s.line_buf.push_str(&text);
-                    }
-                },
+                Some(Ok(chunk)) => {
+                    let text = s.utf8.push(&chunk);
+                    s.line_buf.push_str(&text);
+                }
                 Some(Err(e)) => {
                     tracing::debug!(error=%e, "openai stream chunk error (continuing)");
                     continue;
                 }
                 None => {
+                    let tail = s.utf8.finish();
+                    s.line_buf.push_str(&tail);
                     finalise(&mut s);
                     s.finished = true;
                     continue;
@@ -642,6 +642,7 @@ fn handle_line(line: &str, s: &mut StreamState) {
 type StreamState = State;
 struct State {
     bytes: BoxStream<'static, std::result::Result<bytes::Bytes, reqwest::Error>>,
+    utf8: crate::utf8::Utf8Carry,
     line_buf: String,
     pending: std::collections::VecDeque<Result<StreamEvent>>,
     finished: bool,

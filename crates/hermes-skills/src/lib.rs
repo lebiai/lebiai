@@ -6,6 +6,7 @@ pub mod relevance;
 pub mod skill;
 pub mod stats;
 pub mod store;
+mod url_safety;
 
 pub use install::{
     delete_skill, install_from_source, parse_skill_doc, validate_relative_path, DeleteOutcome,

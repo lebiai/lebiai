@@ -46,6 +46,18 @@ export function ToastHost() {
         >
           <Icon variant={item.variant} />
           <span className="flex-1 break-words whitespace-pre-wrap">{item.message}</span>
+          {item.action ? (
+            <button
+              type="button"
+              className="shrink-0 underline underline-offset-2 opacity-95 hover:opacity-100 text-xs font-medium"
+              onClick={() => {
+                item.action?.onClick();
+                dismissToast(item.id);
+              }}
+            >
+              {item.action.label}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => dismissToast(item.id)}

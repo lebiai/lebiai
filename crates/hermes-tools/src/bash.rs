@@ -71,6 +71,12 @@ pub async fn run(workspace: &Path, args: serde_json::Value) -> Result<ToolCallOu
             is_error: true,
         });
     }
+    if let Some(reason) = crate::safety::bash_secret_read_blocked(&a.command) {
+        return Ok(ToolCallOutcome {
+            content: format!("bash refused: {reason}"),
+            is_error: true,
+        });
+    }
 
     let timeout = Duration::from_millis(a.timeout_ms.min(600_000));
     let (mut cmd, mode) = sandboxed_shell(workspace, &a.command);

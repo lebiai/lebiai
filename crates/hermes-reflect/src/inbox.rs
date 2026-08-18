@@ -114,6 +114,9 @@ pub fn memory_passes_gate(c: &MemoryCandidate) -> bool {
     if is_internal_noise_text(fact) {
         return false;
     }
+    if looks_like_dumped_source(fact) {
+        return false;
+    }
     if is_low_value_memory(fact) || hermes_memory::is_worthless_for_living(fact) {
         return false;
     }
@@ -137,6 +140,15 @@ pub fn memory_passes_gate(c: &MemoryCandidate) -> bool {
         }
     }
     true
+}
+
+/// Long pasted clauses are materials, not a living standard.
+fn looks_like_dumped_source(fact: &str) -> bool {
+    if fact.chars().count() < 400 {
+        return false;
+    }
+    let tiao = fact.matches('条').count();
+    tiao >= 3 && (fact.contains("甲方") || fact.contains("乙方") || fact.contains("本合同"))
 }
 
 /// Greeting / one-shot task paste / pure URL — not worth durable memory.
@@ -335,6 +347,15 @@ mod tests {
             "【工作情节】季度复盘\n- 情境：用户要三段结构做复盘\n- 做法：先结论后证据再动作\n- 产出：outputs/retro.md\n- 用户反馈/修正：无\n- 可复用点：先结论后证据",
         );
         assert!(memory_passes_gate(&good));
+        let dumped = good_mem(&format!(
+            "本合同甲方与乙方约定如下。第一条 定义。第二条 付款。第三条 违约金。{}",
+            "甲方应按第七条支付。乙方应在三十日内。本合同一式两份。".repeat(16)
+        ));
+        assert!(
+            !memory_passes_gate(&dumped),
+            "len={}",
+            dumped.fact.chars().count()
+        );
         let env = MemoryCandidate {
             fact: "本机 Python 环境已安装 python-docx 1.2.0，可用来生成 .docx".into(),
             tags: vec!["environment".into()],

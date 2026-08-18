@@ -1,5 +1,5 @@
 use hermes_core::{Message, Role, Session, SessionEvent, SessionMeta};
-use hermes_llm::Config;
+
 use hermes_memory::MemoryStore;
 use hermes_store::SessionWriter;
 use hermes_turn::{ConfirmAction, TurnConfig, TurnEvent};
@@ -31,6 +31,13 @@ fn last_human_user_text(messages: &[Message]) -> Option<String> {
         }
     }
     None
+}
+
+fn strip_attachments_header(text: &str) -> String {
+    match text.find("[attachments]") {
+        Some(i) => text[..i].trim().to_string(),
+        None => text.trim().to_string(),
+    }
 }
 
 /// Index after the last human user message (exclusive end for truncate-to-user-keep).
@@ -78,7 +85,7 @@ async fn begin_turn(
     app: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
-    new_user: Option<String>,
+    mut new_user: Option<String>,
     on_event: Channel<ChatStreamEvent>,
 ) -> Result<(), GuiError> {
     // License / trial gate (docs/spec/license-ux.md).
@@ -174,6 +181,108 @@ async fn begin_turn(
         })?
     };
 
+    let material_query = strip_attachments_header(&prompt_for_system);
+    if hermes_sources::is_topic_reset(&material_query)
+        || hermes_sources::wants_other_file(&material_query)
+    {
+        state.source_focus.lock().await.remove(&session_id);
+    }
+    let stored_focus = state
+        .source_focus
+        .lock()
+        .await
+        .get(&session_id)
+        .cloned()
+        .unwrap_or_default();
+    let focus: &[String] = if hermes_sources::is_topic_reset(&material_query) {
+        &[]
+    } else {
+        &stored_focus
+    };
+    let material_hits: Vec<hermes_core::MaterialHit> = state
+        .source_store
+        .search(&material_query, focus)
+        .into_iter()
+        .map(|h| hermes_core::MaterialHit {
+            id: h.id,
+            title: h.title,
+            excerpt: h.excerpt,
+        })
+        .collect();
+    if hermes_sources::is_topic_reset(&material_query) {
+        // stay cleared
+    } else if !material_hits.is_empty() {
+        let ids: Vec<String> = material_hits.iter().map(|h| h.id.clone()).collect();
+        state
+            .source_focus
+            .lock()
+            .await
+            .insert(session_id.clone(), ids);
+    } else if !hermes_sources::is_followup_query(&material_query) {
+        state.source_focus.lock().await.remove(&session_id);
+    }
+
+    if hermes_sources::wants_on_hand(&material_query) {
+        state.source_store.set_read_allowlist(None);
+    } else if material_hits.is_empty() {
+        state.source_store.set_read_allowlist(Some(Vec::new()));
+    } else {
+        let mut allow: Vec<String> = material_hits
+            .iter()
+            .flat_map(|h| [h.id.clone(), h.title.clone()])
+            .collect();
+        allow.sort();
+        allow.dedup();
+        state.source_store.set_read_allowlist(Some(allow));
+    }
+    if hermes_sources::wants_on_hand(&material_query) {
+        let rows = state.source_store.list_active();
+        if let Some(ref mut content) = new_user {
+            if !content.contains("[on-hand]") {
+                content.push_str("\n\n[on-hand]\n");
+                if rows.is_empty() {
+                    content.push_str("(none)\n");
+                } else {
+                    for r in &rows {
+                        content.push_str(&format!("- 《{}》\n", r.title));
+                    }
+                }
+            }
+        }
+    }
+
+    if hermes_sources::wants_remember_standard(&material_query) {
+        let title = material_hits
+            .first()
+            .map(|h| h.title.clone())
+            .unwrap_or_else(|| "这份材料".into());
+        let fact = format!(
+            "做同类事时，好的标准是：{}。出处：《{}》。",
+            material_query.chars().take(240).collect::<String>().trim(),
+            title
+        );
+        let output = hermes_reflect::ReflectionOutput {
+            summary: "from kept material".into(),
+            memory_candidates: vec![hermes_reflect::MemoryCandidate {
+                fact,
+                tags: vec!["standard".into(), "from-material".into()],
+                zone: "standards".into(),
+                scope: hermes_memory::Scope::User,
+                confidence: hermes_memory::Confidence::Medium,
+                rationale: "user asked to remember a standard".into(),
+                supersedes: vec![],
+            }],
+            ..Default::default()
+        };
+        if let Ok(n) =
+            hermes_reflect::enqueue_from_reflection(&output, hermes_reflect::InboxSource::Micro)
+        {
+            if n > 0 {
+                let _ = on_event.send(crate::events::ChatStreamEvent::RememberQueued);
+            }
+        }
+    }
+
     let open_work = state.commitment_store.list_live().unwrap_or_default();
     let first_human_today = {
         let (seq, at) = active_session.session.last_human_send();
@@ -186,6 +295,7 @@ async fn begin_turn(
         active: &active,
         all_skills: &skills,
         open_work: &open_work,
+        material_hits: &material_hits,
         first_human_today,
         workspace_root: &workspace_root,
         limits,
@@ -237,6 +347,10 @@ async fn begin_turn(
         *guard = history.clone();
     }
 
+    let allowed_titles: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(
+        material_hits.iter().map(|h| h.title.clone()).collect(),
+    ));
+
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
     state
         .cancel_tokens
@@ -259,16 +373,16 @@ async fn begin_turn(
     let pinned_memories_arc = state.pinned_memories.clone();
     let micro_cooldown = state.micro_turns_since.clone();
     let (auto_accept, min_confidence) = micro::reflect_policy(&state);
-    let persist_thinking = Config::load_default()
-        .map(|c| c.ui.persist_thinking)
-        .unwrap_or(state.config.read().unwrap().ui.persist_thinking);
+    let persist_thinking = state.config.read().unwrap().ui.persist_thinking;
     let ui_lang = state
         .config
         .read()
         .map(|c| c.ui.language.clone())
         .unwrap_or_else(|_| "zh-CN".into());
+    let live_llm = state.live_llm.clone();
 
     tokio::spawn(async move {
+        let _live = live_llm.enter();
         let config = TurnConfig {
             model,
             system: if turn_system.is_empty() {
@@ -287,6 +401,7 @@ async fn begin_turn(
         let app_ev = app.clone();
         let tool_names: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
         let tool_names_ev = tool_names.clone();
+        let allowed_ev = allowed_titles.clone();
         let on_turn_event = move |event: TurnEvent| match event {
             TurnEvent::TextDelta(text) => {
                 let _ = evt.send(ChatStreamEvent::TextDelta { text });
@@ -328,6 +443,15 @@ async fn begin_turn(
                     .ok()
                     .and_then(|m| m.get(&id).cloned())
                     .unwrap_or_default();
+                if !is_error {
+                    if let Some(title) = hermes_core::companion::parse_source_read_title(&content) {
+                        if let Ok(mut a) = allowed_ev.lock() {
+                            if !a.iter().any(|t| t == &title) {
+                                a.push(title);
+                            }
+                        }
+                    }
+                }
                 let _ = evt.send(ChatStreamEvent::ToolUseResult {
                     id,
                     content: content.clone(),
@@ -390,10 +514,28 @@ async fn begin_turn(
 
         match result {
             Ok(output) => {
-                turn_messages = output.new_messages.clone();
+                let mut msgs = output.new_messages;
+                let allowed = allowed_titles.lock().map(|a| a.clone()).unwrap_or_default();
+                for m in &mut msgs {
+                    m.sanitize_material_cites(&allowed);
+                }
+                let corrected: String = msgs
+                    .iter()
+                    .filter(|m| m.role == hermes_core::Role::Assistant)
+                    .flat_map(|m| m.content.iter())
+                    .filter_map(|b| match b {
+                        hermes_core::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                if !corrected.is_empty() {
+                    let _ = on_event.send(ChatStreamEvent::TextCorrected { text: corrected });
+                }
+                turn_messages = msgs.clone();
                 if let Some(s) = sessions_arc.lock().await.get_mut(&sid) {
                     session_id_for_log = s.session.meta.id.clone();
-                    for msg in &output.new_messages {
+                    for msg in &msgs {
                         s.session.messages.push(msg.clone());
                         let to_disk = msg.for_persist(persist_thinking);
                         if to_disk.content.is_empty() {
@@ -430,14 +572,27 @@ async fn begin_turn(
                 Err(_) => Vec::new(),
             }
         };
-        for c in drained {
-            let _ = on_event.send(ChatStreamEvent::SkillCandidateProposed {
-                name: c.name,
-                description: c.description,
-                body: c.body,
-                triggers: c.triggers,
-            });
+        if !drained.is_empty() {
+            let pending = hermes_reflect::ReflectionOutput {
+                summary: String::new(),
+                skill_candidates: drained,
+                memory_candidates: vec![],
+                conflicts: vec![],
+            };
+            match hermes_reflect::enqueue_from_reflection(
+                &pending,
+                hermes_reflect::InboxSource::ManualReflect,
+            ) {
+                Ok(n) if n > 0 => {
+                    tracing::info!(added = n, "propose_skill enqueued to inbox");
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error=%e, "enqueue proposed skill failed"),
+            }
         }
+
+        // Yield the model before housekeeping so the next send is not queued.
+        drop(_live);
 
         // Micro-reflection: separate lifecycle from the turn stream.
         // Notifies UI via Tauri event `hermes://micro-reflection` (not Channel).
@@ -455,6 +610,7 @@ async fn begin_turn(
             session_id_for_log,
             auto_accept,
             min_confidence,
+            live_llm,
         );
 
         cancel_tokens_arc.lock().await.remove(&sid);

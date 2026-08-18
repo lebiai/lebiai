@@ -32,11 +32,6 @@ fn current_view(state: &AppState) -> DataDirView {
 }
 
 #[tauri::command]
-pub fn data_dir_get(state: State<'_, AppState>) -> Result<DataDirView, GuiError> {
-    Ok(current_view(&state))
-}
-
-#[tauri::command]
 pub fn data_dir_migrate(
     state: State<'_, AppState>,
     target: String,
@@ -84,6 +79,12 @@ pub fn data_dir_migrate(
     write_data_dir_pointer(&target)
         .map_err(|e| GuiError::Config(format!("记录新位置失败：{e}")))?;
 
+    let sources = target.join("sources");
+    state
+        .source_store
+        .replace_root(sources)
+        .map_err(|e| GuiError::Config(format!("材料没跟上新位置：{e}")))?;
+
     Ok(DataDirView {
         data_root: target.to_string_lossy().into_owned(),
         workspace_root: state.workspace_root(),
@@ -111,6 +112,8 @@ pub async fn data_dir_pick(app: AppHandle) -> Result<Option<String>, GuiError> {
 #[tauri::command]
 pub fn data_dir_reset(state: State<'_, AppState>) -> Result<DataDirView, GuiError> {
     clear_data_dir_pointer().map_err(|e| GuiError::Config(format!("重置失败：{e}")))?;
+    let sources = data_root().join("sources");
+    let _ = state.source_store.replace_root(sources);
     Ok(current_view(&state))
 }
 

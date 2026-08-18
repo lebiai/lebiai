@@ -112,7 +112,7 @@ pub fn save_spec() -> ToolSpec {
             "properties": {
                 "content": {"type": "string", "description": "The insight or knowledge to remember"},
                 "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for retrieval (e.g. ['weather', 'api'])"},
-                "zone": {"type": "string", "description": "Memory zone: core (identity/preferences), work (current focus), project:<name> (per-project), episode (session summaries), general (default)", "default": "general"},
+                "zone": {"type": "string", "description": "Memory zone: preferences (how they like to work / identity), standards (quality bar), work (reusable work episodes), general (default). Old names core/episode/project:* are accepted and folded.", "default": "general"},
                 "supersedes": {"type": "array", "items": {"type": "string"}, "description": "Existing memory ids this one replaces (used to merge near-duplicates from memory_distill). Superseded memories stay on disk but drop out of the active set."}
             },
             "required": ["content"]
@@ -129,6 +129,24 @@ pub async fn save_run(store: &dyn MemoryStore, args: serde_json::Value) -> Resul
     if a.content.trim().is_empty() {
         return Ok(ToolCallOutcome {
             content: "memory_save: content must not be empty".into(),
+            is_error: true,
+        });
+    }
+
+    let gate = hermes_reflect::MemoryCandidate {
+        fact: a.content.clone(),
+        tags: a.tags.clone(),
+        zone: a.zone.clone(),
+        scope: hermes_memory::Scope::User,
+        confidence: hermes_memory::Confidence::High,
+        rationale: String::new(),
+        supersedes: a.supersedes.clone(),
+    };
+    if !hermes_reflect::memory_passes_gate(&gate) {
+        return Ok(ToolCallOutcome {
+            content: "memory_save refused: this is not a lasting rule \
+                      (empty shell, session dump, or environment note)."
+                .into(),
             is_error: true,
         });
     }
@@ -451,7 +469,7 @@ mod tests {
         let out = distill_run(&store, args).await.unwrap();
         assert!(
             out.content.contains("PROTECTED"),
-            "core-zone cluster must be flagged: {}",
+            "preferences-zone cluster must be flagged: {}",
             out.content
         );
     }
@@ -506,9 +524,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn save_run_refuses_worthless_shell() {
+        let (_dir, store) = fresh_store();
+        let out = save_run(&store, serde_json::json!({"content": "hi"}))
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(store.list_active().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn save_run_without_supersedes_is_backward_compatible() {
         let (_dir, store) = fresh_store();
-        let args = serde_json::json!({"content": "plain fact"});
+        let args = serde_json::json!({"content": "plain lasting rule about how they write titles"});
         let out = save_run(&store, args).await.unwrap();
         assert!(!out.is_error);
         assert_eq!(store.list_active().unwrap().len(), 1);

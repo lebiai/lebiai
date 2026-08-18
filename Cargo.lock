@@ -2223,6 +2223,7 @@ dependencies = [
  "hermes-memory",
  "hermes-reflect",
  "hermes-skills",
+ "hermes-sources",
  "hermes-store",
  "hermes-tools",
  "hermes-turn",
@@ -2328,7 +2329,6 @@ dependencies = [
  "dirs 5.0.1",
  "futures",
  "hermes-channel",
- "hermes-commitments",
  "hermes-core",
  "hermes-llm",
  "hermes-mcp",
@@ -2367,6 +2367,21 @@ dependencies = [
  "thiserror 1.0.69",
  "tracing",
  "walkdir",
+]
+
+[[package]]
+name = "hermes-sources"
+version = "1.2.0"
+dependencies = [
+ "chrono",
+ "hermes-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2416,6 +2431,7 @@ dependencies = [
  "hermes-memory",
  "hermes-reflect",
  "hermes-skills",
+ "hermes-sources",
  "hermes-turn",
  "htmd",
  "once_cell",

@@ -1,6 +1,4 @@
-use hermes_core::{
-    derive_title_from_messages, session_has_user_text, Session, SessionMeta, DEFAULT_SESSION_TITLE,
-};
+use hermes_core::{Session, SessionMeta, DEFAULT_SESSION_TITLE};
 use hermes_store::{self, SessionWriter};
 use serde::Serialize;
 use tauri::State;
@@ -103,64 +101,70 @@ fn wechat_title(created: &chrono::DateTime<chrono::Utc>) -> String {
     )
 }
 
-fn display_title(session: &Session, channel: Option<&str>) -> String {
-    if channel == Some("wechat") {
-        return wechat_title(&session.meta.created_at);
-    }
-    if let Some(t) = session
-        .meta
-        .title
-        .as_ref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        return t.to_string();
-    }
-    derive_title_from_messages(&session.messages)
-}
-
 #[tauri::command]
-pub async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummary>, GuiError> {
+pub async fn list_sessions(_state: State<'_, AppState>) -> Result<Vec<SessionSummary>, GuiError> {
     let sessions_dir = hermes_core::data_path("sessions");
     if !sessions_dir.exists() {
         return Ok(Vec::new());
     }
-    let _ = hermes_store::purge_empty_sessions(&sessions_dir);
+    let purge_dir = sessions_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let _ = hermes_store::purge_empty_sessions(purge_dir);
+    });
 
     let paths =
         hermes_store::list_sessions(&sessions_dir).map_err(|e| GuiError::Session(e.to_string()))?;
 
-    let mut entries: Vec<SessionSummary> = Vec::new();
+    let mut desktop: Vec<SessionSummary> = Vec::new();
+    let mut channel_rows: Vec<SessionSummary> = Vec::new();
     for path in paths {
-        if let Ok(session) = hermes_store::read_session(&path) {
-            if !session_has_user_text(&session.messages) {
-                continue;
-            }
-            let updated_at = std::fs::metadata(&path)
-                .and_then(|m| m.modified())
-                .ok()
-                .map(|t| {
-                    let dt: chrono::DateTime<chrono::Utc> = t.into();
-                    dt.to_rfc3339()
-                })
-                .unwrap_or_else(|| session.meta.created_at.to_rfc3339());
-            let channel = hermes_store::channel_of_session_path(&path).map(|s| s.to_string());
-            let read_only = channel.is_some();
-            entries.push(SessionSummary {
-                id: session.meta.id.clone(),
-                title: display_title(&session, channel.as_deref()),
-                created_at: session.meta.created_at.to_rfc3339(),
-                updated_at,
-                path: path.to_string_lossy().into_owned(),
-                channel,
-                read_only,
-            });
+        let Ok((meta, has_user)) = hermes_store::read_session_listing(&path) else {
+            continue;
+        };
+        let channel = hermes_store::channel_of_session_path(&path).map(|s| s.to_string());
+        let read_only = channel.is_some();
+        if !read_only && !has_user {
+            continue;
+        }
+        let updated_at = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(|t| {
+                let dt: chrono::DateTime<chrono::Utc> = t.into();
+                dt.to_rfc3339()
+            })
+            .unwrap_or_else(|| meta.created_at.to_rfc3339());
+        let title = if channel.as_deref() == Some("wechat") {
+            wechat_title(&meta.created_at)
+        } else {
+            meta.title
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(DEFAULT_SESSION_TITLE)
+                .to_string()
+        };
+        let row = SessionSummary {
+            id: meta.id.clone(),
+            title,
+            created_at: meta.created_at.to_rfc3339(),
+            updated_at,
+            path: path.to_string_lossy().into_owned(),
+            channel,
+            read_only,
+        };
+        if read_only {
+            channel_rows.push(row);
+        } else {
+            desktop.push(row);
         }
     }
-    // Newest first after empty drafts are gone — empty files must not eat the cap.
+    desktop.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    desktop.truncate(50);
+    channel_rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    let mut entries = desktop;
+    entries.extend(channel_rows);
     entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    entries.truncate(50);
-    crate::commands::reflect::spawn_idle_wechat_distill(&state);
     Ok(entries)
 }
 
@@ -170,8 +174,6 @@ pub async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSumm
 /// - abandoned empty drafts are dropped without writing files
 #[tauri::command]
 pub async fn new_session(state: State<'_, AppState>) -> Result<SessionSummary, GuiError> {
-    let _ = hermes_store::purge_empty_sessions(hermes_core::data_path("sessions"));
-
     let mut sessions = state.sessions.lock().await;
 
     // Reuse the single empty draft — spam "New Chat" must not create N empties.

@@ -5,17 +5,16 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use crate::memory::LoadedMemory;
+use hermes_core::companion::zones;
 
-pub const ZONE_CORE: &str = "core";
-pub const ZONE_WORK: &str = "work";
-pub const ZONE_EPISODE: &str = "episode";
-pub const ZONE_GENERAL: &str = "general";
+use crate::memory::LoadedMemory;
 
 pub fn group_by_zone<'a>(memories: &'a [LoadedMemory]) -> BTreeMap<String, Vec<&'a LoadedMemory>> {
     let mut map: BTreeMap<String, Vec<&'a LoadedMemory>> = BTreeMap::new();
     for m in memories {
-        map.entry(m.frontmatter.zone.clone()).or_default().push(m);
+        map.entry(zones::normalize(&m.frontmatter.zone).to_string())
+            .or_default()
+            .push(m);
     }
     map
 }
@@ -23,7 +22,7 @@ pub fn group_by_zone<'a>(memories: &'a [LoadedMemory]) -> BTreeMap<String, Vec<&
 pub fn get_zone<'a>(memories: &'a [LoadedMemory], zone: &str) -> Vec<&'a LoadedMemory> {
     memories
         .iter()
-        .filter(|m| m.frontmatter.zone == zone)
+        .filter(|m| zones::same(&m.frontmatter.zone, zone))
         .collect()
 }
 
@@ -108,40 +107,41 @@ mod tests {
     #[test]
     fn group_by_zone_separates_zones() {
         let mems = vec![
-            mem("m1", ZONE_CORE, "user prefers vim"),
-            mem("m2", ZONE_CORE, "user is architect"),
-            mem("m3", ZONE_WORK, "working on palace"),
-            mem("m4", ZONE_GENERAL, "misc fact"),
+            mem("m1", "core", "user prefers vim"),
+            mem("m2", "preferences", "user is architect"),
+            mem("m3", "work", "working on palace"),
+            mem("m4", "general", "misc fact"),
         ];
         let grouped = group_by_zone(&mems);
         assert_eq!(grouped.len(), 3);
-        assert_eq!(grouped[ZONE_CORE].len(), 2);
-        assert_eq!(grouped[ZONE_WORK].len(), 1);
-        assert_eq!(grouped[ZONE_GENERAL].len(), 1);
+        assert_eq!(grouped[zones::PREFERENCES].len(), 2);
+        assert_eq!(grouped[zones::WORK].len(), 1);
+        assert_eq!(grouped[zones::GENERAL].len(), 1);
     }
 
     #[test]
-    fn get_zone_filters() {
+    fn get_zone_folds_legacy_core() {
         let mems = vec![
-            mem("m1", ZONE_CORE, "core fact"),
-            mem("m2", ZONE_WORK, "work fact"),
+            mem("m1", "core", "core fact"),
+            mem("m2", "work", "work fact"),
         ];
-        let core = get_zone(&mems, ZONE_CORE);
-        assert_eq!(core.len(), 1);
-        assert_eq!(core[0].frontmatter.id, "m1");
+        let prefs = get_zone(&mems, zones::PREFERENCES);
+        assert_eq!(prefs.len(), 1);
+        assert_eq!(prefs[0].frontmatter.id, "m1");
+        assert_eq!(get_zone(&mems, "core").len(), 1);
     }
 
     #[test]
     fn build_palace_index_simple_output() {
         let mems = vec![
-            mem("m1", ZONE_CORE, "user prefers vim"),
-            mem("m2", ZONE_CORE, "user is architect"),
-            mem("m3", ZONE_WORK, "working on palace"),
+            mem("m1", "core", "user prefers vim"),
+            mem("m2", "preferences", "user is architect"),
+            mem("m3", "work", "working on palace"),
         ];
         let index = build_palace_index_simple(&mems);
         assert!(index.contains("Memory Palace"));
         assert!(index.contains("3 memories across 2 zones"));
-        assert!(index.contains("### core (2)"));
+        assert!(index.contains("### preferences (2)"));
         assert!(index.contains("### work (1)"));
         assert!(index.contains("user prefers vim"));
     }

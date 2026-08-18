@@ -105,7 +105,7 @@ impl MemoryFrontmatter {
             confidence,
             pinned: false,
             tags,
-            zone,
+            zone: hermes_core::companion::zones::normalize(&zone).to_string(),
             supersedes: Vec::new(),
             extra: serde_yaml::Mapping::new(),
         }

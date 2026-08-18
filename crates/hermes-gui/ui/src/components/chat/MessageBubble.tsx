@@ -14,7 +14,7 @@ import {
 import { useUiStore } from "../../store/uiStore";
 import type { DisplayMessage, MessageData } from "../../types";
 import { MarkdownContent } from "../common/MarkdownContent";
-import { splitUserTextAndAttachments } from "../../utils/attachments";
+import { splitOnHand, splitUserTextAndAttachments } from "../../utils/attachments";
 import {
   assistantPlainText,
   formatDurationMs,
@@ -27,6 +27,7 @@ import {
 } from "../../utils/processLabel";
 import { toast } from "../../utils/toast";
 import { useZaibanStore } from "../../store/zaibanStore";
+import { ui } from "../common/ui";
 import { AttachmentCardList } from "./AttachmentCards";
 
 export interface ToolCallView {
@@ -141,9 +142,15 @@ function UserTurn({
     () => splitUserTextAndAttachments(textContent),
     [textContent]
   );
-  const body = userParsed.body;
+  const onHand = useMemo(
+    () => splitOnHand(userParsed.body),
+    [userParsed.body]
+  );
+  const body = onHand.body;
   const attachments = userParsed.attachments;
-  if (!body.trim() && attachments.length === 0) return null;
+  if (!body.trim() && attachments.length === 0 && onHand.titles.length === 0) {
+    return null;
+  }
 
   const copyBody = async () => {
     try {
@@ -160,6 +167,24 @@ function UserTurn({
         {attachments.length > 0 && (
           <AttachmentCardList items={attachments} variant="message" />
         )}
+        {onHand.titles.length > 0 || textContent.includes("[on-hand]") ? (
+          <div className={`w-full max-w-sm ${ui.card} px-3 py-2 text-left`}>
+            <p className="text-[11px] text-app-fg-tertiary mb-1">
+              {t("materials.onHand")}
+            </p>
+            {onHand.titles.length === 0 ? (
+              <p className="text-xs text-app-fg-secondary">{t("materials.onHandEmpty")}</p>
+            ) : (
+              <ul className="space-y-0.5">
+                {onHand.titles.map((title) => (
+                  <li key={title} className="text-sm text-app-fg">
+                    《{title}》
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : null}
         {body.trim() ? (
           <div className="px-4 py-2.5 rounded-2xl rounded-br-md bg-app-user-bubble text-white text-sm shadow-sm leading-relaxed whitespace-pre-wrap">
             {body}

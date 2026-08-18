@@ -9,13 +9,15 @@
 
 use std::path::PathBuf;
 
+use hermes_sources::IngestOutcome;
 use hermes_tools::{
-    check_converter, decode_bytes_base64, import_document as import_document_core,
-    ConverterPathConfig, ConverterStatus, ImportError, ImportRequest, ImportResult,
+    decode_bytes_base64, import_document as import_document_core, ConverterPathConfig, ImportError,
+    ImportRequest, ImportResult,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
+use crate::commands::source::ingest_auto_keep;
 use crate::error::GuiError;
 use crate::state::AppState;
 
@@ -66,11 +68,6 @@ fn map_import_err(e: ImportError) -> GuiError {
     GuiError::Tool(e.to_string())
 }
 
-#[tauri::command]
-pub fn check_document_converter(app: AppHandle) -> ConverterStatus {
-    check_converter(&converter_cfg(&app))
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportDocumentRequest {
@@ -87,24 +84,100 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiImportResult {
+    #[serde(flatten)]
+    pub import: ImportResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kept: Option<IngestOutcome>,
+}
+
 #[tauri::command]
-pub fn import_document(
+pub async fn import_document(
     app: AppHandle,
     state: State<'_, AppState>,
     request: ImportDocumentRequest,
-) -> Result<ImportResult, GuiError> {
-    let bytes = decode_bytes_base64(&request.bytes_base64).map_err(map_import_err)?;
+) -> Result<GuiImportResult, GuiError> {
+    let cfg = converter_cfg(&app);
     let workspace = PathBuf::from(state.workspace_root());
-    import_document_core(
+    let store = state.source_store.clone();
+    tokio::task::spawn_blocking(move || import_document_blocking(cfg, workspace, store, request))
+        .await
+        .map_err(|e| GuiError::Internal(e.to_string()))?
+}
+
+fn import_document_blocking(
+    cfg: ConverterPathConfig,
+    workspace: PathBuf,
+    store: std::sync::Arc<hermes_sources::SourceStore>,
+    request: ImportDocumentRequest,
+) -> Result<GuiImportResult, GuiError> {
+    let bytes = decode_bytes_base64(&request.bytes_base64).map_err(map_import_err)?;
+    let ext = std::path::Path::new(&request.file_name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    match import_document_core(
         &workspace,
-        &converter_cfg(&app),
+        &cfg,
         ImportRequest {
             session_id: request.session_id,
-            file_name: request.file_name,
-            bytes,
+            file_name: request.file_name.clone(),
+            bytes: bytes.clone(),
             mime_type: request.mime_type,
             delete_original: request.delete_original,
         },
-    )
-    .map_err(map_import_err)
+    ) {
+        Ok(import) => {
+            let body = workspace.join(&import.md_rel_path);
+            let md = std::fs::read_to_string(&body).ok();
+            let kept = ingest_auto_keep(
+                &store,
+                &request.file_name,
+                &bytes,
+                md.as_deref(),
+                &import.source_ext,
+            )
+            .map_err(crate::commands::source::map_keep_err)?;
+            Ok(GuiImportResult { import, kept })
+        }
+        Err(e) => {
+            let kept = ingest_auto_keep(&store, &request.file_name, &bytes, None, &ext)
+                .map_err(crate::commands::source::map_keep_err)?;
+            if kept.is_some() {
+                Ok(GuiImportResult {
+                    import: ImportResult {
+                        ok: false,
+                        file_id: String::new(),
+                        md_rel_path: String::new(),
+                        display_name: request.file_name.clone(),
+                        original_name: request.file_name.clone(),
+                        source_ext: ext,
+                        kind: "document".into(),
+                        chars: 0,
+                        bytes_md: 0,
+                        original_deleted: false,
+                        warning: Some(human_keep_unreadable(&e)),
+                    },
+                    kept,
+                })
+            } else {
+                Err(map_import_err(e))
+            }
+        }
+    }
+}
+
+fn human_keep_unreadable(e: &ImportError) -> String {
+    match e.code() {
+        "too_large" => "这份太大了，先拆开再丢进来。已留下原件，但还读不出字。".into(),
+        "empty_markdown" => "留下了，但还读不出里面的字。可以打开原件。".into(),
+        other if other.contains("encrypt") || other.contains("password") => {
+            "打不开，是不是加密了？原件已留下。".into()
+        }
+        _ => "留下了，但还读不出里面的字。可以打开原件。".into(),
+    }
 }

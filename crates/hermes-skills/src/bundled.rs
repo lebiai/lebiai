@@ -16,8 +16,13 @@ pub fn auto_install_bundled(skill_store: &FsSkillStore) {
 }
 
 fn auto_install_palace_skill(skill_store: &FsSkillStore) {
-    if let Ok(Some(_)) = skill_store.get("memory-palace") {
-        return;
+    // Bundled protocol — overwrite when the on-disk copy still teaches old zones.
+    if let Ok(Some(existing)) = skill_store.get("memory-palace") {
+        let current = existing.frontmatter.version.as_deref() == Some("0.2.0")
+            && !existing.body.contains("core — stable");
+        if current {
+            return;
+        }
     }
     let raw = include_str!("../bundled/memory-palace/SKILL.md");
     install_bundled_skill(skill_store, "memory-palace", raw);
@@ -32,7 +37,11 @@ fn auto_install_skill_creator_skill(skill_store: &FsSkillStore) {
             skill_store.skill_dir(Scope::User, "skill-creator"),
             Ok(d) if d.join("agents").join("grader.md").is_file()
         );
-    if already_full {
+    let desktop_honest = matches!(
+        skill_store.get("skill-creator"),
+        Ok(Some(s)) if s.body.contains("Desktop (乐彼AI GUI) has no")
+    );
+    if already_full && desktop_honest {
         return;
     }
 
@@ -132,6 +141,10 @@ mod tests {
         );
         assert!(body.contains("Skill Creator"));
         assert!(
+            body.contains("Desktop (乐彼AI GUI) has no"),
+            "must not teach subagent on the desktop path"
+        );
+        assert!(
             body.contains("agents/grader.md"),
             "skill-creator body must link to its bundled grader prompt"
         );
@@ -157,6 +170,45 @@ mod tests {
             "memory-palace protocol must be always_active"
         );
         assert!(body.contains("Memory Palace Protocol"));
+        assert!(body.contains("preferences"));
+        assert!(body.contains("standards"));
+        assert!(
+            !body.contains("core — stable") && !body.contains("episode — session"),
+            "palace skill must not teach the old zone map as the live set"
+        );
+        assert!(
+            body.contains("If `memory_save` is **not**"),
+            "palace skill must not promise a save on surfaces without the tool"
+        );
+    }
+
+    #[test]
+    fn auto_install_upgrades_stale_palace_protocol() {
+        use crate::{FsSkillStore, SkillFrontmatter, SkillStore};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsSkillStore::new(tmp.path().to_path_buf(), None);
+        let stale = SkillFrontmatter {
+            name: "memory-palace".into(),
+            description: "old".into(),
+            triggers: vec![],
+            version: Some("0.1.0".into()),
+            license: None,
+            always_active: true,
+            extra: Default::default(),
+        };
+        store
+            .put(
+                crate::Scope::User,
+                stale,
+                "# Memory Palace Protocol\n\n- core — stable identity\n- project:<name>\n",
+            )
+            .unwrap();
+
+        auto_install_bundled(&store);
+        let next = store.get("memory-palace").unwrap().expect("reinstalled");
+        assert_eq!(next.frontmatter.version.as_deref(), Some("0.2.0"));
+        assert!(next.body.contains("preferences"));
+        assert!(!next.body.contains("core —"));
     }
 
     #[test]
@@ -224,26 +276,19 @@ mod tests {
     }
 
     #[test]
-    fn auto_install_skill_creator_is_noop_when_bundle_already_complete() {
-        // When the multi-file marker is already on disk, the function
-        // must not overwrite (preserves any local edits a user made).
-        use crate::{FsSkillStore, Scope, SkillStore};
+    fn auto_install_skill_creator_is_noop_when_current() {
+        use crate::{FsSkillStore, SkillStore};
         let tmp = tempfile::tempdir().unwrap();
         let store = FsSkillStore::new(tmp.path().to_path_buf(), None);
-
         auto_install_bundled(&store);
-
-        // Overwrite SKILL.md with a sentinel and the marker file with a
-        // sentinel; if the second call no-ops, both survive.
-        let dir = store.skill_dir(Scope::User, "skill-creator").unwrap();
-        let skill_md = dir.join("SKILL.md");
-        let marker = dir.join("agents").join("grader.md");
-        std::fs::write(&skill_md, "---\nname: skill-creator\ndescription: sentinel\nalways_active: false\n---\nsentinel-body\n").unwrap();
-        std::fs::write(&marker, "sentinel-grader").unwrap();
-
+        let first = store.get("skill-creator").unwrap().expect("installed").body;
         auto_install_bundled(&store);
-
-        assert_eq!(std::fs::read_to_string(&skill_md).unwrap().trim_end(), "---\nname: skill-creator\ndescription: sentinel\nalways_active: false\n---\nsentinel-body");
-        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "sentinel-grader");
+        let second = store
+            .get("skill-creator")
+            .unwrap()
+            .expect("still there")
+            .body;
+        assert_eq!(first, second);
+        assert!(first.contains("Desktop (乐彼AI GUI) has no"));
     }
 }

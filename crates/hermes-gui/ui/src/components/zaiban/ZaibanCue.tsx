@@ -52,11 +52,9 @@ export function ZaibanCue() {
   const {
     list,
     streamCue,
-    pendingStart,
     pendingRedue,
     dismissedMerge,
     clearStreamCue,
-    setPendingStart,
     setPendingRedue,
     dismissMerge,
     refresh,
@@ -92,6 +90,46 @@ export function ZaibanCue() {
     }
   };
 
+  if (pendingRedue) {
+    return (
+      <Cue>
+        <span className="shrink-0">{t("zaiban.redueAsk", { title: pendingRedue.title })}</span>
+        <RedueForm
+          onPick={(phrase) =>
+            void act(async () => {
+              await invoke("update_commitment", {
+                id: pendingRedue.id,
+                title: null,
+                doneWhen: null,
+                softDue: phrase,
+                note: null,
+                waiting: null,
+              });
+              setPendingRedue(null);
+            })
+          }
+        />
+      </Cue>
+    );
+  }
+
+  if (overdue) {
+    return (
+      <OverdueCue
+        item={overdue}
+        act={act}
+        t={t}
+        onShown={(id) => setHoldingOverdue(id)}
+        onStillDo={() =>
+          setPendingRedue({
+            id: overdue.id,
+            title: overdue.title,
+          })
+        }
+      />
+    );
+  }
+
   if (streamCue?.action === "near" && streamCue.existingId) {
     return (
       <NearCue
@@ -119,82 +157,6 @@ export function ZaibanCue() {
           {t("common.dismiss")}
         </Button>
       </Cue>
-    );
-  }
-
-  if (pendingRedue) {
-    return (
-      <Cue>
-        <span className="shrink-0">{t("zaiban.redueAsk", { title: pendingRedue.title })}</span>
-        <RedueForm
-          onPick={(phrase) =>
-            void act(async () => {
-              await invoke("update_commitment", {
-                id: pendingRedue.id,
-                title: null,
-                doneWhen: null,
-                softDue: phrase,
-                note: null,
-                waiting: null,
-              });
-              setPendingRedue(null);
-            })
-          }
-        />
-      </Cue>
-    );
-  }
-
-  if (pendingStart) {
-    return (
-      <Cue>
-        <span className="shrink-0">{t("zaiban.doneWhenAsk")}</span>
-        <input
-          autoFocus
-          className="flex-1 min-w-0 px-2 py-0.5 text-xs rounded-md border border-app-border dark:border-slate-700 bg-app-surface dark:bg-slate-800 select-text"
-          placeholder={t("zaiban.doneWhenHint")}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              const v = (e.target as HTMLInputElement).value.trim();
-              void act(async () => {
-                if (v) {
-                  await invoke("update_commitment", {
-                    id: pendingStart.id,
-                    title: null,
-                    doneWhen: v,
-                    softDue: null,
-                    note: null,
-                    waiting: null,
-                  });
-                }
-                setComposerPrefill(`${t("zaiban.startPrefix")}${pendingStart.title}`);
-                setPendingStart(null);
-              });
-            }
-            if (e.key === "Escape") {
-              setComposerPrefill(`${t("zaiban.startPrefix")}${pendingStart.title}`);
-              setPendingStart(null);
-            }
-          }}
-        />
-      </Cue>
-    );
-  }
-
-  if (overdue) {
-    return (
-      <OverdueCue
-        item={overdue}
-        act={act}
-        t={t}
-        onShown={(id) => setHoldingOverdue(id)}
-        onStillDo={() =>
-          setPendingRedue({
-            id: overdue.id,
-            title: overdue.title,
-          })
-        }
-      />
     );
   }
 
@@ -264,10 +226,7 @@ export function ZaibanCue() {
         <Button
           size="sm"
           onClick={() =>
-            useZaibanStore.getState().setPendingStart({
-              id: tightest.id,
-              title: tightest.title,
-            })
+            setComposerPrefill(`${t("zaiban.startPrefix")}${tightest.title}`)
           }
         >
           {t("zaiban.start")}
@@ -277,6 +236,40 @@ export function ZaibanCue() {
   }
 
   return null;
+}
+
+function DropConfirm({
+  act,
+  id,
+  t,
+}: {
+  act: (fn: () => Promise<void>) => Promise<void>;
+  id: string;
+  t: (k: "zaiban.drop" | "zaiban.dropAsk" | "common.cancel") => string;
+}) {
+  const [ask, setAsk] = useState(false);
+  if (!ask) {
+    return (
+      <Button size="sm" variant="ghost" onClick={() => setAsk(true)}>
+        {t("zaiban.drop")}
+      </Button>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="text-xs text-app-fg-secondary">{t("zaiban.dropAsk")}</span>
+      <Button
+        size="sm"
+        variant="danger"
+        onClick={() => void act(async () => invoke("close_commitment", { id, dropped: true }))}
+      >
+        {t("zaiban.drop")}
+      </Button>
+      <Button size="sm" variant="ghost" onClick={() => setAsk(false)}>
+        {t("common.cancel")}
+      </Button>
+    </span>
+  );
 }
 
 function OverdueCue({
@@ -289,7 +282,14 @@ function OverdueCue({
   item: ZaibanItem;
   act: (fn: () => Promise<void>) => Promise<void>;
   t: (
-    k: "zaiban.overdueAsk" | "zaiban.stillDo" | "zaiban.done" | "zaiban.drop",
+    k:
+      | "zaiban.overdueAsk"
+      | "zaiban.overdueWaitAsk"
+      | "zaiban.stillDo"
+      | "zaiban.done"
+      | "zaiban.drop"
+      | "zaiban.dropAsk"
+      | "common.cancel",
     p?: { title: string }
   ) => string;
   onShown: (id: string) => void;
@@ -304,7 +304,11 @@ function OverdueCue({
 
   return (
     <Cue>
-      <span>{t("zaiban.overdueAsk", { title: item.title })}</span>
+      <span>
+        {t(item.status === "waiting" ? "zaiban.overdueWaitAsk" : "zaiban.overdueAsk", {
+          title: item.title,
+        })}
+      </span>
       <Button size="sm" onClick={onStillDo}>
         {t("zaiban.stillDo")}
       </Button>
@@ -317,15 +321,11 @@ function OverdueCue({
       >
         {t("zaiban.done")}
       </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        onClick={() =>
-          void act(async () => invoke("close_commitment", { id: item.id, dropped: true }))
-        }
-      >
-        {t("zaiban.drop")}
-      </Button>
+      <DropConfirm
+        act={act}
+        id={item.id}
+        t={t}
+      />
     </Cue>
   );
 }

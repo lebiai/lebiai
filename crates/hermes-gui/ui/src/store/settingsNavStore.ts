@@ -3,6 +3,7 @@ import { create } from "zustand";
 /** Settings IA tabs — docs/settings-ia.md */
 export type SettingsTab =
   | "overview"
+  | "manual"
   | "dialogue"
   | "appearance"
   | "connections"

@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   FolderOpen,
   LayoutDashboard,
+  BookOpen,
   MessageSquare,
   Palette,
   Link2,
@@ -16,6 +17,7 @@ import { useUiStore, refreshProviderLabel } from "../../store/uiStore";
 import type { Language, TranslationKey } from "../../i18n";
 import type { ThemeMode } from "../../utils/theme";
 import { Button, ui } from "../common/ui";
+import { ConfirmPopover } from "../common/ConfirmPopover";
 import { Select } from "../common/Select";
 import { toast } from "../../utils/toast";
 import { resetOnboarding } from "../../utils/onboarding";
@@ -35,6 +37,7 @@ import {
 import { StatusRow } from "./StatusRow";
 import { VersionStatusRow } from "./VersionStatusRow";
 import { useAppUpdate } from "./useAppUpdate";
+import { UserManual } from "./UserManual";
 
 interface ConfigView {
   defaultProvider: string;
@@ -86,6 +89,7 @@ const TABS: {
   labelKey: TranslationKey;
 }[] = [
   { id: "overview", icon: LayoutDashboard, labelKey: "settings.tabOverview" },
+  { id: "manual", icon: BookOpen, labelKey: "settings.tabManual" },
   { id: "dialogue", icon: MessageSquare, labelKey: "settings.tabDialogue" },
   { id: "appearance", icon: Palette, labelKey: "settings.tabAppearance" },
   { id: "connections", icon: Link2, labelKey: "settings.tabConnections" },
@@ -126,6 +130,7 @@ export function SettingsPanel() {
   const [migratedHint, setMigratedHint] = useState(false);
   const [editingKey, setEditingKey] = useState(false);
   const [clearingKey, setClearingKey] = useState(false);
+  const [confirmAsk, setConfirmAsk] = useState<null | "key" | "reset">(null);
   const [wechatState, setWechatState] = useState<string>("stopped");
   /** Accordion open keys on「更多」 */
   const [moreOpen, setMoreOpen] = useState<Record<string, boolean>>({
@@ -481,26 +486,26 @@ export function SettingsPanel() {
   const needKey = !config.hasApiKey;
   const licenseNeedsAttention =
     !!licenseStatus &&
-    (licenseStatus.phase === "locked" ||
-      licenseStatus.urgency === "expiring" ||
-      licenseStatus.onTrial);
+    (licenseStatus.phase === "locked" || licenseStatus.urgency === "expiring");
 
   const pageTitle =
-    tab === "dialogue"
-      ? t("settings.pageDialogue")
-      : tab === "appearance"
-        ? t("settings.pageAppearance")
-        : tab === "connections"
-          ? t("settings.pageConnections")
-          : tab === "more"
-            ? t("settings.pageMore")
-            : null;
+    tab === "manual"
+      ? t("settings.pageManual")
+      : tab === "dialogue"
+        ? t("settings.pageDialogue")
+        : tab === "appearance"
+          ? t("settings.pageAppearance")
+          : tab === "connections"
+            ? t("settings.pageConnections")
+            : tab === "more"
+              ? t("settings.pageMore")
+              : null;
 
   return (
     <div className={`flex-1 overflow-y-auto ${ui.page}`}>
       <div className="max-w-2xl mx-auto p-6 space-y-5">
         {/* Tabs */}
-        <div className="flex gap-1 flex-wrap border-b border-app-border dark:border-slate-800 pb-2">
+        <div className="flex gap-1 flex-nowrap overflow-x-auto border-b border-app-border dark:border-slate-800 pb-2">
           {TABS.map(({ id, icon: Icon, labelKey }) => (
             <button
               key={id}
@@ -621,6 +626,10 @@ export function SettingsPanel() {
 
             <section className={`${ui.card} divide-y divide-app-border dark:divide-slate-800`}>
               <QuickLink
+                label={t("settings.ctaManual")}
+                onClick={() => setTab("manual")}
+              />
+              <QuickLink
                 label={t("settings.ctaAppearance")}
                 onClick={() => setTab("appearance")}
               />
@@ -637,6 +646,9 @@ export function SettingsPanel() {
             </section>
           </div>
         )}
+
+        {/* ── 使用手册 ─────────────────────────────────────────── */}
+        {tab === "manual" && <UserManual />}
 
         {/* ── 对话 ─────────────────────────────────────────────── */}
         {tab === "dialogue" && selectedProvider && (
@@ -673,14 +685,25 @@ export function SettingsPanel() {
                   >
                     {t("settings.changeKey")}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => void clearKey()}
-                    disabled={clearingKey}
-                    className="text-xs text-app-danger hover:underline disabled:opacity-50"
-                  >
-                    {t("settings.clearKey")}
-                  </button>
+                  <span className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmAsk("key")}
+                      disabled={clearingKey}
+                      className="text-xs text-app-danger hover:underline disabled:opacity-50"
+                    >
+                      {t("settings.clearKey")}
+                    </button>
+                    <ConfirmPopover
+                      open={confirmAsk === "key"}
+                      message={t("settings.clearKeyAsk")}
+                      onCancel={() => setConfirmAsk(null)}
+                      onConfirm={() => {
+                        setConfirmAsk(null);
+                        void clearKey();
+                      }}
+                    />
+                  </span>
                 </span>
               </div>
             ) : (
@@ -875,13 +898,24 @@ export function SettingsPanel() {
                     <FolderOpen size={13} />
                     {t("settings.dataDirChoose")}
                   </Button>
-                  <button
-                    type="button"
-                    onClick={() => void resetDataDir()}
-                    className="text-xs text-app-fg-tertiary hover:text-app-fg-secondary underline"
-                  >
-                    {t("settings.dataDirReset")}
-                  </button>
+                  <span className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmAsk("reset")}
+                      className="text-xs text-app-fg-tertiary hover:text-app-fg-secondary underline"
+                    >
+                      {t("settings.dataDirReset")}
+                    </button>
+                    <ConfirmPopover
+                      open={confirmAsk === "reset"}
+                      message={t("settings.dataDirResetAsk")}
+                      onCancel={() => setConfirmAsk(null)}
+                      onConfirm={() => {
+                        setConfirmAsk(null);
+                        void resetDataDir();
+                      }}
+                    />
+                  </span>
                 </div>
                 {migrating && (
                   <p className="text-xs text-app-fg-secondary">

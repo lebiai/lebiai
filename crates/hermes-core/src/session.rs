@@ -35,7 +35,7 @@ impl SessionMeta {
 }
 
 /// Default placeholder when no user text exists yet.
-pub const DEFAULT_SESSION_TITLE: &str = "New Chat";
+pub const DEFAULT_SESSION_TITLE: &str = "新对话";
 
 /// Short greetings / empty chatter — not useful as a permanent session title.
 pub fn is_trivial_user_text(text: &str) -> bool {

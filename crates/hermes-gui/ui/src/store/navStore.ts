@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 export type Panel = "chat" | "know" | "settings";
-export type KnowTab = "you" | "ways";
+export type KnowTab = "you" | "ways" | "materials";
 
 interface NavState {
   activePanel: Panel;

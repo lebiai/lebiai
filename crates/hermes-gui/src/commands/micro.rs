@@ -19,7 +19,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
-use crate::state::AppState;
+use crate::state::{AppState, LiveLlmGate};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -164,12 +164,14 @@ pub fn spawn_after_turn(
     session_id_for_log: String,
     auto_accept: bool,
     min_confidence: Confidence,
+    live_llm: Arc<LiveLlmGate>,
 ) {
     if turn_messages.is_empty() {
         return;
     }
 
     tokio::spawn(async move {
+        live_llm.wait_idle().await;
         let turns_since = {
             let map = cooldown.lock().await;
             *map.get(&session_key).unwrap_or(&0)
@@ -180,7 +182,8 @@ pub fn spawn_after_turn(
             auto_accept,
             min_confidence,
             false, // filled inside run_micro_after_turn from messages
-        );
+        )
+        .inbox_only();
 
         let outcome = run_micro_after_turn(MicroRunRequest {
             provider: provider.as_ref(),

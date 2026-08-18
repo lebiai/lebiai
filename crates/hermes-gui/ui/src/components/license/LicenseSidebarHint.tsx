@@ -16,15 +16,13 @@ export function LicenseSidebarHint() {
   if (!status || status.showFullLock) return null;
 
   const needsAttention =
-    status.onTrial || status.urgency === "expiring" || status.phase === "locked";
+    status.urgency === "expiring" || status.phase === "locked";
 
   const openLicense = () => {
     setPanel("settings");
-    // Single deep-link path (settings-ia) — do not also bump licenseFocusId.
     useSettingsNavStore.getState().openTo("more", "license");
   };
 
-  // Licensed with plenty of time: quiet one-line date, no toy battery bar.
   if (!needsAttention && status.phase === "licensed") {
     const date = status.expiresAt
       ? new Date(status.expiresAt).toLocaleDateString(
@@ -44,7 +42,6 @@ export function LicenseSidebarHint() {
     );
   }
 
-  // Trial / expiring: short chip, actionable.
   const chip =
     status.urgency === "expiring"
       ? "bg-amber-100 dark:bg-amber-950/50 text-amber-900 dark:text-amber-200"

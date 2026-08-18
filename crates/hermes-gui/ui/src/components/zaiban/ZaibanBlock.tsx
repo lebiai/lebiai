@@ -16,7 +16,7 @@ export function ZaibanBlock() {
   const setPanel = useNavStore((s) => s.setPanel);
   const loadSession = useChatStore((s) => s.loadSession);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const { list, error, highlightId, refresh, setPendingStart } = useZaibanStore();
+  const { list, error, highlightId, refresh } = useZaibanStore();
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
   const [due, setDue] = useState("");
@@ -28,6 +28,8 @@ export function ZaibanBlock() {
   const [acceptDue, setAcceptDue] = useState<Record<string, string>>({});
   const [confirmDrop, setConfirmDrop] = useState<string | null>(null);
   const [mode, setMode] = useState<"idle" | "edit">("idle");
+  const [splitText, setSplitText] = useState("");
+  const [waitNote, setWaitNote] = useState("");
 
   useEffect(() => {
     bindZaibanListener();
@@ -87,11 +89,7 @@ export function ZaibanBlock() {
 
   const start = (item: ZaibanItem) => {
     setPanel("chat");
-    if (!item.doneWhen) {
-      setPendingStart({ id: item.id, title: item.title });
-    } else {
-      useUiStore.getState().setComposerPrefill(`${t("zaiban.startPrefix")}${item.title}`);
-    }
+    useUiStore.getState().setComposerPrefill(`${t("zaiban.startPrefix")}${item.title}`);
   };
 
   const openSource = async (sessionId?: string | null) => {
@@ -240,6 +238,11 @@ export function ZaibanBlock() {
                 )}
                 {item.title}
               </span>
+              {item.status === "waiting" && item.note && (
+                <span className="block text-[12px] mt-1 text-app-fg-tertiary">
+                  {t("zaiban.waiting")} · {item.note}
+                </span>
+              )}
               {label && (
                 <span
                   className={`block text-[12px] mt-1 ${
@@ -264,6 +267,8 @@ export function ZaibanBlock() {
                   setMode("edit");
                   setEditTitle(item.title);
                   setEditDue(item.softDue || item.dueDate || "");
+                  setSplitText("");
+                  setWaitNote("");
                 }}
               >
                 {t("zaiban.edit")}
@@ -288,7 +293,7 @@ export function ZaibanBlock() {
               )}
             </div>
             {editing && (
-              <div className="mt-3 space-y-2 pt-3 border-t border-app-border/70 dark:border-slate-800">
+              <div className="mt-3 space-y-3 pt-3 border-t border-app-border/70 dark:border-slate-800">
                 <input
                   value={editTitle}
                   autoFocus
@@ -328,6 +333,92 @@ export function ZaibanBlock() {
                 >
                   {t("zaiban.saveEdit")}
                 </button>
+                <div className="space-y-1.5">
+                  <div className="text-[11px] text-app-fg-tertiary">{t("zaiban.wait")}</div>
+                  {item.status === "waiting" ? (
+                    <RowBtn
+                      onClick={() =>
+                        void act(async () => {
+                          await invoke("update_commitment", {
+                            id: item.id,
+                            title: null,
+                            doneWhen: null,
+                            softDue: null,
+                            note: null,
+                            waiting: false,
+                          });
+                          setMode("idle");
+                          setOpenId(null);
+                        })
+                      }
+                    >
+                      {t("zaiban.unwait")}
+                    </RowBtn>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        value={waitNote}
+                        onChange={(e) => setWaitNote(e.target.value)}
+                        placeholder={t("zaiban.waitHint")}
+                        className="flex-1 min-w-0 px-2 py-1.5 text-[13px] rounded-lg border border-app-border dark:border-slate-700 bg-app-bg dark:bg-slate-950 text-app-fg select-text"
+                      />
+                      <RowBtn
+                        onClick={() => {
+                          const who = waitNote.trim();
+                          if (!who) {
+                            toast.error(t("zaiban.waitWhoNeed"));
+                            return;
+                          }
+                          void act(async () => {
+                            await invoke("update_commitment", {
+                              id: item.id,
+                              title: null,
+                              doneWhen: null,
+                              softDue: null,
+                              note: who,
+                              waiting: true,
+                            });
+                            setMode("idle");
+                            setOpenId(null);
+                            setWaitNote("");
+                          });
+                        }}
+                      >
+                        {t("zaiban.wait")}
+                      </RowBtn>
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <div className="text-[11px] text-app-fg-tertiary">{t("zaiban.split")}</div>
+                  <textarea
+                    value={splitText}
+                    onChange={(e) => setSplitText(e.target.value)}
+                    placeholder={t("zaiban.splitHint")}
+                    rows={2}
+                    className="w-full px-2 py-1.5 text-[13px] rounded-lg border border-app-border dark:border-slate-700 bg-app-bg dark:bg-slate-950 text-app-fg select-text"
+                  />
+                  <RowBtn
+                    onClick={() => {
+                      const titles = splitText
+                        .split("\n")
+                        .map((s) => s.trim())
+                        .filter(Boolean);
+                      if (titles.length < 2) {
+                        toast.error(t("zaiban.splitNeedTwo"));
+                        return;
+                      }
+                      void act(async () => {
+                        await invoke("split_commitment", { id: item.id, titles });
+                        setMode("idle");
+                        setOpenId(null);
+                        setSplitText("");
+                      });
+                    }}
+                  >
+                    {t("zaiban.splitGo")}
+                  </RowBtn>
+                </div>
               </div>
             )}
             {item.sessionId && (

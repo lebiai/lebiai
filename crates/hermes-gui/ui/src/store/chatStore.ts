@@ -28,7 +28,7 @@ import {
 } from "../utils/sessionTitle";
 import { toast } from "../utils/toast";
 import { useZaibanStore } from "./zaibanStore";
-import { playScroll, playSeal } from "../utils/ritual";
+import { playScroll } from "../utils/ritual";
 import {
   notifyRemembered,
   parseSavedMemoryId,
@@ -90,7 +90,6 @@ interface ChatState {
   /** Whether the in-chat micro review modal is open. */
   microReviewOpen: boolean;
   pendingConfirm: PendingConfirm | null;
-  proposedSkills: { name: string; description: string; body: string; triggers: string[] }[];
   /** Background / review reflection after leaving a session. */
   sessionEnd: SessionEndState | null;
   /** Monotonic id so stale background jobs cannot clobber newer UI state. */
@@ -115,8 +114,6 @@ interface ChatState {
   updateMicroReview: (result: ReflectionResult | null) => void;
   dismissMicroReview: () => void;
   respondConfirm: (action: ConfirmAction, reason?: string) => Promise<void>;
-  acceptProposedSkill: (name: string) => Promise<void>;
-  dismissProposedSkill: (name: string) => void;
   /**
    * Leave immediately, then run session-end reflection in the background.
    * Does **not** wait for the LLM (fixes multi-second hang on New Chat).
@@ -178,6 +175,9 @@ function bindStreamChannel(
     switch (event.event) {
       case "textDelta":
         set((s) => ({ streamingText: s.streamingText + event.data.text }));
+        break;
+      case "textCorrected":
+        set({ streamingText: event.data.text });
         break;
       case "thinkingDelta":
         set((s) => ({
@@ -273,13 +273,11 @@ function bindStreamChannel(
       case "zaibanUpdated":
         useZaibanStore.getState().applyStream(event.data);
         break;
+      case "rememberQueued":
+        toast.info(useUiStore.getState().t("materials.rememberQueued"));
+        break;
       case "skillCandidateProposed":
-        set((s) => {
-          if (s.proposedSkills.some((p) => p.name === event.data.name)) {
-            return {};
-          }
-          return { proposedSkills: [...s.proposedSkills, event.data] };
-        });
+        // Inbox only — do not open a mid-dialogue modal.
         break;
       case "done": {
         const state = get();
@@ -335,8 +333,6 @@ function bindStreamChannel(
         turnStartedAt = 0;
         turnInputTokens = 0;
         turnOutputTokens = 0;
-        // Refresh list so updatedAt/mtime grouping stays accurate.
-        void get().fetchSessions();
         break;
       }
     }
@@ -370,7 +366,6 @@ async function doNewSession(
     lastReflection: null,
     microReview: null,
     microReviewOpen: false,
-    proposedSkills: [],
     // Keep path for promoting into the list after first message.
     draftSession: session,
   }));
@@ -394,7 +389,6 @@ async function doLoadSession(
     lastReflection: null,
     microReview: null,
     microReviewOpen: false,
-    proposedSkills: [],
   });
 }
 
@@ -417,7 +411,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   microReview: null,
   microReviewOpen: false,
   pendingConfirm: null,
-  proposedSkills: [],
   sessionEnd: null,
   reflectJobId: 0,
 
@@ -630,8 +623,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => {
       const derivedTitle = deriveSessionTitle(content);
       const canTitle =
-        !isTrivialUserText(content) && derivedTitle !== "New Chat";
-      const title = canTitle ? derivedTitle : "New Chat";
+        !isTrivialUserText(content) && !isDefaultTitle(derivedTitle);
+      const title = canTitle ? derivedTitle : "新对话";
       let sessions = s.sessions;
       const inList = sessions.some((x) => x.id === activeSessionId);
       if (!inList && activeSessionId) {
@@ -819,29 +812,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
-  acceptProposedSkill: async (name) => {
-    const candidate = get().proposedSkills.find((p) => p.name === name);
-    if (!candidate) return;
-    const t = useUiStore.getState().t;
-    try {
-      await invoke("accept_skill_candidate", {
-        name: candidate.name,
-        description: candidate.description,
-        triggers: candidate.triggers,
-        body: candidate.body,
-      });
-      set((s) => ({ proposedSkills: s.proposedSkills.filter((p) => p.name !== name) }));
-      playSeal(t("ritual.sealSkill"));
-      toast.success(t("toast.skillAccepted"));
-    } catch (e) {
-      toast.error(String(e));
-    }
-  },
-
-  dismissProposedSkill: (name) => {
-    set((s) => ({ proposedSkills: s.proposedSkills.filter((p) => p.name !== name) }));
-    toast.info(useUiStore.getState().t("toast.skillRejected"));
-  },
 }));
 
 /** Subscribe once for post-turn micro-reflection (not on the stream Channel). */

@@ -28,6 +28,8 @@ pub struct MicroApplyConfig {
     pub explicit_intent: bool,
     /// Cosine threshold for near-duplicate rejection. Default = store default.
     pub dedup_threshold: f64,
+    /// CLI session-end re-reads `deferred.jsonl`. GUI/server use inbox only.
+    pub queue_deferred: bool,
 }
 
 impl MicroApplyConfig {
@@ -43,7 +45,14 @@ impl MicroApplyConfig {
             min_confidence,
             explicit_intent,
             dedup_threshold: DEFAULT_DEDUP_THRESHOLD,
+            queue_deferred: true,
         }
+    }
+
+    /// Desktop / server: pending goes to inbox. Do not grow a second file.
+    pub fn inbox_only(mut self) -> Self {
+        self.queue_deferred = false;
+        self
     }
 }
 
@@ -109,6 +118,9 @@ pub fn apply_micro_output(
     let has_conflicts = !output.conflicts.is_empty();
 
     for c in &output.memory_candidates {
+        if !crate::inbox::memory_passes_gate(c) {
+            continue;
+        }
         let clears_floor = c.confidence >= config.min_confidence || config.explicit_intent;
         let eligible = config.auto_accept_memories
             && clears_floor
@@ -116,7 +128,9 @@ pub fn apply_micro_output(
             && !has_conflicts;
 
         if !eligible {
-            deferred::save(DeferredCandidate::Memory(c.clone()));
+            if config.queue_deferred {
+                deferred::save(DeferredCandidate::Memory(c.clone()));
+            }
             result.pending_memories.push(c.clone());
             continue;
         }
@@ -137,7 +151,9 @@ pub fn apply_micro_output(
             }
             Err(e) => {
                 tracing::warn!(error=%e, "near-duplicate check failed; deferring candidate");
-                deferred::save(DeferredCandidate::Memory(c.clone()));
+                if config.queue_deferred {
+                    deferred::save(DeferredCandidate::Memory(c.clone()));
+                }
                 result.pending_memories.push(c.clone());
                 continue;
             }
@@ -167,14 +183,18 @@ pub fn apply_micro_output(
             }
             Err(e) => {
                 tracing::warn!(error=%e, "micro auto-accept put failed");
-                deferred::save(DeferredCandidate::Memory(c.clone()));
+                if config.queue_deferred {
+                    deferred::save(DeferredCandidate::Memory(c.clone()));
+                }
                 result.pending_memories.push(c.clone());
             }
         }
     }
 
     for c in &output.skill_candidates {
-        deferred::save(DeferredCandidate::Skill(c.clone()));
+        if config.queue_deferred {
+            deferred::save(DeferredCandidate::Skill(c.clone()));
+        }
         result.pending_skills.push(c.clone());
     }
 
@@ -258,6 +278,22 @@ mod tests {
         assert_eq!(r.auto_accepted, 0);
         assert_eq!(r.pending_memories.len(), 1);
         assert_eq!(r.pending_conflicts.len(), 1);
+    }
+
+    #[test]
+    fn junk_does_not_auto_write_or_pending() {
+        let (_d, s) = store();
+        let cfg = MicroApplyConfig::new("sess", true, Confidence::Medium, false);
+        let out = ReflectionOutput {
+            summary: "s".into(),
+            skill_candidates: vec![],
+            memory_candidates: vec![mem_cand("hi", Confidence::High)],
+            conflicts: vec![],
+        };
+        let r = apply_micro_output(out, &s, &cfg);
+        assert_eq!(r.auto_accepted, 0);
+        assert!(r.pending_memories.is_empty());
+        assert!(s.list_active().unwrap().is_empty());
     }
 
     #[test]

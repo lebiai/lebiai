@@ -193,11 +193,17 @@ struct StagedBundle {
 
 fn build_client() -> Result<Client> {
     Client::builder()
-        .user_agent(format!(
-            "hermes-skills/{} (+https://github.com/anthropics/claude-code)",
-            env!("CARGO_PKG_VERSION")
-        ))
+        .user_agent(format!("lebi-ai/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if crate::url_safety::validate_public_http_url(attempt.url().as_str()).is_err() {
+                attempt.error("redirect to a blocked address")
+            } else if attempt.previous().len() >= 5 {
+                attempt.error("too many redirects")
+            } else {
+                attempt.follow()
+            }
+        }))
         .build()
         .context("building reqwest client")
 }
@@ -228,6 +234,8 @@ fn parse_slug(source: &str) -> Result<(String, String, String)> {
 
 /// Single-file fallback: fetch the URL as a raw SKILL.md.
 fn fetch_raw_url(client: &Client, url: &str) -> Result<StagedBundle> {
+    crate::url_safety::validate_public_http_url(url)
+        .map_err(|e| anyhow!("skill_install blocked: {e}"))?;
     let resp = client
         .get(url)
         .send()

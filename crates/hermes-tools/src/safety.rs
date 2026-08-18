@@ -268,6 +268,38 @@ pub fn resolve_for_open(workspace: &Path, user_path: &str) -> Result<PathBuf> {
     )))
 }
 
+/// Block ordinary bash from reading keys / product secrets (all OS).
+/// The sandbox may still allow other reads; this is the command-string gate.
+pub fn bash_secret_read_blocked(command: &str) -> Option<&'static str> {
+    let c = command.replace('\\', "/");
+    let lower = c.to_ascii_lowercase();
+    if lower.contains(".ssh/")
+        || lower.contains("/.ssh")
+        || lower.contains("id_rsa")
+        || lower.contains("id_ed25519")
+    {
+        return Some("refusing to read SSH keys");
+    }
+    if lower.contains(".gnupg/") {
+        return Some("refusing to read GPG material");
+    }
+    if lower.contains(".aws/") || lower.contains(".kube/") || lower.contains(".netrc") {
+        return Some("refusing to read credential files");
+    }
+    if lower.contains("server.token") {
+        return Some("refusing to read the server token");
+    }
+    if (lower.contains(".lebi-ai") || lower.contains(".lebi-law"))
+        && (lower.contains("config.toml")
+            || lower.contains("wechat.toml")
+            || lower.contains("feishu.toml")
+            || lower.contains("telegram.toml"))
+    {
+        return Some("refusing to read product secret files");
+    }
+    None
+}
+
 fn is_secret_open_path(path: &Path) -> bool {
     let s = path.to_string_lossy().replace('\\', "/");
     const MARKERS: &[&str] = &[
@@ -444,5 +476,14 @@ mod tests {
             s.contains("not allowed") || s.contains("secret") || s.contains("escapes"),
             "{s}"
         );
+    }
+
+    #[test]
+    fn bash_blocks_secret_reads() {
+        assert!(bash_secret_read_blocked("cat ~/.ssh/id_rsa").is_some());
+        assert!(bash_secret_read_blocked("cat ~/.lebi-ai/config.toml").is_some());
+        assert!(bash_secret_read_blocked("cat ~/.lebi-ai/server.token").is_some());
+        assert!(bash_secret_read_blocked("ls outputs").is_none());
+        assert!(bash_secret_read_blocked("cat workspace/config.toml").is_none());
     }
 }

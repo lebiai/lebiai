@@ -230,7 +230,7 @@ pub async fn run(ctx: &SubagentContext, args: serde_json::Value) -> Result<ToolC
         &filtered,
         &history,
         &turn_cfg,
-        None, // confirm_tx: None → all `requires_confirmation` tools auto-approved
+        None, // confirm_tx: None → fail-closed (no approval UI)
         on_event,
         cancel_rx,
     )

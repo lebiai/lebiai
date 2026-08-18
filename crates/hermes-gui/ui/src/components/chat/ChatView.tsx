@@ -21,9 +21,7 @@ import { MessageBubble } from "./MessageBubble";
 import { InputArea } from "./InputArea";
 import { StreamingBubble } from "./StreamingBubble";
 import { ConfirmModal } from "./ConfirmModal";
-import { ProposedSkillModal } from "./ProposedSkillModal";
 import { WelcomeScenes } from "./WelcomeScenes";
-import { MicroReviewModal } from "../reflect/MicroReviewModal";
 import { ZaibanCue } from "../zaiban/ZaibanCue";
 import { WorkDrawer } from "../work/WorkDrawer";
 import { useWorkDrawerStore } from "../../store/workDrawerStore";
@@ -67,13 +65,8 @@ export function ChatView() {
     sessions,
     messages,
     isStreaming,
-    streamingText,
-    streamingThinking,
-    activeToolCalls,
     lastReflection,
     clearReflection,
-    openMicroReview,
-    microReview,
     regenerateLast,
     editAndResend,
   } = useChatStore();
@@ -180,9 +173,7 @@ export function ChatView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only on new content / stream
   }, [
     displayMessages.length,
-    streamingText,
-    streamingThinking,
-    activeToolCalls.length,
+    isStreaming,
     useVirtual,
   ]);
 
@@ -268,7 +259,7 @@ export function ChatView() {
           onClick={() => void toggleDrawer()}
           className={`shrink-0 inline-flex items-center gap-1.5 pl-2.5 pr-2 py-1 rounded-full text-[12px] border transition-colors ${
             drawerOpen
-              ? "border-app-fg/20 bg-app-fg text-white dark:bg-slate-100 dark:text-slate-900"
+              ? "border-app-primary/30 bg-app-primary-soft text-app-primary dark:bg-blue-950/50 dark:text-blue-300"
               : "border-app-border dark:border-slate-700 bg-app-surface dark:bg-slate-800/80 text-app-fg-secondary hover:text-app-fg hover:border-app-fg/20"
           }`}
           aria-pressed={drawerOpen}
@@ -334,11 +325,7 @@ export function ChatView() {
               key="stream-turn"
               className={`${useVirtual ? "pt-5" : "mt-5"} stream-enter`}
             >
-              <StreamingBubble
-                text={streamingText}
-                thinking={streamingThinking}
-                toolCalls={activeToolCalls}
-              />
+              <LiveStream />
             </div>
           )}
           <div ref={bottomRef} />
@@ -366,22 +353,11 @@ export function ChatView() {
               </span>
             )}
           </span>
-          {microReview &&
-            (lastReflection.memoryCount > 0 || lastReflection.skillCount > 0) && (
-              <button
-                type="button"
-                onClick={() => openMicroReview()}
-                className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-app-accent text-white hover:bg-violet-700 shadow-sm motion-safe-only"
-                style={{ animation: "ambient-breathe 2.2s ease-in-out 2" }}
-              >
-                {t("chat.microReview")}
-              </button>
-            )}
           {(lastReflection.memoryCount > 0 || lastReflection.skillCount > 0) && (
             <button
               type="button"
               onClick={() => {
-                useNavStore.getState().openKnow("you");
+                useNavStore.getState().openPendingReview();
                 clearReflection();
               }}
               className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-app-primary text-white"
@@ -402,8 +378,6 @@ export function ChatView() {
 
       <InputArea />
       <ConfirmModal />
-      <ProposedSkillModal />
-      <MicroReviewModal />
 
       {editDraft && (
         <div className={`${ui.overlay} z-50 p-4`}>
@@ -447,4 +421,11 @@ export function ChatView() {
       {drawerOpen && <WorkDrawer />}
     </div>
   );
+}
+
+function LiveStream() {
+  const text = useChatStore((s) => s.streamingText);
+  const thinking = useChatStore((s) => s.streamingThinking);
+  const toolCalls = useChatStore((s) => s.activeToolCalls);
+  return <StreamingBubble text={text} thinking={thinking} toolCalls={toolCalls} />;
 }

@@ -6,11 +6,17 @@
 
 export type ToastVariant = "success" | "error" | "info";
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface ToastItem {
   id: number;
   message: string;
   variant: ToastVariant;
   durationMs: number;
+  action?: ToastAction;
 }
 
 type Listener = (items: ToastItem[]) => void;
@@ -47,7 +53,8 @@ export function dismissToast(id: number) {
 function show(
   message: string,
   variant: ToastVariant,
-  durationMs = DEFAULT_MS
+  durationMs = DEFAULT_MS,
+  action?: ToastAction
 ): number {
   const text = String(message ?? "").trim();
   if (!text) return -1;
@@ -56,7 +63,7 @@ function show(
     const old = items.shift();
     if (old) dismissToast(old.id);
   }
-  items = [...items, { id, message: text, variant, durationMs }];
+  items = [...items, { id, message: text, variant, durationMs, action }];
   emit();
   if (durationMs > 0) {
     const handle = window.setTimeout(() => dismissToast(id), durationMs);
@@ -67,12 +74,12 @@ function show(
 
 export const toast = {
   show,
-  success: (message: string, durationMs = DEFAULT_MS) =>
-    show(message, "success", durationMs),
+  success: (message: string, durationMs = DEFAULT_MS, action?: ToastAction) =>
+    show(message, "success", durationMs, action),
   error: (message: string, durationMs = DEFAULT_MS) =>
     show(message, "error", durationMs),
-  info: (message: string, durationMs = DEFAULT_MS) =>
-    show(message, "info", durationMs),
+  info: (message: string, durationMs = DEFAULT_MS, action?: ToastAction) =>
+    show(message, "info", durationMs, action),
   dismiss: dismissToast,
   clear: () => {
     for (const id of [...timers.keys()]) dismissToast(id);

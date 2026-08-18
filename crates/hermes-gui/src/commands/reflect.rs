@@ -149,20 +149,6 @@ async fn reflect_session_output(
     Ok(output)
 }
 
-#[tauri::command]
-pub async fn run_reflection(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<ReflectionResult, GuiError> {
-    // Manual Reflect panel: full budget, no min_turns gate; also enqueue quietly.
-    let output = reflect_session_output(&state, &session_id, false).await?;
-    let _ = hermes_reflect::enqueue_from_reflection(
-        &output,
-        hermes_reflect::InboxSource::ManualReflect,
-    );
-    Ok(reflection_result_from_output(output))
-}
-
 /// Cheap check before showing the "tidying…" banner.
 #[tauri::command]
 pub async fn session_needs_distill(
@@ -178,10 +164,6 @@ pub async fn session_needs_distill(
         return Ok(false);
     }
     if count_user_text_turns(&active.session) < min_turns {
-        return Ok(false);
-    }
-    if hermes_store::channel_of_session_path(&active.path).is_some() {
-        // Idle scan owns channel logs — leaving the viewer is not a leave-work.
         return Ok(false);
     }
     Ok(hermes_reflect::needs_distill(&active.session))
@@ -207,13 +189,6 @@ pub async fn run_session_end_reflection(
             return Ok(SessionEndReflectionOutcome::Skipped {
                 reason: "empty_session".into(),
                 user_turns: 0,
-                min_turns,
-            });
-        }
-        if hermes_store::channel_of_session_path(&active.path).is_some() {
-            return Ok(SessionEndReflectionOutcome::Skipped {
-                reason: "channel_idle_owns".into(),
-                user_turns: count_user_text_turns(&active.session),
                 min_turns,
             });
         }
@@ -256,6 +231,10 @@ pub async fn run_session_end_reflection(
             min_turns,
         });
     };
+
+    // Leave-session housekeeping must not steal the next reply.
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    state.live_llm.wait_idle().await;
 
     const SESSION_END_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(75);
 
@@ -317,51 +296,6 @@ fn reflection_view_has_candidates(r: &ReflectionResult) -> bool {
     !r.skill_candidates.is_empty() || !r.memory_candidates.is_empty() || !r.conflicts.is_empty()
 }
 
-/// Scan WeChat logs that have been quiet long enough and distill them.
-/// Sidebar `list_sessions` may fire often — one scan at a time, 60s cooldown.
-pub fn spawn_idle_wechat_distill(state: &AppState) {
-    const COOLDOWN: Duration = Duration::from_secs(60);
-    if !state.idle_wechat_distill.try_begin(COOLDOWN) {
-        return;
-    }
-    let provider = state.provider.read().unwrap().clone();
-    let memory = state.memory_store.clone();
-    let skills = state.skill_store.clone();
-    let min_turns = state.config.read().unwrap().reflect.min_turns;
-    let gate = state.idle_wechat_distill.clone();
-    tokio::spawn(async move {
-        let _guard = IdleDistillFinish(gate);
-        let root = hermes_core::data_path("sessions").join("wechat");
-        if !root.exists() {
-            return;
-        }
-        let Ok(paths) = hermes_store::list_sessions(&root) else {
-            return;
-        };
-        for path in paths {
-            if let Err(e) = distill_wechat_file_if_idle(
-                &path,
-                provider.as_ref(),
-                memory.as_ref(),
-                skills.as_ref(),
-                min_turns,
-            )
-            .await
-            {
-                tracing::debug!(error = %e, path = %path.display(), "idle wechat distill skipped");
-            }
-        }
-    });
-}
-
-struct IdleDistillFinish(std::sync::Arc<crate::state::IdleDistillGate>);
-
-impl Drop for IdleDistillFinish {
-    fn drop(&mut self) {
-        self.0.finish();
-    }
-}
-
 async fn distill_wechat_file_if_idle(
     path: &Path,
     provider: &dyn LlmProvider,
@@ -407,6 +341,143 @@ async fn distill_wechat_file_if_idle(
         &distill_id,
         if added > 0 { "enqueued" } else { "empty" },
     );
+    Ok(())
+}
+
+fn pending_leave_path() -> std::path::PathBuf {
+    hermes_core::data_path("pending-leave.json")
+}
+
+#[tauri::command]
+pub fn mark_pending_leave(session_id: String) -> Result<(), GuiError> {
+    let id = session_id.trim();
+    if id.is_empty() {
+        return Ok(());
+    }
+    let p = pending_leave_path();
+    let mut ids: Vec<String> = std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    if !ids.iter().any(|x| x == id) {
+        ids.push(id.to_string());
+    }
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(
+        p,
+        serde_json::to_string(&ids).unwrap_or_else(|_| "[]".into()),
+    );
+    Ok(())
+}
+
+/// Next launch: distill sessions that were open when the window closed.
+/// Waits so the first dialogue is not competing for the model.
+#[tauri::command]
+pub async fn drain_pending_leave(state: State<'_, AppState>) -> Result<(), GuiError> {
+    let p = pending_leave_path();
+    let ids: Vec<String> = std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let _ = std::fs::remove_file(&p);
+    let provider = state.provider.read().unwrap().clone();
+    let memory = state.memory_store.clone();
+    let skills = state.skill_store.clone();
+    let min_turns = state.config.read().unwrap().reflect.min_turns;
+    let wechat_state = state.idle_wechat_distill.clone();
+    let provider2 = provider.clone();
+    let memory2 = memory.clone();
+    let skills2 = skills.clone();
+    let live_wechat = state.live_llm.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(90)).await;
+        // Delayed WeChat distill — only after the first dialogue has had the model.
+        if wechat_state.try_begin(Duration::from_secs(60)) {
+            let root = hermes_core::data_path("sessions").join("wechat");
+            if root.exists() {
+                if let Ok(paths) = hermes_store::list_sessions(&root) {
+                    for path in paths {
+                        live_wechat.wait_idle().await;
+                        let _ = distill_wechat_file_if_idle(
+                            &path,
+                            provider2.as_ref(),
+                            memory2.as_ref(),
+                            skills2.as_ref(),
+                            min_turns,
+                        )
+                        .await;
+                    }
+                }
+            }
+            wechat_state.finish();
+        }
+    });
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let memory = state.memory_store.clone();
+    let skills = state.skill_store.clone();
+    let min_turns = state.config.read().unwrap().reflect.min_turns;
+    let live_leave = state.live_llm.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(90)).await;
+        let root = hermes_core::data_path("sessions");
+        let Ok(paths) = hermes_store::list_sessions(&root) else {
+            return;
+        };
+        for path in paths {
+            let Ok((meta, _)) = hermes_store::read_session_listing(&path) else {
+                continue;
+            };
+            if !ids.iter().any(|id| id == &meta.id) {
+                continue;
+            }
+            let Ok(session) = hermes_store::read_session(&path) else {
+                continue;
+            };
+            if count_user_text_turns(&session) < min_turns {
+                continue;
+            }
+            if !hermes_reflect::needs_distill(&session) {
+                continue;
+            }
+            let Some(_lock) = hermes_reflect::DistillSessionGuard::try_acquire(&session.meta.id)
+            else {
+                continue;
+            };
+            live_leave.wait_idle().await;
+            let skill_list = skills.list().unwrap_or_default();
+            let mem_list = memory.list_active().unwrap_or_default();
+            let Ok(Ok(output)) = tokio::time::timeout(
+                Duration::from_secs(75),
+                hermes_reflect::reflect_quick(provider.as_ref(), &session, &skill_list, &mem_list),
+            )
+            .await
+            else {
+                continue;
+            };
+            let distill_id = hermes_reflect::new_distill_id();
+            let (_seq, through_at) = last_human_send(&session.messages);
+            let mark = hermes_reflect::EnqueueMark {
+                session_id: Some(session.meta.id.clone()),
+                distill_id: Some(distill_id.clone()),
+                through_at: through_at.map(|t| t.to_rfc3339()),
+            };
+            let added = hermes_reflect::enqueue_from_reflection_marked(
+                &output,
+                hermes_reflect::InboxSource::SessionEnd,
+                mark,
+            )
+            .unwrap_or(0);
+            hermes_reflect::record_success(
+                &session,
+                &distill_id,
+                if added > 0 { "enqueued" } else { "empty" },
+            );
+        }
+    });
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 # lebi-AI（乐彼AI）Flutter 客户端 — 进度看板
 
-> **种类：** H 快照（非权威）。冲突以 P0 v0.9 为准。
+> **种类：** H 快照（非权威）。冲突以 P0 v0.11 为准。
 > 手机端是同一引擎的表面，**已接线、非默认交付**。
 > Flutter + `hermes-server`。server 是 GUI 的 **Flutter 子集** + WS 对话帧（能力矩阵，禁止 1:1）。
 > WS 优先 `POST /api/v1/ws-ticket` 再 `?ticket=`。
@@ -22,8 +22,8 @@
 ## M3 — 管理面板(L3) ✅（部分）
 - [x] skills / memory / config REST(server 侧,对应 gui commands)
 - [x] Flutter 管理面板:config(model 切换) + skills(查看/删除) + memory(置顶/删除)
-- [ ] reflect / mcp REST:server 路由已实现,但 **Flutter 客户端尚未接线**
-      (无调用方;MicroReflection / SkillCandidateProposed 事件被静默丢弃)
+- [x] inbox REST：Flutter `EvolveScreen` 已调 list/accept/reject（2026-08-18）
+- [ ] mcp REST：server 有、Flutter 未调（非默认交付，可留）
 
 ## M4 — 移动增值(L4) ✅
 - [x] **前置**: lebi-AI 加 `Image` `ContentBlock` + ImageSource(hermes-core)+ 全 match 点补分支

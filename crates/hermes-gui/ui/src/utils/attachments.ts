@@ -52,6 +52,40 @@ export function splitUserTextAndAttachments(text: string): {
   return { body, attachments };
 }
 
+const ON_HAND_HEADER = /^\[on-hand\]\s*$/im;
+
+/** Catalog the engine appended when the user asked what files are on hand. */
+export function splitOnHand(text: string): { body: string; titles: string[] } {
+  const match = text.match(ON_HAND_HEADER);
+  if (!match || match.index === undefined) {
+    return { body: text, titles: [] };
+  }
+  const body = text.slice(0, match.index).replace(/\s+$/, "");
+  const titles: string[] = [];
+  for (const line of text.slice(match.index + match[0].length).split("\n")) {
+    const m = line.trim().match(/^-\s*《(.+)》\s*$/);
+    if (m) titles.push(m[1]);
+    else if (line.trim() === "(none)") {
+      /* empty catalog */
+    }
+  }
+  return { body, titles };
+}
+
+export function wantsSpokenKeep(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    t.includes("留下") ||
+    t.includes("收着") ||
+    t.includes("以后按这个") ||
+    t.includes("下次还用") ||
+    t.includes("下次还按") ||
+    t.includes("keep this") ||
+    t.includes("keep it for next") ||
+    t.includes("save this file")
+  );
+}
+
 export function formatAttachmentsBlock(
   items: { mdRelPath: string; originalName: string; chars: number }[]
 ): string {
@@ -65,6 +99,12 @@ export function formatAttachmentsBlock(
 }
 
 /** Strip noisy IPC prefixes for toast. */
+export function importErrorCode(err: unknown): string | null {
+  const s = String(err);
+  const m = s.match(/\b(too_large|unsupported_type|conversion_failed|empty_markdown|encrypted|markitdown_missing|io_error)\b/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
 export function humanizeImportError(err: unknown): string {
   let s = String(err);
   s = s.replace(/^tool:\s*/i, "");
@@ -77,6 +117,15 @@ export function humanizeImportError(err: unknown): string {
     return nested ? nested[1] : rest;
   }
   return s;
+}
+
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
 }
 
 export function isAcceptedDocumentFile(file: File): boolean {

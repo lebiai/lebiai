@@ -237,6 +237,7 @@ async fn handle_send(
             active: &active,
             all_skills: &skills,
             open_work: &[],
+            material_hits: &[],
             first_human_today: false,
             workspace_root: &workspace_root,
             limits,
@@ -479,11 +480,25 @@ async fn handle_send(
             }
         }
 
-        // Drain any skill candidates the `propose_skill` tool queued.
+        // Drain propose_skill into inbox (Flutter Evolve). WS event is a notice only.
         let drained: Vec<hermes_reflect::SkillCandidate> = match propose_queue.lock() {
             Ok(mut q) => q.drain(..).collect(),
             Err(_) => Vec::new(),
         };
+        if !drained.is_empty() {
+            let pending = hermes_reflect::ReflectionOutput {
+                summary: String::new(),
+                skill_candidates: drained.clone(),
+                memory_candidates: vec![],
+                conflicts: vec![],
+            };
+            if let Err(e) = hermes_reflect::enqueue_from_reflection(
+                &pending,
+                hermes_reflect::InboxSource::ManualReflect,
+            ) {
+                tracing::warn!(error=%e, "enqueue proposed skill failed");
+            }
+        }
         for c in drained {
             push_event(
                 &out,
@@ -518,7 +533,8 @@ async fn handle_send(
                     auto_accept,
                     min_confidence,
                     false,
-                );
+                )
+                .inbox_only();
                 let outcome =
                     hermes_reflect::run_micro_after_turn(hermes_reflect::MicroRunRequest {
                         provider: prov.as_ref(),

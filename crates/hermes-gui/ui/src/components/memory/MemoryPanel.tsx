@@ -69,8 +69,6 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
   const [newPinned, setNewPinned] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const highlightRef = useRef<HTMLDivElement | null>(null);
-  /** One-shot: land on Pending when there is something to review. */
-  const didAutoFocusPending = useRef(false);
 
   const fetchMemories = async () => {
     const items = await invoke<MemoryItem[]>("list_memories");
@@ -81,10 +79,6 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
     try {
       const n = await invoke<number>("count_pending_review");
       setPendingCount(n);
-      if (!didAutoFocusPending.current && n > 0) {
-        didAutoFocusPending.current = true;
-        setActiveZone(PENDING);
-      }
     } catch {
       setPendingCount(0);
     }

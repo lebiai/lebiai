@@ -75,7 +75,7 @@ class ChatDrawer extends ConsumerWidget {
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                  '历史会话',
+                  '历史对话',
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,

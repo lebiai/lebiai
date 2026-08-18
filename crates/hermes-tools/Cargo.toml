@@ -10,6 +10,7 @@ description = "Built-in tools: read, write, edit, bash, glob, grep"
 hermes-core = { workspace = true }
 hermes-memory = { workspace = true }
 hermes-commitments = { workspace = true }
+hermes-sources = { workspace = true }
 hermes-skills = { workspace = true }
 hermes-reflect = { workspace = true }
 hermes-turn = { workspace = true }

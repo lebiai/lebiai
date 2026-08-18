@@ -20,6 +20,7 @@ pub mod read;
 pub mod safety;
 pub mod skill;
 pub mod skill_propose;
+pub mod source;
 pub mod subagent;
 pub mod think;
 pub mod todo;
@@ -43,6 +44,7 @@ use hermes_commitments::CommitmentStore;
 use hermes_core::{Error, Result, ToolCallOutcome, ToolHost, ToolSpec};
 use hermes_memory::MemoryStore;
 use hermes_skills::SkillStore;
+use hermes_sources::SourceStore;
 
 pub use skill_propose::{ProposeContext, SessionMessages, SkillProposeQueue};
 pub use subagent::SubagentContext;
@@ -56,6 +58,7 @@ pub struct BuiltinToolHost {
     workspace: PathBuf,
     memory_store: Option<Arc<dyn MemoryStore>>,
     commitment_store: Option<Arc<CommitmentStore>>,
+    source_store: Option<Arc<SourceStore>>,
     skill_store: Option<Arc<dyn SkillStore>>,
     propose_ctx: Option<Arc<ProposeContext>>,
     subagent_ctx: Option<Arc<SubagentContext>>,
@@ -71,6 +74,7 @@ impl BuiltinToolHost {
             workspace,
             memory_store: None,
             commitment_store: None,
+            source_store: None,
             skill_store: None,
             propose_ctx: None,
             subagent_ctx: None,
@@ -86,6 +90,11 @@ impl BuiltinToolHost {
 
     pub fn with_commitment_store(mut self, store: Arc<CommitmentStore>) -> Self {
         self.commitment_store = Some(store);
+        self
+    }
+
+    pub fn with_source_store(mut self, store: Arc<SourceStore>) -> Self {
+        self.source_store = Some(store);
         self
     }
 
@@ -134,6 +143,7 @@ impl BuiltinToolHost {
                     | "subagent"
             )
             || (self.commitment_store.is_some() && commitment::handles(name))
+            || (self.source_store.is_some() && source::handles(name))
     }
 }
 
@@ -178,6 +188,10 @@ impl ToolHost for BuiltinToolHost {
             tools.push(commitment::drop_spec());
             tools.push(commitment::split_spec());
             tools.push(commitment::update_spec());
+        }
+        if self.source_store.is_some() {
+            tools.push(source::list_spec());
+            tools.push(source::read_spec());
         }
         if self.propose_ctx.is_some() {
             tools.push(skill_propose::spec());
@@ -297,6 +311,18 @@ impl ToolHost for BuiltinToolHost {
                 })?;
                 commitment::run(store.as_ref(), n, args).await
             }
+            "source_list" => {
+                let store = self.source_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("source_list: no source store configured".into())
+                })?;
+                source::list_run(store.as_ref()).await
+            }
+            "source_read" => {
+                let store = self.source_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost("source_read: no source store configured".into())
+                })?;
+                source::read_run(store.as_ref(), args).await
+            }
             n if todo::handles(n) => todo::run(&self.todos, &self.workspace, n, args).await,
             _ => Err(Error::ToolHost(format!("unknown built-in tool: {name}"))),
         }
@@ -354,9 +380,12 @@ mod tests {
         let commitments = Arc::new(hermes_commitments::CommitmentStore::new(
             dir.path().join("commitments.json"),
         ));
+        let sources =
+            Arc::new(hermes_sources::SourceStore::open(dir.path().join("sources")).unwrap());
         let host = BuiltinToolHost::new(dir.path().to_path_buf())
             .with_memory_store(store)
-            .with_commitment_store(commitments);
+            .with_commitment_store(commitments)
+            .with_source_store(sources);
 
         let tools = host.list_tools().await.unwrap();
         assert!(!tools.is_empty(), "memory store wired → tools expected");

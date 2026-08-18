@@ -154,8 +154,8 @@ Do not invent capabilities that aren't listed; do not paraphrase a skill from me
 Work episodes (zone=work / tag work-episode / 【工作情节】) are highest value — only when they truly fit.\n\n",
                 );
                 for m in relevant {
-                    let zone = m.frontmatter.zone.as_str();
-                    let episode = zone == "work"
+                    let zone = hermes_core::companion::zones::normalize(&m.frontmatter.zone);
+                    let episode = hermes_core::companion::zones::is_work(zone)
                         || m.frontmatter.tags.iter().any(|t| {
                             let t = t.to_lowercase();
                             t == "work-episode" || t == "episode"

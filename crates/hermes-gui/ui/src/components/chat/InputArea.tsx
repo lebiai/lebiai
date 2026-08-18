@@ -5,12 +5,21 @@ import { useChatStore } from "../../store/chatStore";
 import { useUiStore } from "../../store/uiStore";
 import { Button } from "../common/ui";
 import { toast } from "../../utils/toast";
+import {
+  isFirstKeepTipPending,
+  markFirstKeepTipSeen,
+} from "../../utils/materialsTip";
+import type { TranslationKey } from "../../i18n";
 import type { FileImportResult } from "../../types/upload";
 import {
+  bytesToBase64,
   formatAttachmentsBlock,
   humanizeImportError,
+  importErrorCode,
   isAcceptedDocumentFile,
+  wantsSpokenKeep,
 } from "../../utils/attachments";
+import { filesFromDataTransfer, isLikelyFolderDummy } from "../../utils/dropFiles";
 import { AttachmentChip } from "./AttachmentCards";
 
 const ACCEPT =
@@ -22,15 +31,46 @@ type PendingChip = {
   status: "pending" | "ready" | "error";
   result?: FileImportResult;
   error?: string;
+  bytesBase64?: string;
 };
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+function announceKept(
+  result: FileImportResult,
+  t: (key: TranslationKey, vars?: Record<string, string | number>) => string,
+  unread = false,
+) {
+  const kept = result.kept;
+  if (!kept?.item?.id) return;
+  const title = kept.item.title || result.originalName;
+  if (kept.kind === "duplicate") {
+    toast.info(t("materials.already"));
+    return;
   }
-  return btoa(binary);
+
+  const undo = {
+    label: t("materials.keptUndo"),
+    onClick: () => {
+      void invoke("undo_source", { id: kept.item.id })
+        .then(() => toast.info(t("materials.undone")))
+        .catch(() => toast.error(t("materials.deleteError")));
+    },
+  };
+
+  if (unread || kept.item.readable === false) {
+    toast.success(t("materials.unread"), 8000, undo);
+    markFirstKeepTipSeen();
+    return;
+  }
+  if (kept.kind === "new_version") {
+    toast.success(t("materials.newVersion", { title }), 8000, undo);
+    markFirstKeepTipSeen();
+    return;
+  }
+  if (!isFirstKeepTipPending()) {
+    return;
+  }
+  markFirstKeepTipSeen();
+  toast.success(t("materials.keptFirst", { title }), 8000, undo);
 }
 
 export function InputArea() {
@@ -81,9 +121,29 @@ export function InputArea() {
     !importing &&
     (input.trim().length > 0 || readyAttachments.length > 0);
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
     if (!canSend || !activeSessionId) return;
     const trimmed = input.trim();
+    if (wantsSpokenKeep(trimmed)) {
+      for (const c of chips) {
+        if (c.status !== "ready" || !c.result || c.result.kept || !c.bytesBase64) {
+          continue;
+        }
+        try {
+          const kept = await invoke<NonNullable<FileImportResult["kept"]>>("keep_source", {
+            request: {
+              fileName: c.fileName,
+              bytesBase64: c.bytesBase64,
+              mdRelPath: c.result.mdRelPath,
+            },
+          });
+          announceKept({ ...c.result, kept }, t);
+        } catch (err) {
+          const msg = String(err);
+          toast.error(msg.includes("太多") ? t("materials.quota") : humanizeImportError(err));
+        }
+      }
+    }
     const body = trimmed + formatAttachmentsBlock(readyAttachments);
     if (!body.trim()) return;
     setInput("");
@@ -92,7 +152,7 @@ export function InputArea() {
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [canSend, activeSessionId, input, readyAttachments, sendMessage]);
+  }, [canSend, activeSessionId, input, chips, readyAttachments, sendMessage, t]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // IME composition (Chinese/Japanese/etc. or English candidate list):
@@ -118,12 +178,19 @@ export function InputArea() {
       toast.info(t("chat.attachNeedSession"));
       return;
     }
-    const list = Array.from(files).filter((f) => {
+    const incoming = Array.from(files);
+    const list = incoming.filter((f) => {
+      if (isLikelyFolderDummy(f)) {
+        toast.info(t("materials.folderNeedPicker"));
+        return false;
+      }
       if (isAcceptedDocumentFile(f)) return true;
       toast.error(`${t("chat.attachUnsupported")}: ${f.name}`);
       return false;
     });
+    const skippedKind = incoming.length - list.length;
     if (list.length === 0) return;
+    let failed = 0;
 
     const locals: PendingChip[] = list.map((f) => ({
       localId: `${f.name}-${f.size}-${f.lastModified}-${Math.random().toString(36).slice(2, 7)}`,
@@ -152,21 +219,43 @@ export function InputArea() {
           setChips((prev) =>
             prev.map((c) =>
               c.localId === localId
-                ? { ...c, status: "ready", result }
+                ? { ...c, status: "ready", result, bytesBase64 }
                 : c
             )
           );
-        } else {
+          announceKept(result, t);
+        } else if (result.kept) {
           setChips((prev) =>
             prev.map((c) =>
               c.localId === localId
-                ? { ...c, status: "error", error: "import failed" }
+                ? { ...c, status: "error", error: result.warning || t("materials.unread") }
+                : c
+            )
+          );
+          announceKept(result, t, true);
+        } else {
+          failed += 1;
+          setChips((prev) =>
+            prev.map((c) =>
+              c.localId === localId
+                ? { ...c, status: "error", error: t("materials.errUnsupported") }
                 : c
             )
           );
         }
       } catch (err) {
-        const msg = humanizeImportError(err);
+        failed += 1;
+        const code = importErrorCode(err);
+        const msg =
+          code === "too_large"
+            ? t("materials.errTooLarge")
+            : code === "unsupported_type"
+              ? t("materials.errUnsupported")
+              : String(err).includes("太多")
+                ? t("materials.quota")
+                : /encrypt|password/i.test(String(err))
+                  ? t("materials.errEncrypted")
+                  : humanizeImportError(err);
         toast.error(`${t("chat.attachFailed")}: ${msg}`);
         setChips((prev) =>
           prev.map((c) =>
@@ -177,6 +266,15 @@ export function InputArea() {
     }
 
     if (fileRef.current) fileRef.current.value = "";
+    const skipped = skippedKind + failed;
+    if (incoming.length >= 3 || skipped > 0) {
+      toast.info(
+        t("materials.folderSummary", {
+          ok: Math.max(0, list.length - failed),
+          skip: skipped,
+        }),
+      );
+    }
   };
 
   const onPickClick = () => {
@@ -242,9 +340,9 @@ export function InputArea() {
       toast.info(t("toast.streamingBusy"));
       return;
     }
-    if (e.dataTransfer.files?.length) {
-      void importFiles(e.dataTransfer.files);
-    }
+    void filesFromDataTransfer(e.dataTransfer).then((files) => {
+      if (files.length) void importFiles(files);
+    });
   };
 
   if (readOnly) {
@@ -286,10 +384,15 @@ export function InputArea() {
               {chips.map((c) => (
                 <AttachmentChip
                   key={c.localId}
-                  originalName={c.fileName}
+                  originalName={
+                    c.status === "ready" && c.result?.kept
+                      ? `${c.fileName} · ${t("materials.keptChip")}`
+                      : c.fileName
+                  }
                   mdRelPath={c.result?.mdRelPath}
                   chars={c.result?.chars}
                   status={c.status}
+                  errorLabel={c.status === "error" ? c.error : undefined}
                   onRemove={() => removeChip(c.localId)}
                   removeLabel={t("chat.attachRemove")}
                 />

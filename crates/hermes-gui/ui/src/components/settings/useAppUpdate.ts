@@ -32,6 +32,8 @@ function humanizeUpdateError(
   if (
     lower.includes("permission") ||
     lower.includes("denied") ||
+    lower.includes("not allowed") ||
+    lower.includes("acl") ||
     lower.includes("access") ||
     lower.includes("readonly") ||
     lower.includes("read-only")
@@ -119,6 +121,7 @@ export function useAppUpdate(active: boolean) {
         notes,
       });
     } catch (err) {
+      console.error("update check failed", err);
       setPhase({
         kind: "error",
         version: versionRef.current || current,

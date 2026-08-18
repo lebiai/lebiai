@@ -239,7 +239,7 @@ pub fn import_document(
     }
 
     let body = if matches!(ext.as_str(), "txt" | "md") {
-        String::from_utf8_lossy(&request.bytes).into_owned()
+        decode_plain_bytes(&request.bytes)
     } else if ext == "doc" {
         // Legacy Word binary — MarkItDown offline only handles .docx.
         match extract_legacy_doc_text(&tmp_src) {
@@ -761,6 +761,35 @@ fn decode_doc_bytes(bytes: &[u8]) -> String {
     cow2.into_owned()
 }
 
+/// Plain `.txt` / `.md`: keep UTF-8 when clean; otherwise try GB18030
+/// so a Windows-saved 记事本 file does not become `���`.
+fn decode_plain_bytes(bytes: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        if replacement_ratio(s) < 0.02 {
+            return s.to_string();
+        }
+    }
+    let (cow, _, had_errors) = encoding_rs::GB18030.decode(bytes);
+    let text = cow.into_owned();
+    let cn = text
+        .chars()
+        .filter(|c| ('\u{4e00}'..='\u{9fff}').contains(c))
+        .count();
+    if !had_errors || cn >= 4 {
+        return text;
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn replacement_ratio(s: &str) -> f64 {
+    let n = s.chars().count();
+    if n == 0 {
+        return 0.0;
+    }
+    let bad = s.chars().filter(|&c| c == '\u{FFFD}').count();
+    bad as f64 / n as f64
+}
+
 fn strip_simple_html(html: &str) -> String {
     let mut s = html.to_string();
     // crude but dependency-free fallback when htmd fails
@@ -867,6 +896,15 @@ mod tests {
         assert_eq!(kind_for_ext("xlsx"), Some("spreadsheet"));
         assert_eq!(kind_for_ext("doc"), Some("document"));
         assert_eq!(kind_for_ext("png"), None);
+    }
+
+    #[test]
+    fn decode_plain_gbk_chinese_not_replacement() {
+        // 「你好」 in GBK.
+        let gbk = encoding_rs::GBK.encode("你好世界").0;
+        let text = decode_plain_bytes(&gbk);
+        assert!(text.contains("你好"), "got {text:?}");
+        assert!(!text.contains('\u{FFFD}'));
     }
 
     #[test]

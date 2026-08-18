@@ -59,6 +59,7 @@ export default function App() {
     void useZaibanStore.getState().refresh();
     void useWorkDrawerStore.getState().refreshPrefs();
     void refreshLicense();
+    void invoke("drain_pending_leave").catch(() => undefined);
     invoke<{
       uiLanguage: string;
       uiTheme: string;
@@ -136,18 +137,6 @@ export default function App() {
           return;
         }
         const chat = useChatStore.getState();
-        // Proposed skill first
-        if (chat.proposedSkills.length > 0) {
-          e.preventDefault();
-          chat.dismissProposedSkill(chat.proposedSkills[0].name);
-          return;
-        }
-        // Micro-reflection in-chat review
-        if (chat.microReviewOpen) {
-          e.preventDefault();
-          chat.dismissMicroReview();
-          return;
-        }
         // Session-end review (not background banner)
         if (chat.sessionEnd?.status === "review") {
           e.preventDefault();
@@ -178,6 +167,17 @@ export default function App() {
             event.preventDefault();
             toast.info(useUiStore.getState().t("toast.streamingCloseBlocked"));
             return;
+          }
+          if (state.activeSessionId && state.messages.length > 0) {
+            event.preventDefault();
+            try {
+              await invoke("mark_pending_leave", {
+                sessionId: state.activeSessionId,
+              });
+            } catch {
+              /* still close */
+            }
+            await win.destroy();
           }
         });
         if (cancelled) {

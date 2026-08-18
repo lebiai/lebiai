@@ -39,21 +39,18 @@ export type StreamCue = {
   existingTitle?: string | null;
 };
 
-type StartAsk = { id: string; title: string };
 type RedueAsk = { id: string; title: string };
 
 interface ZaibanState {
   list: ZaibanList | null;
   error: boolean;
   streamCue: StreamCue | null;
-  pendingStart: StartAsk | null;
   pendingRedue: RedueAsk | null;
   dismissedMerge: string | null;
   highlightId: string | null;
   refresh: () => Promise<void>;
   applyStream: (cue: StreamCue) => void;
   clearStreamCue: () => void;
-  setPendingStart: (item: StartAsk | null) => void;
   setPendingRedue: (item: RedueAsk | null) => void;
   dismissMerge: (key: string) => void;
   setHighlight: (id: string | null) => void;
@@ -63,7 +60,6 @@ export const useZaibanStore = create<ZaibanState>((set, get) => ({
   list: null,
   error: false,
   streamCue: null,
-  pendingStart: null,
   pendingRedue: null,
   dismissedMerge: null,
   highlightId: null,
@@ -80,7 +76,6 @@ export const useZaibanStore = create<ZaibanState>((set, get) => ({
     void get().refresh();
   },
   clearStreamCue: () => set({ streamCue: null }),
-  setPendingStart: (item) => set({ pendingStart: item }),
   setPendingRedue: (item) => set({ pendingRedue: item }),
   dismissMerge: (key) => set({ dismissedMerge: key }),
   setHighlight: (id) => set({ highlightId: id }),

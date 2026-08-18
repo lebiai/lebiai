@@ -50,11 +50,11 @@ struct ReadZoneArgs {
 pub fn read_zone_spec() -> ToolSpec {
     ToolSpec {
         name: "palace_read_zone".into(),
-        description: "Load all memories from a specific zone. Returns cached zone summary if available, otherwise raw memory bodies. Records access for forgetting/decay tracking.".into(),
+        description: "Load all memories from a zone (preferences / standards / work / general). Legacy names core, episode, project:* are folded into those four. Records access for decay tracking.".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "zone": {"type": "string", "description": "Zone name (e.g. 'core', 'work', 'project:hermes', 'episode', 'general')"}
+                "zone": {"type": "string", "description": "Zone: preferences, standards, work, or general"}
             },
             "required": ["zone"]
         }),
@@ -156,7 +156,7 @@ pub async fn recall_run(
 
     let filtered: Vec<_> = if let Some(ref zone) = a.zone {
         hits.into_iter()
-            .filter(|m| m.frontmatter.zone == *zone)
+            .filter(|m| hermes_core::companion::zones::same(&m.frontmatter.zone, zone))
             .take(a.limit)
             .collect()
     } else {

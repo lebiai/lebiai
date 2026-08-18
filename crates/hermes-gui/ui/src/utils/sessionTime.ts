@@ -1,6 +1,6 @@
 import type { SessionSummary } from "../types";
 
-export type SessionGroupId = "today" | "yesterday" | "earlier";
+export type SessionGroupId = "today" | "yesterday" | "wechat" | "earlier";
 
 export interface SessionGroup {
   id: SessionGroupId;
@@ -26,17 +26,22 @@ function activityIso(s: SessionSummary): string {
   return s.updatedAt && s.updatedAt.length > 0 ? s.updatedAt : s.createdAt;
 }
 
-/** Group sessions by last activity day (not create day). */
+/** Group sessions by last activity day. WeChat stays its own findable section. */
 export function groupSessionsByDay(sessions: SessionSummary[]): SessionGroup[] {
   const buckets: Record<SessionGroupId, SessionSummary[]> = {
     today: [],
     yesterday: [],
+    wechat: [],
     earlier: [],
   };
   for (const s of sessions) {
+    if (s.channel === "wechat") {
+      buckets.wechat.push(s);
+      continue;
+    }
     buckets[dayBucket(activityIso(s))].push(s);
   }
-  const order: SessionGroupId[] = ["today", "yesterday", "earlier"];
+  const order: SessionGroupId[] = ["today", "yesterday", "wechat", "earlier"];
   return order
     .filter((id) => buckets[id].length > 0)
     .map((id) => ({ id, sessions: buckets[id] }));

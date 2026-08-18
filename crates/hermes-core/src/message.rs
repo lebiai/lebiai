@@ -45,6 +45,18 @@ impl Message {
         }
     }
 
+    /// Strip fake material citations from assistant text (persist + display).
+    pub fn sanitize_material_cites(&mut self, allowed_titles: &[String]) {
+        if self.role != Role::Assistant {
+            return;
+        }
+        for b in &mut self.content {
+            if let ContentBlock::Text { text } = b {
+                *text = crate::companion::sanitize_material_citations(text, allowed_titles);
+            }
+        }
+    }
+
     /// Drop thinking blocks (for compact session logs).
     pub fn without_thinking(&self) -> Self {
         Self {

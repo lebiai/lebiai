@@ -7,6 +7,11 @@ pub enum ChatStreamEvent {
     TextDelta {
         text: String,
     },
+    /// Replace the streamed assistant text after citation sanitizing.
+    #[serde(rename_all = "camelCase")]
+    TextCorrected {
+        text: String,
+    },
     #[serde(rename_all = "camelCase")]
     ThinkingDelta {
         text: String,
@@ -47,13 +52,6 @@ pub enum ChatStreamEvent {
     },
     /// User pressed Stop — generation interrupted cleanly.
     Cancelled,
-    #[serde(rename_all = "camelCase")]
-    SkillCandidateProposed {
-        name: String,
-        description: String,
-        body: String,
-        triggers: Vec<String>,
-    },
     /// Open-work tool finished — sidebar refresh + in-chat cue.
     #[serde(rename_all = "camelCase")]
     ZaibanUpdated {
@@ -67,6 +65,8 @@ pub enum ChatStreamEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         existing_title: Option<String>,
     },
+    /// User said remember this standard — waiting in 它记得的.
+    RememberQueued,
     Done,
 }
 

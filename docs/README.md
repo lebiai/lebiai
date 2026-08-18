@@ -35,6 +35,7 @@
 | [`spec/settings-ia.md`](./spec/settings-ia.md) | 设置页信息架构 |
 | [`spec/in-app-update.md`](./spec/in-app-update.md) | 桌面应用内点击更新（实施中 · U3 未做） |
 | [`spec/gui-ritual-motion.md`](./spec/gui-ritual-motion.md) | GUI 仪式感 / 动效 |
+| [`spec/work-sources.md`](./spec/work-sources.md) | **我的材料**（Word/PDF 自动留下 · 对话检索 · 已立项） |
 | [`spec/zaiban-work.md`](./spec/zaiban-work.md) | **在办+回顾统一规格 v2.0**（已拍板；目视仍开放） |
 | [`spec/zaiban.md`](./spec/zaiban.md) | 在办 v1（被 v2 草案覆盖） |
 | [`spec/zaiban-drawer-review.md`](./spec/zaiban-drawer-review.md) | 抽屉+回顾 v1.2（被 v2 草案覆盖） |
@@ -63,6 +64,7 @@
 | 路径 | 内容 |
 |------|------|
 | [`explore/nl-admin-control-plane.md`](./explore/nl-admin-control-plane.md) | 未立项。不得当现行目标 |
+| [`explore/work-sources.md`](./explore/work-sources.md) | 已立项。完整坑位；现行操作以 `spec/work-sources.md` 为准 |
 
 ## H · 快照 · `snapshot/`
 

@@ -9,6 +9,7 @@ pub mod anthropic;
 pub mod config;
 pub mod openai;
 pub(crate) mod retry;
+pub(crate) mod utf8;
 
 pub use anthropic::AnthropicProvider;
 pub use config::{

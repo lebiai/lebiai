@@ -59,7 +59,7 @@ Reply with EXACTLY ONE JSON object. No prose. No markdown fences.
     {
       "fact": "one statement OR work-episode block",
       "tags": ["preference"] ,
-      "zone": "preferences" | "standards" | "work" | "general" | "core",
+      "zone": "preferences" | "standards" | "work" | "general",
       "scope": "user" | "project",
       "confidence": "low" | "medium" | "high",
       "rationale": "why this should persist",

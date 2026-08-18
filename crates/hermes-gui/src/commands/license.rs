@@ -2,7 +2,7 @@
 
 use hermes_core::{
     apply_token, dev_has_license_backup, dev_restore_license_backup, dev_simulate_expired,
-    dev_tools_enabled, load_status, mark_nudge_seen, LicenseError, LicenseStatus, WECHAT_CONTACT,
+    dev_tools_enabled, load_status, mark_nudge_seen, LicenseError, LicenseStatus,
 };
 use serde::Serialize;
 
@@ -46,11 +46,6 @@ pub fn apply_license(token: String) -> Result<ApplyLicenseResult, GuiError> {
 #[tauri::command]
 pub fn mark_license_nudge_seen() -> Result<LicenseStatus, GuiError> {
     mark_nudge_seen().map_err(map_err)
-}
-
-#[tauri::command]
-pub fn license_wechat() -> String {
-    WECHAT_CONTACT.to_string()
 }
 
 /// Debug / owner only: `true` in debug builds or when `LEBI_DEV_TOOLS` is set.

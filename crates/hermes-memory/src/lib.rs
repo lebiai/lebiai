@@ -20,7 +20,7 @@ pub use embed::EmbedIndex;
 pub use memory::{Confidence, LoadedMemory, MemoryFrontmatter, Scope, Source};
 pub use palace::{
     build_palace_index_simple, get_zone, group_by_zone, load_palace_index, palace_index_path,
-    save_palace_index, ZONE_CORE, ZONE_EPISODE, ZONE_GENERAL, ZONE_WORK,
+    save_palace_index,
 };
 pub use profile::{load_profile, profile_path, save_profile};
 pub use relevance::{

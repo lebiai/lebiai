@@ -86,7 +86,7 @@
   - `scripts/write-latest-json.sh`、`scripts/load-updater-key.sh`、`build-dmg.sh`、`build-exe.ps1`
   - `.github/workflows/release.yml` — 注入签名 secrets，挂 `latest.json`
   - `docs/guide/install.md` §7、`docs/dev/updater-signing.md`
-- **偏离方案处：** GitHub Actions secrets 尚未写入（本机无 `gh`）。未写入则下一版 CI 打不出 `.sig`。
+- **偏离方案处：** 无。首次发版后发现检查更新被 ACL 拦住：未建 `capabilities/default.json`，插件命令 `updater:default` / `process:default` 未授权。已补。
 
 ---
 

@@ -64,7 +64,7 @@ fn macos_seatbelt(workspace: &Path, command: &str) -> Option<Command> {
     // Also allow /private/var/folders (user temp on modern macOS).
     let tmp = std::env::temp_dir();
     let tmp_str = tmp.to_string_lossy();
-    let mut export_lines = String::new();
+    let mut extra_lines = String::new();
     for root in crate::safety::user_export_roots() {
         if !root.exists() {
             continue;
@@ -72,11 +72,12 @@ fn macos_seatbelt(workspace: &Path, command: &str) -> Option<Command> {
         let Some(abs) = dunce_abs(&root) else {
             continue;
         };
-        export_lines.push_str(&format!(
+        extra_lines.push_str(&format!(
             "(allow file-write* (subpath \"{}\"))\n",
             escape_seatbelt_path(&abs.to_string_lossy())
         ));
     }
+    extra_lines.push_str(&seatbelt_deny_secrets());
 
     let profile = format!(
         r#"(version 1)
@@ -94,11 +95,11 @@ fn macos_seatbelt(workspace: &Path, command: &str) -> Option<Command> {
 (allow file-write* (subpath "/private/tmp"))
 (allow file-write* (subpath "{tmp}"))
 (allow file-write* (subpath "/private/var/folders"))
-{exports}(allow file-ioctl (literal "/dev/null") (literal "/dev/tty"))
+{extra}(allow file-ioctl (literal "/dev/null") (literal "/dev/tty"))
 "#,
         ws = escape_seatbelt_path(&ws_str),
         tmp = escape_seatbelt_path(&tmp_str),
-        exports = export_lines,
+        extra = extra_lines,
     );
 
     let mut c = Command::new("sandbox-exec");
@@ -115,6 +116,39 @@ fn macos_seatbelt(workspace: &Path, command: &str) -> Option<Command> {
 #[cfg(target_os = "macos")]
 fn escape_seatbelt_path(p: &str) -> String {
     p.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// After `allow file-read*`, deny key/token locations. Last matching deny wins
+/// for these subpaths on macOS seatbelt.
+#[cfg(target_os = "macos")]
+fn seatbelt_deny_secrets() -> String {
+    let mut out = String::new();
+    let mut paths: Vec<PathBuf> = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".ssh"));
+        paths.push(home.join(".gnupg"));
+        paths.push(home.join(".aws"));
+        paths.push(home.join(".kube"));
+        paths.push(home.join(".netrc"));
+    }
+    let root = hermes_core::data_root();
+    paths.push(root.join("config.toml"));
+    paths.push(root.join("server.token"));
+    paths.push(root.join("wechat.toml"));
+    paths.push(root.join("feishu.toml"));
+    paths.push(root.join("telegram.toml"));
+    for p in paths {
+        let Some(abs) = dunce_abs(&p).or_else(|| p.is_absolute().then_some(p)) else {
+            continue;
+        };
+        let escaped = escape_seatbelt_path(&abs.to_string_lossy());
+        if abs.is_dir() {
+            out.push_str(&format!("(deny file-read* (subpath \"{escaped}\"))\n"));
+        } else {
+            out.push_str(&format!("(deny file-read* (literal \"{escaped}\"))\n"));
+        }
+    }
+    out
 }
 
 #[cfg(target_os = "linux")]

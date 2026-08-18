@@ -8,7 +8,9 @@ members = [
     "crates/hermes-store",
     "crates/hermes-reflect",
     "crates/hermes-cli",
-    "crates/hermes-gui", "crates/hermes-skills", "crates/hermes-memory", "crates/hermes-commitments", "crates/hermes-tools",
+    "crates/hermes-gui", "crates/hermes-skills", "crates/hermes-memory", "crates/hermes-commitments",
+    "crates/hermes-sources",
+    "crates/hermes-tools",
     "crates/hermes-turn",
     "crates/hermes-weixin",
     "crates/hermes-feishu",
@@ -71,6 +73,7 @@ hermes-store = { path = "crates/hermes-store" }
 hermes-skills = { path = "crates/hermes-skills" }
 hermes-memory = { path = "crates/hermes-memory" }
 hermes-commitments = { path = "crates/hermes-commitments" }
+hermes-sources = { path = "crates/hermes-sources" }
 hermes-tools = { path = "crates/hermes-tools" }
 hermes-reflect = { path = "crates/hermes-reflect" }
 hermes-turn = { path = "crates/hermes-turn" }

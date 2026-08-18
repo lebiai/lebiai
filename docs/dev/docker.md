@@ -52,7 +52,7 @@ docker compose down            # 停掉并移除容器；数据卷不动
 想把数据放别处？设环境变量再起：
 
 ```bash
-HERMES_HOME=/srv/hermes-data docker compose up -d
+LEBI_HOME=/srv/lebi-data docker compose up -d
 ```
 
 ## 当成通用 CLI 用

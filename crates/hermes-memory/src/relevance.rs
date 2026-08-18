@@ -77,10 +77,8 @@ pub fn search_memories_scored<'a>(
 
 /// Prefer work episodes / standards when scores are close so Continuity hits.
 fn continuity_boost(m: &LoadedMemory) -> f64 {
-    let zone = m.frontmatter.zone.to_lowercase();
     let tags = &m.frontmatter.tags;
-    let is_episode = zone == "work"
-        || zone == "episode"
+    let is_episode = hermes_core::companion::zones::is_work(&m.frontmatter.zone)
         || tags.iter().any(|t| {
             let t = t.to_lowercase();
             t == "work-episode" || t == "episode"
@@ -89,8 +87,9 @@ fn continuity_boost(m: &LoadedMemory) -> f64 {
     if is_episode {
         return 1.4;
     }
-    let is_standard =
-        zone == "standards" || tags.iter().any(|t| t.eq_ignore_ascii_case("standard"));
+    let is_standard = hermes_core::companion::zones::normalize(&m.frontmatter.zone)
+        == hermes_core::companion::zones::STANDARDS
+        || tags.iter().any(|t| t.eq_ignore_ascii_case("standard"));
     if is_standard {
         return 1.15;
     }

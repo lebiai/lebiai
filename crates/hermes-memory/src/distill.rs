@@ -13,8 +13,9 @@
 
 use std::collections::HashMap;
 
+use hermes_core::companion::zones;
+
 use crate::memory::LoadedMemory;
-use crate::palace::ZONE_CORE;
 use crate::relevance::search_memories_scored;
 use crate::stats::MemoryEffectiveness;
 
@@ -30,9 +31,9 @@ pub const DEFAULT_THRESHOLD: f64 = 0.55;
 /// One cluster of near-duplicate memories plus the chosen survivor.
 ///
 /// `survivor_idx` / `superseded` index into the same `active` slice the
-/// caller passed to [`find_clusters`]. `protected` memories (`zone == "core"`
-/// or `pinned`) are never auto-merged — the cluster is still reported so the
-/// user can review it, but the caller must not apply it.
+/// caller passed to [`find_clusters`]. `protected` memories (preferences,
+/// including legacy `core`, or `pinned`) are never auto-merged — the cluster
+/// is still reported so the user can review it, but the caller must not apply it.
 #[derive(Debug, Clone)]
 pub struct Cluster {
     /// Indices into the input slice that form this cluster (>= 2 members).
@@ -41,7 +42,7 @@ pub struct Cluster {
     pub survivor_idx: usize,
     /// Highest pairwise similarity observed inside the cluster.
     pub max_score: f64,
-    /// `true` if any member is `zone == "core"` or `pinned`. Do not apply.
+    /// `true` if any member is preferences (incl. legacy `core`) or `pinned`.
     pub protected: bool,
 }
 
@@ -159,7 +160,7 @@ fn factor_of(m: &LoadedMemory, eff: Option<&HashMap<String, MemoryEffectiveness>
 }
 
 fn is_protected(m: &LoadedMemory) -> bool {
-    m.frontmatter.pinned || m.frontmatter.zone == ZONE_CORE
+    m.frontmatter.pinned || zones::is_preferences(&m.frontmatter.zone)
 }
 
 fn index_of(active: &[LoadedMemory], id: &str) -> Option<usize> {
@@ -287,13 +288,13 @@ mod tests {
             mem(
                 "m1",
                 "The user is a software architect who prefers vim",
-                ZONE_CORE,
+                "core",
                 false,
             ),
             mem(
                 "m2",
                 "The user is a software architect that prefers vim",
-                ZONE_CORE,
+                "preferences",
                 false,
             ),
         ];

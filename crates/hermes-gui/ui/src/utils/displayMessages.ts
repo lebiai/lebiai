@@ -47,6 +47,7 @@ export function isInternalInstructionText(text: string): boolean {
   const t = text.trim();
   return (
     t.startsWith("[lebi-AI Care]") ||
+    t.startsWith("[lebi-AI Materials]") ||
     t.startsWith("[Hermes Care]") ||
     t.startsWith("[Context:") ||
     t.startsWith("You've reached the tool-call budget")

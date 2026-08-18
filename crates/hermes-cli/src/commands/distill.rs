@@ -14,7 +14,7 @@
 //!                                        per accepted cluster synthesises a
 //!                                        merged body (the quality uplift)
 //!
-//! Protected memories (`zone == "core"` or `pinned`) are reported but never
+//! Protected memories (preferences / legacy `core`, or `pinned`) are reported but never
 //! applied automatically.
 
 use std::io::Write;

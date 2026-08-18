@@ -152,6 +152,57 @@ pub fn read_session(path: impl AsRef<Path>) -> Result<Session> {
     })
 }
 
+/// Sidebar listing: first Meta + whether a human user line exists. Does not
+/// load the full transcript.
+pub fn read_session_listing(path: impl AsRef<Path>) -> Result<(hermes_core::SessionMeta, bool)> {
+    let path = path.as_ref();
+    let file = File::open(path).map_err(|source| SessionError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let reader = BufReader::new(file);
+    let mut meta: Option<hermes_core::SessionMeta> = None;
+    let mut has_user = false;
+    for (idx, line) in reader.lines().enumerate() {
+        let line = line.map_err(|source| SessionError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if meta.is_none() {
+            match serde_json::from_str::<SessionEvent>(&line) {
+                Ok(SessionEvent::Meta(m)) => {
+                    meta = Some(m);
+                    continue;
+                }
+                Ok(_) => {}
+                Err(source) => {
+                    tracing::warn!(line = idx + 1, %source, "skipping malformed session line");
+                    continue;
+                }
+            }
+        }
+        if !has_user && line_looks_like_human_user(&line) {
+            has_user = !line.contains("[lebi-AI") && !line.contains("[Hermes ");
+        }
+        if meta.is_some() && has_user {
+            break;
+        }
+    }
+    let meta = meta.ok_or_else(|| SessionError::MissingMeta {
+        path: path.to_path_buf(),
+    })?;
+    Ok((meta, has_user))
+}
+
+fn line_looks_like_human_user(line: &str) -> bool {
+    (line.contains("\"role\":\"user\"") || line.contains("\"role\": \"user\""))
+        && !line.contains("tool_result")
+        && !line.contains("ToolResult")
+}
+
 /// List session JSONL files under `dir` (including `wechat/` etc.), newest first.
 pub fn list_sessions(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
     let dir = dir.as_ref();
@@ -316,6 +367,9 @@ pub fn purge_empty_sessions(dir: impl AsRef<Path>) -> Result<usize> {
     let paths = list_sessions(dir)?;
     let mut removed = 0usize;
     for path in paths {
+        if crate::channel_of_session_path(&path).is_some() {
+            continue;
+        }
         let session = match read_session(&path) {
             Ok(s) => s,
             Err(_) => continue,
@@ -367,6 +421,9 @@ mod tests {
         assert!(l2.contains("\"message\""));
         assert!(l2.contains("hello"));
         assert!(lines.next().is_none());
+        let (head, has_user) = read_session_listing(&path).unwrap();
+        assert_eq!(head.id, meta.id);
+        assert!(has_user);
     }
 
     #[test]

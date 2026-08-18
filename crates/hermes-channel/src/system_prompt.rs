@@ -59,7 +59,7 @@ pub fn compose_system_prompt(
              ## Output\n\
              Be concise. After a complete deliverable, optional Care: at most 1–3 \
              concrete improvements; skip on 定稿 / final-only.\n",
-            protocol = companion::companion_protocol(),
+            protocol = companion::companion_protocol_readonly(),
         ),
         PromptKind::Dialogue => format!(
             "{protocol}\n\
@@ -145,7 +145,13 @@ mod tests {
     fn im_does_not_promise_durable_writes() {
         let p = compose_system_prompt(None, Path::new("/tmp/ws"), PromptKind::Im).unwrap();
         assert!(p.contains("cannot write files"));
-        assert!(!p.contains("Use memory_save"));
+        let lower = p.to_ascii_lowercase();
+        assert!(
+            !lower.contains("memory_save"),
+            "IM must not teach memory_save; got a mention in:\n{p}"
+        );
+        assert!(!lower.contains("commitment_save"));
+        assert!(!p.contains("## Evolve"));
         assert!(!p.contains("`open` tool"));
     }
 

@@ -18,6 +18,7 @@ pub mod style;
 pub mod tool_host;
 pub mod workspace_hygiene;
 
+pub use companion::MaterialHit;
 pub use error::{Error, Result};
 pub use license::{
     apply_token, can_use_main, dev_has_license_backup, dev_restore_license_backup,

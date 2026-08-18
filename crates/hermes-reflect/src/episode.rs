@@ -21,7 +21,7 @@ const CARE_MARKERS: &[&str] = &["[lebi-AI Care]", "[Hermes Care]"];
 /// True when this candidate is tagged/shaped as a work episode (not quality).
 pub fn is_work_episode(c: &MemoryCandidate) -> bool {
     let zone = c.zone.trim().to_lowercase();
-    if zone == zones::WORK || zone == "episode" {
+    if zones::is_work(&zone) {
         return true;
     }
     if c.tags.iter().any(|t| {
@@ -117,6 +117,8 @@ pub fn normalize_candidate(c: &mut MemoryCandidate) {
 
     if c.zone.trim().is_empty() {
         c.zone = zones::GENERAL.to_string();
+    } else {
+        c.zone = zones::normalize(&c.zone).to_string();
     }
 }
 

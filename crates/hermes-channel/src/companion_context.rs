@@ -15,6 +15,8 @@ pub struct ContextSources<'a> {
     pub active: &'a [LoadedMemory],
     pub all_skills: &'a [LoadedSkill],
     pub open_work: &'a [Commitment],
+    /// Engine-retrieved file excerpts. Empty on IM / when nothing matched.
+    pub material_hits: &'a [hermes_core::MaterialHit],
     pub first_human_today: bool,
     pub workspace_root: &'a str,
     pub limits: ContextLimits,
@@ -29,7 +31,7 @@ impl<'a> ContextSources<'a> {
             companion::PRODUCT_NAME,
             self.workspace_root
         ));
-        buf.push_str(companion::companion_protocol());
+        buf.push_str(&companion::companion_protocol());
         buf.push('\n');
         buf.push_str(companion::gui_tools_clause());
         buf.push('\n');
@@ -41,6 +43,12 @@ impl<'a> ContextSources<'a> {
         buf.push('\n');
 
         self.append_open_work(&mut buf, user_query);
+
+        if !self.material_hits.is_empty() {
+            buf.push_str(&hermes_core::companion::materials_hits_block(
+                self.material_hits,
+            ));
+        }
 
         if let Some(b) = self.base {
             buf.push_str(b);
@@ -92,8 +100,8 @@ impl<'a> ContextSources<'a> {
 If none truly match, do not pretend you remember.\n\n",
             );
             for m in relevant {
-                let zone = m.frontmatter.zone.as_str();
-                let episode = zone == "work"
+                let zone = companion::zones::normalize(&m.frontmatter.zone);
+                let episode = companion::zones::is_work(zone)
                     || m.frontmatter.tags.iter().any(|t| {
                         let t = t.to_lowercase();
                         t == "work-episode" || t == "episode"
@@ -243,6 +251,7 @@ mod tests {
             active: &[],
             all_skills: &[],
             open_work: &[],
+            material_hits: &[],
             first_human_today: false,
             workspace_root: "/tmp/ws",
             limits: ContextLimits::default(),
@@ -261,6 +270,7 @@ mod tests {
             active: &[],
             all_skills: &[],
             open_work: &[],
+            material_hits: &[],
             first_human_today: false,
             workspace_root: "/tmp/ws",
             limits: ContextLimits::default(),
@@ -282,6 +292,7 @@ mod tests {
             active: &[],
             all_skills: &[],
             open_work: &[],
+            material_hits: &[],
             first_human_today: false,
             workspace_root: "/tmp/ws",
             limits: ContextLimits::default(),
@@ -307,6 +318,7 @@ mod tests {
             active: std::slice::from_ref(&ep),
             all_skills: std::slice::from_ref(&sk),
             open_work: &[],
+            material_hits: &[],
             first_human_today: false,
             workspace_root: "/tmp/ws",
             limits: ContextLimits::default(),
@@ -332,6 +344,7 @@ mod tests {
             active: &[],
             all_skills: &[],
             open_work: std::slice::from_ref(&item),
+            material_hits: &[],
             first_human_today: false,
             workspace_root: "/tmp/ws",
             limits: ContextLimits::default(),
@@ -344,6 +357,36 @@ mod tests {
     }
 
     #[test]
+    fn materials_block_is_internal_and_cited() {
+        let hit = hermes_core::MaterialHit {
+            id: "src_x".into(),
+            title: "服务合同".into(),
+            excerpt: "第七条违约金百分之二十".into(),
+        };
+        let sources = ContextSources {
+            base: None,
+            pinned: &[],
+            active: &[],
+            all_skills: &[],
+            open_work: &[],
+            material_hits: std::slice::from_ref(&hit),
+            first_human_today: false,
+            workspace_root: "/tmp/ws",
+            limits: ContextLimits::default(),
+        };
+        let s = sources.build_turn_system("违约金怎么写");
+        assert!(s.contains("[lebi-AI Materials]"));
+        assert!(s.contains("服务合同"));
+        assert!(s.contains("百分之二十"));
+        let quiet = ContextSources {
+            material_hits: &[],
+            ..sources
+        };
+        let q = quiet.build_turn_system("你好");
+        assert!(!q.contains("百分之二十"), "{q}");
+    }
+
+    #[test]
     fn always_active_skill_body_is_inlined() {
         let mut active = skill("memory-palace", "ALWAYS_ACTIVE_BODY_MUST_APPEAR");
         active.frontmatter.always_active = true;
@@ -353,6 +396,7 @@ mod tests {
             active: &[],
             all_skills: std::slice::from_ref(&active),
             open_work: &[],
+            material_hits: &[],
             first_human_today: false,
             workspace_root: "/tmp/ws",
             limits: ContextLimits::default(),

@@ -121,7 +121,7 @@ pub(super) async fn handle_command(
                     MemSource::User,
                     Confidence::High,
                     vec![],
-                    "core".to_string(),
+                    hermes_core::companion::zones::PREFERENCES.to_string(),
                 );
                 fm.pinned = true;
                 match memory_store.put(MemScope::User, fm, text) {

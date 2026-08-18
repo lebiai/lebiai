@@ -1,5 +1,6 @@
 export type ChatStreamEvent =
   | { event: "textDelta"; data: { text: string } }
+  | { event: "textCorrected"; data: { text: string } }
   | { event: "thinkingDelta"; data: { text: string } }
   | { event: "toolUseStart"; data: { id: string; name: string } }
   | {
@@ -25,6 +26,7 @@ export type ChatStreamEvent =
     }
   | { event: "error"; data: { message: string } }
   | { event: "cancelled" }
+  | { event: "rememberQueued" }
   | { event: "done" };
 
 export interface PendingConfirm {

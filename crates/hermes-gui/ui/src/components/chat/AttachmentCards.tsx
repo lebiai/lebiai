@@ -9,6 +9,7 @@ type ChipProps = {
   status?: "pending" | "ready" | "error";
   onRemove?: () => void;
   removeLabel?: string;
+  errorLabel?: string;
   /**
    * composer — input chips
    * message — outside bubble (default chat UX)
@@ -23,6 +24,7 @@ export function AttachmentChip({
   status = "ready",
   onRemove,
   removeLabel = "Remove",
+  errorLabel,
   variant = "composer",
 }: ChipProps) {
   const isMessage = variant === "message";
@@ -48,6 +50,11 @@ export function AttachmentChip({
         className={`shrink-0 ${isMessage ? "text-app-primary dark:text-blue-400" : "opacity-80"}`}
       />
       <span className="truncate font-medium leading-snug">{originalName}</span>
+      {status === "error" && (
+        <span className="shrink-0 text-red-600 dark:text-red-400">
+          {errorLabel || "—"}
+        </span>
+      )}
       {typeof chars === "number" && status === "ready" && (
         <span className="shrink-0 tabular-nums text-app-fg-tertiary">
           {chars.toLocaleString()}

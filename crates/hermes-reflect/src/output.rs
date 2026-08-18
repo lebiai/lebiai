@@ -53,7 +53,7 @@ pub struct MemoryCandidate {
     #[serde(default)]
     pub tags: Vec<String>,
     /// Memory palace / filesystem zone. Prefer:
-    /// `preferences` | `standards` | `work` | `general` | `core`.
+    /// `preferences` | `standards` | `work` | `general`.
     #[serde(default = "default_memory_zone")]
     pub zone: String,
     pub scope: Scope,

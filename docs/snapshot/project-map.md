@@ -2,7 +2,7 @@
 
 | 字段 | 内容 |
 |------|------|
-| **版本** | 2026-08-17 |
+| **版本** | 2026-08-18 |
 | **种类** | **H** 快照（非权威） |
 | **定位** | 架构与入口对照。冲突以 [`../../PRODUCT_PRINCIPLES.md`](../../PRODUCT_PRINCIPLES.md) **P0 v0.11** 为准。过期条目不得覆盖 P0。 |
 | **关联** | [`../../AGENTS.md`](../../AGENTS.md)、[`../spec/zaiban-work.md`](../spec/zaiban-work.md) v2.0、[`../records/20260817-product-debt.md`](../records/20260817-product-debt.md) |
@@ -34,7 +34,7 @@
 
 ---
 
-## 3. 代码地图（17 crate）
+## 3. 代码地图（18 crate + Flutter）
 
 | 路径 | 职责 |
 |------|------|
@@ -48,6 +48,7 @@
 | `crates/hermes-memory` | 记忆宫殿、supersedes、distill |
 | `crates/hermes-reflect` | full + micro reflection、收件箱 |
 | `crates/hermes-commitments` | **在办** `commitments.json` + **回顾** `reviews/` |
+| `crates/hermes-sources` | 工作材料 Word/PDF（桌面） |
 | `crates/hermes-cli` | 引擎装配 / 调试入口 |
 | `crates/hermes-gui` | 桌面 GUI（Tauri 2，`ui/dist`）· 用户默认路径 |
 | `crates/hermes-server` | Flutter 后端：GUI **子集** + WS（非 1:1） |
@@ -75,14 +76,14 @@
 | 全量工具 | chat 白名单 / run 全量 | ✅ | ✅ 同引擎 | ❌ 只读白名单 |
 | 工具确认 UI | ✅ | ✅ | ✅ | ❌ fail-closed |
 | 记忆 / 技能管理 | CLI | ✅ | REST 部分；Flutter 有面板 | ❌ |
-| 反思 / 收件箱 | ✅ | ✅ | REST 已有；**Flutter 未接线** | ❌ |
-| **在办 / 回顾** | 工具层有 | ✅ 抽屉（v2 工程收口） | ❌ 未接线 | ❌ 规格禁止 |
+| 反思 / 收件箱 | ✅ | ✅ | REST + Flutter Evolve 已调 | ❌ |
+| **在办 / 回顾** | 工具层有 | ✅ 抽屉（v2 工程收口） | ❌ 规格禁止（server 不写） | ❌ 规格禁止 |
 | 微信连接 | CLI | ✅ 扫码只看 | ❌ | 本体 |
 | Onboarding | `init` | ✅ | ❌ | — |
 | 授权门禁 | — | ✅ 试用 3 天 | 无独立 UI | — |
 | 发送方 allowlist | — | — | — | ✅ 强制 |
 
-在办 **仅桌面 GUI** 是已拍板（规格 §1.15），不是漏做。Flutter Evolve 路由空着：REST 在，客户端未调。
+在办 **仅桌面 GUI** 是已拍板（规格 §1.15），不是漏做。Flutter Evolve 已调 inbox。授权只锁桌面。
 
 ---
 
@@ -105,7 +106,7 @@
 | **ZAIBAN-EYE** | 在办 v2 用户走查 | 记下要日子、过了换期、改删不用悬停、回顾不见 py |
 | **AUG14-EYE** | 8/14 工程项目视 | 不代签。清单在 records 索引 |
 | **REFLECT-HAND** | 会话结束蒸馏真机 | 实现已久，手测仍开放 |
-| **FLUTTER-EVOLVE** | 手机收件箱接线 | REST 在，Flutter 未调；非默认交付 |
+| **LICENSE-SCOPE** | 授权只锁 GUI | 已拍。CLI / server / IM 不验签 |
 | **MOBILE-E2E** | 语音 / 推送真机 | 需 APNs/FCM |
 | **CLOUD-SYNC** | 多设备同步 | 本期不做 |
 

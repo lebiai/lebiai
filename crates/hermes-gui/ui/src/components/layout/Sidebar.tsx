@@ -26,7 +26,7 @@ import {
   groupSessionsByDay,
   type SessionGroupId,
 } from "../../utils/sessionTime";
-import { LicenseSidebarHint } from "../license/LicenseBattery";
+import { LicenseSidebarHint } from "../license/LicenseSidebarHint";
 
 /** Dialogue first; Continuity/Evolve in one place; settings last. */
 const primaryNav: { panel: Panel; icon: typeof Brain; labelKey: TranslationKey }[] = [
@@ -38,6 +38,7 @@ const primaryNav: { panel: Panel; icon: typeof Brain; labelKey: TranslationKey }
 const groupLabelKey: Record<SessionGroupId, TranslationKey> = {
   today: "chat.groupToday",
   yesterday: "chat.groupYesterday",
+  wechat: "chat.groupWechat",
   earlier: "chat.groupEarlier",
 };
 
