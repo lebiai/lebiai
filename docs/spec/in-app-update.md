@@ -6,7 +6,7 @@
 | **日期** | 2026-08-18 |
 | **种类** | **D** 操作规格（非权威） |
 | **效力** | 只规定桌面 GUI 的版本检查与点击更新。冲突以 [`../../PRODUCT_PRINCIPLES.md`](../../PRODUCT_PRINCIPLES.md) **P0 v0.11** 为准。不得扩大产品定义。 |
-| **状态** | **实施中**（1.2.0 为带更新器的首包；点「更新」待再发一版。台账 [`../records/20260818-in-app-update.md`](../records/20260818-in-app-update.md)） |
+| **状态** | **实施中**（1.2.0 为带更新器的首包，1.3.0 起可从 1.2 点「更新」升级；真机点击验收待用户。台账 [`../records/20260818-in-app-update.md`](../records/20260818-in-app-update.md)） |
 | **关联** | [`settings-ia.md`](./settings-ia.md) · [`../guide/install.md`](../guide/install.md) · [`../releases/release-notes.md`](../releases/release-notes.md) |
 
 ---
