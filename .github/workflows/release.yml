@@ -7,6 +7,10 @@ name: Release Installers
 # Trigger: push a tag `v*` or run manually (Actions → Release Installers →
 # Run workflow). Artifacts are unsigned — codesigning/notarization is a
 # distribution follow-up, documented in docs/guide/install.md.
+#
+# Required Actions secrets for updater artifacts (see docs/dev/updater-signing.md):
+#   TAURI_SIGNING_PRIVATE_KEY
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
 on:
   workflow_dispatch:
@@ -14,7 +18,7 @@ on:
       tag:
         description: "Release tag to attach installers to"
         required: false
-        default: "v1.1.0"
+        default: "v1.2.0"
   push:
     tags: ["v*"]
 
@@ -43,13 +47,19 @@ jobs:
         run: cargo install tauri-cli --version '^2' --locked
 
       - name: Build DMG
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: scripts/build-dmg.sh
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
           name: lebi-ai-macos-dmg
-          path: target/release/bundle/dmg/*.dmg
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app.tar.gz
+            target/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: error
 
   windows-nsis:
@@ -75,13 +85,18 @@ jobs:
 
       - name: Build NSIS installer
         shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: .\scripts\build-exe.ps1
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: lebi-ai-windows-nsis
-          path: target/release/bundle/nsis/*-setup.exe
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*-setup.exe.sig
           if-no-files-found: error
 
   publish:
@@ -99,6 +114,10 @@ jobs:
         with:
           name: lebi-ai-windows-nsis
           path: dist
+      - name: Write latest.json
+        run: |
+          TAG="${{ github.event_name == 'push' && github.ref_name || inputs.tag }}"
+          scripts/write-latest-json.sh "$TAG" dist dist/latest.json
       # action-gh-release 的 update 路径不会补正文，overwrite 入参也已废弃（被忽略）。
       # 先删旧 Release 再全新创建，保证 body_path 每次注入最新发布说明。
       - name: Clear stale release

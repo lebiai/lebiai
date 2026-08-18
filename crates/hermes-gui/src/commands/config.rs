@@ -327,3 +327,10 @@ fn write_atomically_600(path: &PathBuf, bytes: &[u8]) -> Result<(), GuiError> {
     std::fs::rename(&tmp, path).map_err(|e| GuiError::Config(format!("rename into place: {e}")))?;
     Ok(())
 }
+
+/// `true` for `cargo run` / `scripts/run-gui.sh` debug binaries.
+/// Installed release packages are `false` and may apply updates.
+#[tauri::command]
+pub fn app_debug_build() -> bool {
+    cfg!(debug_assertions)
+}

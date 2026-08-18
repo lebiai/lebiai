@@ -32,6 +32,9 @@ import {
   useSettingsNavStore,
   type SettingsTab,
 } from "../../store/settingsNavStore";
+import { StatusRow } from "./StatusRow";
+import { VersionStatusRow } from "./VersionStatusRow";
+import { useAppUpdate } from "./useAppUpdate";
 
 interface ConfigView {
   defaultProvider: string;
@@ -156,6 +159,7 @@ export function SettingsPanel() {
   const openTo = useSettingsNavStore((s) => s.openTo);
 
   const licenseStatus = useLicenseStore((s) => s.status);
+  const appUpdate = useAppUpdate(tab === "overview");
 
   /**
    * Deep-link: openTo("more","license") once → expand accordion only.
@@ -607,6 +611,12 @@ export function SettingsPanel() {
                   </button>
                 }
               />
+
+              <VersionStatusRow
+                phase={appUpdate.phase}
+                onCheck={() => void appUpdate.inspect()}
+                onApply={() => void appUpdate.apply()}
+              />
             </section>
 
             <section className={`${ui.card} divide-y divide-app-border dark:divide-slate-800`}>
@@ -1040,40 +1050,6 @@ export function SettingsPanel() {
 }
 
 /* ── shared bits ───────────────────────────────────────────────── */
-
-function StatusRow({
-  tone,
-  title,
-  subtitle,
-  action,
-}: {
-  tone: "ok" | "warn" | "danger" | "neutral";
-  title: string;
-  subtitle?: string;
-  action?: ReactNode;
-}) {
-  const bar =
-    tone === "ok"
-      ? "border-l-emerald-500"
-      : tone === "warn"
-        ? "border-l-amber-500"
-        : tone === "danger"
-          ? "border-l-red-500"
-          : "border-l-app-border dark:border-l-slate-600";
-  return (
-    <div
-      className={`flex items-center gap-3 pl-3 border-l-2 ${bar} py-1 min-w-0`}
-    >
-      <div className="min-w-0 flex-1">
-        <p className="text-sm text-app-fg dark:text-slate-100 truncate">{title}</p>
-        {subtitle && (
-          <p className="text-[11px] text-app-fg-tertiary truncate">{subtitle}</p>
-        )}
-      </div>
-      {action && <div className="shrink-0">{action}</div>}
-    </div>
-  );
-}
 
 function QuickLink({ label, onClick }: { label: string; onClick: () => void }) {
   return (

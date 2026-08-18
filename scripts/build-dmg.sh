@@ -53,22 +53,37 @@ if [ ! -x "$GUI_DIR/resources/markitdown-sidecar/markitdown" ]; then
   exit 1
 fi
 
-echo "==> Building DMG (this can take several minutes on first run)"
+# Updater artifacts need the signing key (not Apple codesign).
+# shellcheck disable=SC1091
+source "$ROOT/scripts/load-updater-key.sh"
+
+echo "==> Building DMG + updater archive (this can take several minutes on first run)"
 cd "$GUI_DIR"
 if [ -n "${TAURI_TARGET:-}" ]; then
-  cargo tauri build --bundles dmg --target "$TAURI_TARGET"
-  DMG_DIR="$ROOT/target/$TAURI_TARGET/release/bundle/dmg"
+  cargo tauri build --bundles app,dmg --target "$TAURI_TARGET"
+  BUNDLE_ROOT="$ROOT/target/$TAURI_TARGET/release/bundle"
 else
-  cargo tauri build --bundles dmg
-  DMG_DIR="$ROOT/target/release/bundle/dmg"
+  cargo tauri build --bundles app,dmg
+  BUNDLE_ROOT="$ROOT/target/release/bundle"
 fi
 
+DMG_DIR="$BUNDLE_ROOT/dmg"
+MACOS_DIR="$BUNDLE_ROOT/macos"
 DMG="$(ls -1t "$DMG_DIR"/*.dmg 2>/dev/null | head -n 1 || true)"
 if [ -z "$DMG" ]; then
   echo "No .dmg produced at $DMG_DIR — check tauri output above." >&2
   exit 1
 fi
 
+TGZ="$(ls -1t "$MACOS_DIR"/*.app.tar.gz 2>/dev/null | head -n 1 || true)"
+SIG="$(ls -1t "$MACOS_DIR"/*.app.tar.gz.sig 2>/dev/null | head -n 1 || true)"
+if [ -z "$TGZ" ] || [ -z "$SIG" ]; then
+  echo "error: updater artifacts missing under $MACOS_DIR (need .app.tar.gz and .sig)." >&2
+  echo "Confirm TAURI_SIGNING_PRIVATE_KEY is set and createUpdaterArtifacts is true." >&2
+  exit 1
+fi
+
 echo
 echo "Built: $DMG"
 echo "Size:  $(du -h "$DMG" | cut -f1)"
+echo "Updater: $TGZ"

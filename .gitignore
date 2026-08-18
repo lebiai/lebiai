@@ -24,3 +24,7 @@ crates/hermes-gui/resources/markitdown-sidecar/markitdown.cmd
 # License signing seed lives only on the issuer machine — never publish.
 scripts/issue-license.py
 scripts/license-issuer.html
+
+# Updater signing private key / password — never publish.
+*.key
+*.key.pass

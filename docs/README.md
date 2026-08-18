@@ -24,7 +24,7 @@
 
 | 路径 | 内容 |
 |------|------|
-| [`releases/release-notes.md`](./releases/release-notes.md) | 1.0 用户向发布说明 |
+| [`releases/release-notes.md`](./releases/release-notes.md) | 1.2 用户向发布说明 |
 
 ## D · 操作规格 · `spec/`
 
@@ -33,6 +33,7 @@
 | [`spec/work-companion-solution.md`](./spec/work-companion-solution.md) | 工作搭子体验规格（展开 P0） |
 | [`spec/license-ux.md`](./spec/license-ux.md) | 授权 / 试用 / 续期交互 |
 | [`spec/settings-ia.md`](./spec/settings-ia.md) | 设置页信息架构 |
+| [`spec/in-app-update.md`](./spec/in-app-update.md) | 桌面应用内点击更新（实施中 · U3 未做） |
 | [`spec/gui-ritual-motion.md`](./spec/gui-ritual-motion.md) | GUI 仪式感 / 动效 |
 | [`spec/zaiban-work.md`](./spec/zaiban-work.md) | **在办+回顾统一规格 v2.0**（已拍板；目视仍开放） |
 | [`spec/zaiban.md`](./spec/zaiban.md) | 在办 v1（被 v2 草案覆盖） |
@@ -43,6 +44,7 @@
 | 路径 | 内容 |
 |------|------|
 | [`dev/gui-run.md`](./dev/gui-run.md) | 打开桌面 GUI |
+| [`dev/updater-signing.md`](./dev/updater-signing.md) | 应用内更新的发版签名 |
 | [`dev/REMOTE_ACCESS.md`](./dev/REMOTE_ACCESS.md) | server 远程访问 |
 | [`dev/docker.md`](./dev/docker.md) | Docker（非默认路径） |
 | [`dev/license-test.md`](./dev/license-test.md) | 授权怎么测、怎么发码 |

@@ -24,6 +24,8 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::chat::send_message,
@@ -60,6 +62,7 @@ fn main() {
             commands::config::get_config,
             commands::config::update_config,
             commands::config::open_api_key_guide,
+            commands::config::app_debug_build,
             commands::data_dir::data_dir_get,
             commands::data_dir::data_dir_migrate,
             commands::data_dir::data_dir_pick,

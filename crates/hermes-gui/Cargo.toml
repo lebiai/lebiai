@@ -40,6 +40,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tauri-plugin-dialog = "2.7.2"
 serde_yaml = { workspace = true }
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [dev-dependencies]
 

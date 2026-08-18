@@ -54,7 +54,25 @@ Write-Host "==> Preparing markitdown-sidecar"
 & (Join-Path $Root "scripts\prepare-markitdown-bundle.ps1")
 if ($LASTEXITCODE -ne 0) { Write-Error "prepare-markitdown-bundle.ps1 failed" }
 
-# 4. NSIS installer (bundles the sidecar via tauri.windows.conf.json resources)
+# 4. Updater signing key (not Authenticode). CI injects the env vars.
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+  $keyFile = if ($env:TAURI_SIGNING_PRIVATE_KEY_PATH) {
+    $env:TAURI_SIGNING_PRIVATE_KEY_PATH
+  } else {
+    Join-Path $env:USERPROFILE ".tauri\lebi-ai.key"
+  }
+  if (Test-Path $keyFile) {
+    $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -LiteralPath $keyFile -Raw
+    $passFile = "$keyFile.pass"
+    if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -and (Test-Path $passFile)) {
+      $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content -LiteralPath $passFile -Raw).Trim()
+    }
+  } else {
+    Write-Error "updater signing key missing. Set TAURI_SIGNING_PRIVATE_KEY or put the key at $keyFile (see docs/dev/updater-signing.md)."
+  }
+}
+
+# 5. NSIS installer (bundles the sidecar via tauri.windows.conf.json resources)
 Write-Host "==> Building NSIS installer (first run can take several minutes)"
 Push-Location $GuiDir
 cargo tauri build --bundles nsis
@@ -66,7 +84,12 @@ $Setup = Get-ChildItem -Path $NsisDir -Filter "*-setup.exe" -ErrorAction Silentl
 if (-not $Setup) {
   Write-Error "No NSIS installer produced at $NsisDir — check tauri output above."
 }
+$SetupSig = Get-Item -LiteralPath ($Setup.FullName + ".sig") -ErrorAction SilentlyContinue
+if (-not $SetupSig) {
+  Write-Error "updater signature missing next to $($Setup.FullName). Confirm TAURI_SIGNING_PRIVATE_KEY and createUpdaterArtifacts."
+}
 
 Write-Host ""
 Write-Host "Built: $($Setup.FullName)"
 Write-Host ("Size:  {0:N1} MB" -f ($Setup.Length / 1MB))
+Write-Host "Updater sig: $($SetupSig.FullName)"
