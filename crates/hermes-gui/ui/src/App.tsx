@@ -3,11 +3,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { Sidebar } from "./components/layout/Sidebar";
 import { ChatView } from "./components/chat/ChatView";
-import { MemoryPanel } from "./components/memory/MemoryPanel";
-import { SkillPanel } from "./components/skills/SkillPanel";
-import { McpPanel } from "./components/mcp/McpPanel";
+import { KnowPanel } from "./components/know/KnowPanel";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
-import { ReflectPanel } from "./components/reflect/ReflectPanel";
 import { SessionEndModal } from "./components/reflect/SessionEndModal";
 
 import { ToastHost } from "./components/common/ToastHost";
@@ -27,6 +24,11 @@ import {
 import { applyTheme } from "./utils/theme";
 import { isOnboardingDone } from "./utils/onboarding";
 import { toast } from "./utils/toast";
+import { useLicenseStore } from "./store/licenseStore";
+import { bindZaibanListener, useZaibanStore } from "./store/zaibanStore";
+import { useWorkDrawerStore } from "./store/workDrawerStore";
+import { LicenseLockScreen } from "./components/license/LicenseLockScreen";
+import { LicenseNudgeModal } from "./components/license/LicenseNudgeModal";
 
 export default function App() {
   const fetchSessions = useChatStore((s) => s.fetchSessions);
@@ -34,6 +36,7 @@ export default function App() {
   const setLanguage = useUiStore((s) => s.setLanguage);
   const setTheme = useUiStore((s) => s.setTheme);
   const setHasApiKey = useUiStore((s) => s.setHasApiKey);
+  const refreshLicense = useLicenseStore((s) => s.refresh);
   const [showOnboarding, setShowOnboarding] = useState(() => !isOnboardingDone());
   const onboardingRequestId = useUiStore((s) => s.onboardingRequestId);
 
@@ -45,7 +48,17 @@ export default function App() {
 
   useEffect(() => {
     applyTheme(useUiStore.getState().theme);
-    fetchSessions();
+    void (async () => {
+      await fetchSessions();
+      const chat = useChatStore.getState();
+      if (!chat.activeSessionId) {
+        await chat.newSession();
+      }
+    })();
+    bindZaibanListener();
+    void useZaibanStore.getState().refresh();
+    void useWorkDrawerStore.getState().refreshPrefs();
+    void refreshLicense();
     invoke<{
       uiLanguage: string;
       uiTheme: string;
@@ -62,7 +75,19 @@ export default function App() {
         setTheme("system");
         setHasApiKey(false);
       });
-  }, [fetchSessions, setLanguage, setTheme, setHasApiKey]);
+  }, [fetchSessions, setLanguage, setTheme, setHasApiKey, refreshLicense]);
+
+  // Re-check license when returning to the app (cross-day nudge / expiry).
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        void refreshLicense();
+        void useWorkDrawerStore.getState().refreshPrefs();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [refreshLicense]);
 
   // Single frontend source for the display name: read the onboarding seed
   // once at boot into uiStore; onboarding/settings writes sync it live.
@@ -171,14 +196,8 @@ export default function App() {
 
   const renderPanel = () => {
     switch (activePanel) {
-      case "memory":
-        return <MemoryPanel />;
-      case "skills":
-        return <SkillPanel />;
-      case "mcp":
-        return <McpPanel />;
-      case "reflect":
-        return <ReflectPanel />;
+      case "know":
+        return <KnowPanel />;
       case "settings":
         return <SettingsPanel />;
       default:
@@ -203,8 +222,19 @@ export default function App() {
       <RitualSealHost />
       <ToastHost />
       {showOnboarding && (
-        <OnboardingRitual onDone={() => setShowOnboarding(false)} />
+        <OnboardingRitual
+          onDone={() => {
+            setShowOnboarding(false);
+            const chat = useChatStore.getState();
+            if (!chat.activeSessionId) {
+              void chat.newSession();
+            }
+          }}
+        />
       )}
+      {/* License lock above onboarding so expired install cannot skip via onboarding */}
+      <LicenseNudgeModal />
+      <LicenseLockScreen />
     </div>
   );
 }

@@ -45,6 +45,21 @@ function CodeBlock({ children, className }: { children: ReactNode; className?: s
   );
 }
 
+function safeHref(href: string | undefined): string | undefined {
+  if (!href) return undefined;
+  const t = href.trim();
+  const lower = t.toLowerCase();
+  if (
+    lower.startsWith("http://") ||
+    lower.startsWith("https://") ||
+    lower.startsWith("mailto:")
+  ) {
+    return t;
+  }
+  // Block javascript:, data:, file:, etc.
+  return undefined;
+}
+
 /** Markdown renderer with copyable fenced code blocks. */
 export function MarkdownContent({ content }: { content: string }) {
   return (
@@ -57,14 +72,42 @@ export function MarkdownContent({ content }: { content: string }) {
             return <>{children}</>;
           },
           code({ className, children, ...props }) {
-            const isBlock = Boolean(className) || String(children).includes("\n");
-            if (isBlock) {
+            // Only fenced blocks with an explicit language get the copy chrome.
+            // Multi-line plain text / process-ish dumps should not look like code tools.
+            const hasLang = Boolean(className && /language-/.test(className));
+            if (hasLang) {
               return <CodeBlock className={className}>{children}</CodeBlock>;
+            }
+            const text = String(children);
+            if (text.includes("\n")) {
+              return (
+                <pre className="my-2 p-3 overflow-x-auto text-xs leading-relaxed rounded-lg border border-app-border dark:border-slate-700 bg-app-muted/40 dark:bg-slate-900/50">
+                  <code className={className} {...props}>
+                    {children}
+                  </code>
+                </pre>
+              );
             }
             return (
               <code className={className} {...props}>
                 {children}
               </code>
+            );
+          },
+          a({ href, children, ...props }) {
+            const safe = safeHref(href);
+            if (!safe) {
+              return <span {...props}>{children}</span>;
+            }
+            return (
+              <a
+                href={safe}
+                target="_blank"
+                rel="noopener noreferrer"
+                {...props}
+              >
+                {children}
+              </a>
             );
           },
         }}

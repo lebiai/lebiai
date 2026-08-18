@@ -71,12 +71,6 @@ pub fn check_document_converter(app: AppHandle) -> ConverterStatus {
     check_converter(&converter_cfg(&app))
 }
 
-/// Alias kept so older front-end probes still work.
-#[tauri::command]
-pub fn check_markitdown(app: AppHandle) -> ConverterStatus {
-    check_document_converter(app)
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportDocumentRequest {

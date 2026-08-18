@@ -12,6 +12,9 @@ export function coalesceMessagesForDisplay(messages: MessageData[]): DisplayMess
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
+    if (msg.role === "user" && isInternalInstructionOnly(msg)) {
+      continue;
+    }
     if (msg.role === "user" && isToolResultOnly(msg)) {
       const results = msg.content.filter((b) => b.type === "toolResult");
       const prev = out[out.length - 1];
@@ -36,7 +39,90 @@ export function coalesceMessagesForDisplay(messages: MessageData[]): DisplayMess
     });
   }
 
+  return mergeAssistantWorkSpans(out);
+}
+
+/** Engine nudges that were wrongly saved as user text — never show them. */
+export function isInternalInstructionText(text: string): boolean {
+  const t = text.trim();
+  return (
+    t.startsWith("[lebi-AI Care]") ||
+    t.startsWith("[Hermes Care]") ||
+    t.startsWith("[Context:") ||
+    t.startsWith("You've reached the tool-call budget")
+  );
+}
+
+function isInternalInstructionOnly(msg: MessageData): boolean {
+  if (msg.role !== "user") return false;
+  let saw = false;
+  for (const b of msg.content) {
+    if (b.type === "text") {
+      if (!b.text.trim()) continue;
+      if (isInternalInstructionText(b.text)) {
+        saw = true;
+        continue;
+      }
+      return false;
+    }
+    if (b.type === "toolResult" || b.type === "toolUse") return false;
+  }
+  return saw;
+}
+
+/**
+ * One user ask → one process fold + one answer.
+ * Mid-loop assistant chatter (retry narration) is dropped; tools stay.
+ */
+function mergeAssistantWorkSpans(rows: DisplayMessage[]): DisplayMessage[] {
+  const merged: DisplayMessage[] = [];
+  for (const row of rows) {
+    const prev = merged[merged.length - 1];
+    if (row.role === "assistant" && prev && prev.role === "assistant") {
+      merged[merged.length - 1] = {
+        ...prev,
+        content: mergeAssistantContent(prev.content, row.content),
+        rawEnd: row.rawEnd,
+        durationMs: addOptional(prev.durationMs, row.durationMs),
+        inputTokens: addOptional(prev.inputTokens, row.inputTokens),
+        outputTokens: addOptional(prev.outputTokens, row.outputTokens),
+      };
+      continue;
+    }
+    merged.push(row);
+  }
+  return merged;
+}
+
+function mergeAssistantContent(
+  earlier: ContentBlock[],
+  later: ContentBlock[]
+): ContentBlock[] {
+  const tools: ContentBlock[] = [];
+  const thinking: string[] = [];
+  let lastText = "";
+  for (const b of [...earlier, ...later]) {
+    if (b.type === "toolUse" || b.type === "toolResult") {
+      tools.push(b);
+    } else if (b.type === "thinking" && b.thinking.trim()) {
+      thinking.push(b.thinking);
+    } else if (b.type === "text" && b.text.trim()) {
+      lastText = b.text;
+    }
+  }
+  const out: ContentBlock[] = [...tools];
+  if (thinking.length > 0) {
+    out.push({ type: "thinking", thinking: thinking.join("\n") });
+  }
+  if (lastText) {
+    out.push({ type: "text", text: lastText });
+  }
   return out;
+}
+
+function addOptional(a?: number, b?: number): number | undefined {
+  if (a == null && b == null) return undefined;
+  return (a ?? 0) + (b ?? 0);
 }
 
 function isToolResultOnly(msg: MessageData): boolean {

@@ -19,7 +19,7 @@ use hermes_core::LlmProvider;
 /// Default cache TTL when no context is configured.
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 900;
 
-/// Which backend `web_search` uses.
+/// Which backend `web_search` uses first (failures cascade to free fallbacks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchBackend {
     /// Scrape Brave Search HTML (no API key required). Default.
@@ -29,6 +29,9 @@ pub enum SearchBackend {
     Tavily,
     /// Brave Search API (structured JSON; requires a subscription token).
     BraveApi,
+    /// Self-hosted or public [SearXNG](https://docs.searxng.org/) instance (JSON).
+    /// Free & open source; best long-term default for local-first installs.
+    Searxng,
 }
 
 impl SearchBackend {
@@ -37,6 +40,7 @@ impl SearchBackend {
         match s.trim().to_ascii_lowercase().as_str() {
             "tavily" => SearchBackend::Tavily,
             "brave_api" | "braveapi" | "brave" => SearchBackend::BraveApi,
+            "searxng" | "searx" => SearchBackend::Searxng,
             _ => SearchBackend::Scraper,
         }
     }
@@ -59,6 +63,9 @@ pub struct WebToolsContext {
     pub tavily_api_key: String,
     /// Brave Search API subscription token (empty → fall back to scraper).
     pub brave_api_key: String,
+    /// SearXNG base URL, e.g. `http://127.0.0.1:8080` or a trusted public instance.
+    /// Empty → SearXNG backend is skipped unless URL is set.
+    pub searxng_url: String,
     /// Cache TTL in seconds for fetch/search results.
     pub cache_ttl_secs: u64,
 }
@@ -77,6 +84,9 @@ impl WebToolsContext {
                 SearchBackend::Scraper
             }
             SearchBackend::BraveApi if self.brave_api_key.trim().is_empty() => {
+                SearchBackend::Scraper
+            }
+            SearchBackend::Searxng if self.searxng_url.trim().is_empty() => {
                 SearchBackend::Scraper
             }
             other => other,

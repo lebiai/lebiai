@@ -8,20 +8,21 @@ import type {
 export const ui = {
   panel: "bg-app-surface dark:bg-slate-900 text-app-fg dark:text-slate-100",
   page: "bg-app-bg dark:bg-slate-950",
+  /** Shell chrome: not document text — disable drag-select (inputs opt back in). */
   sidebar:
-    "bg-app-sidebar dark:bg-slate-900/95 border-r border-app-border dark:border-slate-800",
+    "bg-app-sidebar dark:bg-slate-900/95 border-r border-app-border dark:border-slate-800 select-none",
   card:
     "rounded-xl border border-app-border dark:border-slate-700/80 bg-app-surface dark:bg-slate-900 shadow-[var(--shadow-app-card)]",
   cardMuted:
     "rounded-xl border border-app-border dark:border-slate-700/80 bg-app-muted/60 dark:bg-slate-800/50",
   input:
-    "w-full rounded-xl border border-app-border dark:border-slate-600 bg-app-surface dark:bg-slate-800 px-3 py-2 text-sm text-app-fg dark:text-slate-100 placeholder:text-app-fg-tertiary focus:outline-none focus:ring-2 focus:ring-app-primary/40 focus:border-app-primary/60 transition-shadow duration-[var(--motion-fast)]",
+    "w-full rounded-xl border border-app-border dark:border-slate-600 bg-app-surface dark:bg-slate-800 px-3 py-2 text-sm text-app-fg dark:text-slate-100 placeholder:text-app-fg-tertiary focus:outline-none focus:ring-2 focus:ring-app-primary/40 focus:border-app-primary/60 transition-shadow duration-[var(--motion-fast)] select-text",
   header:
     "flex items-center justify-between gap-3 px-4 py-3 border-b border-app-border dark:border-slate-800 bg-app-surface/80 dark:bg-slate-900/80 backdrop-blur-sm shrink-0",
   /** Scroll body inside a full-height panel */
   body: "flex-1 min-h-0 overflow-y-auto",
   navItem:
-    "w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-[var(--motion-fast)]",
+    "w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-[var(--motion-fast)] select-none",
   navItemActive:
     "bg-app-primary-soft dark:bg-blue-950/50 text-app-primary dark:text-blue-300 font-medium",
   navItemIdle:
@@ -32,6 +33,9 @@ export const ui = {
     "hover:bg-app-muted dark:hover:bg-slate-800/60 text-app-fg dark:text-slate-200 transition-colors duration-[var(--motion-fast)]",
   sectionLabel:
     "text-[10px] font-semibold uppercase tracking-wider text-app-fg-tertiary",
+  /** One overlay language. Callers add z-index. */
+  overlay:
+    "fixed inset-0 flex items-center justify-center bg-black/45 backdrop-blur-[2px]",
 } as const;
 
 type BtnVariant = "primary" | "secondary" | "ghost" | "danger" | "accent";
@@ -118,44 +122,34 @@ export function EmptyState({
   );
 }
 
-/** Standard panel chrome: page + header + scroll body */
-export function PanelShell({
-  title,
-  subtitle,
-  actions,
-  children,
-  bodyClassName = "",
-}: {
-  title: string;
-  subtitle?: string;
-  actions?: ReactNode;
-  children: ReactNode;
-  bodyClassName?: string;
-}) {
-  return (
-    <div className={`flex-1 flex flex-col h-full min-w-0 ${ui.page}`}>
-      <header className={ui.header}>
-        <div className="min-w-0">
-          <h2 className="text-base font-semibold text-app-fg dark:text-slate-100 truncate">
-            {title}
-          </h2>
-          {subtitle && (
-            <p className="text-[11px] text-app-fg-tertiary mt-0.5 leading-snug">
-              {subtitle}
-            </p>
-          )}
-        </div>
-        {actions && (
-          <div className="flex items-center gap-2 shrink-0">{actions}</div>
-        )}
-      </header>
-      <div className={`${ui.body} ${bodyClassName}`}>{children}</div>
-    </div>
-  );
-}
-
 type InputProps = InputHTMLAttributes<HTMLInputElement>;
 
 export function TextInput({ className = "", ...rest }: InputProps) {
   return <input className={`${ui.input} ${className}`} {...rest} />;
+}
+
+export function Chip({
+  active,
+  onClick,
+  children,
+  className = "",
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`px-2.5 py-1 rounded-full text-[12px] transition-colors ${
+        active
+          ? "bg-app-primary-soft dark:bg-blue-950/50 text-app-primary dark:text-blue-300 font-medium"
+          : "bg-app-muted dark:bg-slate-800 text-app-fg-secondary hover:text-app-fg"
+      } ${className}`}
+    >
+      {children}
+    </button>
+  );
 }

@@ -1,4 +1,4 @@
-//! Reflection REST. 1:1 with `hermes-gui/src/commands/reflect.rs`.
+//! Reflection REST — GUI reflect 能力的 HTTP 子集（供 Flutter）。
 
 use std::sync::Arc;
 

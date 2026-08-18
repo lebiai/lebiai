@@ -136,14 +136,51 @@ async fn handle_send(
     attachments: Vec<Attachment>,
     ws_tx: mpsc::UnboundedSender<Message>,
 ) {
+    // Empty API key → refuse before any provider request (parity with GUI).
+    let (ui_lang, active_key) = {
+        let cfg = state.config.read().unwrap();
+        let key = cfg
+            .active_provider()
+            .map(|p| p.api_key.clone())
+            .unwrap_or_default();
+        (cfg.ui.language.clone(), key)
+    };
+    if active_key.trim().is_empty() {
+        let msg = hermes_llm::humanize_error_lang("no api key configured", &ui_lang);
+        let _ = ws_tx.send(Message::Text(
+            serde_json::to_string(&ChatStreamEvent::Error { message: msg })
+                .unwrap_or_default()
+                .into(),
+        ));
+        let _ = ws_tx.send(Message::Text(
+            serde_json::to_string(&ChatStreamEvent::Done)
+                .unwrap_or_default()
+                .into(),
+        ));
+        return;
+    }
+
     let provider = state.provider.read().unwrap().clone();
     let host = state.host.clone();
     let model = state.model();
     let max_tokens = state.max_tokens();
     let tools = state.tools.lock().await.clone();
     let skills = state.skills.lock().await.clone();
-    let pinned = state.pinned_memories.lock().await.clone();
-    let active = state.active_memories.lock().await.clone();
+    // Refresh memory cache from disk each turn (parity with GUI).
+    let (pinned, active) = {
+        let all = match state.memory_store.list_active() {
+            Ok(v) => v,
+            Err(_) => state.active_memories.lock().await.clone(),
+        };
+        let pinned: Vec<_> = all
+            .iter()
+            .filter(|m| m.frontmatter.pinned)
+            .cloned()
+            .collect();
+        *state.active_memories.lock().await = all.clone();
+        *state.pinned_memories.lock().await = pinned.clone();
+        (pinned, all)
+    };
     let workspace_root = state.workspace_root();
     let (limits, provider_name) = {
         let cfg = state.config.read().unwrap();
@@ -199,6 +236,8 @@ async fn handle_send(
             pinned: &pinned,
             active: &active,
             all_skills: &skills,
+            open_work: &[],
+            first_human_today: false,
             workspace_root: &workspace_root,
             limits,
         };
@@ -221,6 +260,7 @@ async fn handle_send(
                     }),
             )
             .collect(),
+            at: Some(chrono::Utc::now()),
         };
         active_session.session.messages.push(user_msg.clone());
         if let Ok(w) = active_session.ensure_writer() {
@@ -252,6 +292,11 @@ async fn handle_send(
             }
         }
 
+        // Repair incomplete tool pairs so resume after crash/cancel does not
+        // 400 on OpenAI-compatible providers.
+        let repaired =
+            hermes_core::sanitize_history_for_provider(&active_session.session.messages);
+        active_session.session.messages = repaired;
         (active_session.session.messages.clone(), turn_system)
     };
     // Drop the session guard before spawning the turn.
@@ -310,6 +355,7 @@ async fn handle_send(
         };
 
         let out_for_event = out.clone();
+        let ui_lang_ev = ui_lang.clone();
         let on_turn_event = move |event: TurnEvent| {
             let cs = match event {
                 TurnEvent::TextDelta(text) => ChatStreamEvent::TextDelta { text },
@@ -357,7 +403,7 @@ async fn handle_send(
                     output_tokens,
                 },
                 TurnEvent::Error(message) => ChatStreamEvent::Error {
-                    message: hermes_llm::humanize_error(&message),
+                    message: hermes_llm::humanize_error_lang(&message, &ui_lang_ev),
                 },
                 TurnEvent::Cancelled => ChatStreamEvent::Error {
                     // Server protocol reuses Error for stop; clients may map "cancelled".
@@ -377,11 +423,12 @@ async fn handle_send(
             }
         });
 
+        let history_for_turn = hermes_channel::inject_time_header(history.clone());
         let result = hermes_turn::run_turn(
             provider.as_ref(),
             host.as_ref(),
             &tools,
-            &history,
+            &history_for_turn,
             &config,
             Some(confirm_tx),
             on_turn_event,
@@ -426,9 +473,10 @@ async fn handle_send(
                 push_event(
                     &out,
                     ChatStreamEvent::Error {
-                        message: format!("{e:#}"),
+                        message: hermes_llm::humanize_error_lang(&format!("{e:#}"), &ui_lang),
                     },
                 );
+                push_event(&out, ChatStreamEvent::Done);
             }
         }
 

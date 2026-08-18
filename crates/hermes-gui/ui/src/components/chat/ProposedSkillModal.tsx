@@ -10,7 +10,7 @@ export function ProposedSkillModal() {
   if (!candidate) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">
+    <div className={`${ui.overlay} z-50 p-4`}>
       <div
         className="w-full max-w-xl max-h-[80vh] flex flex-col rounded-2xl bg-app-surface dark:bg-slate-900 shadow-2xl border border-app-border dark:border-slate-700"
         role="dialog"

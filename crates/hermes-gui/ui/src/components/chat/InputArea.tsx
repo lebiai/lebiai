@@ -40,7 +40,10 @@ export function InputArea() {
   const dragDepth = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const { isStreaming, sendMessage, cancelStream, activeSessionId } = useChatStore();
+  const { isStreaming, sendMessage, cancelStream, activeSessionId, sessions, activeReadOnly } =
+    useChatStore();
+  const readOnly =
+    activeReadOnly || !!sessions.find((s) => s.id === activeSessionId)?.readOnly;
   const t = useUiStore((s) => s.t);
   const composerPrefill = useUiStore((s) => s.composerPrefill);
   const clearComposerPrefill = useUiStore((s) => s.clearComposerPrefill);
@@ -52,6 +55,7 @@ export function InputArea() {
 
   useEffect(() => {
     setChips([]);
+    setInput("");
     setDragOver(false);
     dragDepth.current = 0;
   }, [activeSessionId]);
@@ -72,6 +76,7 @@ export function InputArea() {
 
   const canSend =
     !!activeSessionId &&
+    !readOnly &&
     !isStreaming &&
     !importing &&
     (input.trim().length > 0 || readyAttachments.length > 0);
@@ -90,6 +95,11 @@ export function InputArea() {
   }, [canSend, activeSessionId, input, readyAttachments, sendMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // IME composition (Chinese/Japanese/etc. or English candidate list):
+    // Enter selects a candidate — must NOT send the message.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) {
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
@@ -236,6 +246,16 @@ export function InputArea() {
       void importFiles(e.dataTransfer.files);
     }
   };
+
+  if (readOnly) {
+    return (
+      <div className="px-4 pb-4 pt-1">
+        <div className="max-w-3xl mx-auto text-center text-sm text-app-fg-secondary dark:text-slate-400 py-3 border-t border-app-border/70 dark:border-slate-800">
+          {t("chat.wechatReadOnly")}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

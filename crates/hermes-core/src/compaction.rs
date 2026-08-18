@@ -121,6 +121,7 @@ pub async fn compact_session(
     session.messages.push(Message {
         role: Role::User,
         content: vec![ContentBlock::Text { text: summary_text }],
+        at: None,
     });
     session.messages.extend(recent);
 

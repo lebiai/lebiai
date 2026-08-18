@@ -19,12 +19,15 @@ import {
 } from "../types";
 import { useUiStore } from "./uiStore";
 import { useNavStore } from "./navStore";
+import { useLicenseStore } from "./licenseStore";
+import { useSettingsNavStore } from "./settingsNavStore";
 import {
   deriveSessionTitle,
   isDefaultTitle,
   isTrivialUserText,
 } from "../utils/sessionTitle";
 import { toast } from "../utils/toast";
+import { useZaibanStore } from "./zaibanStore";
 import { playScroll, playSeal } from "../utils/ritual";
 import {
   notifyRemembered,
@@ -66,6 +69,9 @@ interface ChatState {
   sessionsLoading: boolean;
   sessionsError: string | null;
   activeSessionId: string | null;
+  /** From load_session — not only the sidebar list (which is capped). */
+  activeReadOnly: boolean;
+  activeChannel: string | null;
   messages: MessageData[];
   streamingText: string;
   streamingThinking: string;
@@ -147,13 +153,28 @@ type SetFn = (
 ) => void;
 type GetFn = () => ChatState;
 
-function bindStreamChannel(set: SetFn, get: GetFn): Channel<ChatStreamEvent> {
+function bindStreamChannel(
+  set: SetFn,
+  get: GetFn,
+  sessionId: string,
+): Channel<ChatStreamEvent> {
   turnStartedAt = Date.now();
   turnInputTokens = 0;
   turnOutputTokens = 0;
 
   const onEvent = new Channel<ChatStreamEvent>();
   onEvent.onmessage = (event) => {
+    // Drop late events from a previous turn after the user switched session.
+    if (get().activeSessionId !== sessionId) {
+      if (event.event === "done" || event.event === "error" || event.event === "cancelled") {
+        // Still clear streaming if this session is not active — avoid stuck flag
+        // only when we still believe we are streaming for this id.
+        if (get().isStreaming && get().activeSessionId === sessionId) {
+          set({ isStreaming: false, pendingConfirm: null });
+        }
+      }
+      return;
+    }
     switch (event.event) {
       case "textDelta":
         set((s) => ({ streamingText: s.streamingText + event.data.text }));
@@ -249,6 +270,9 @@ function bindStreamChannel(set: SetFn, get: GetFn): Channel<ChatStreamEvent> {
         }));
         toast.info(useUiStore.getState().t("toast.generationStopped"));
         break;
+      case "zaibanUpdated":
+        useZaibanStore.getState().applyStream(event.data);
+        break;
       case "skillCandidateProposed":
         set((s) => {
           if (s.proposedSkills.some((p) => p.name === event.data.name)) {
@@ -291,17 +315,28 @@ function bindStreamChannel(set: SetFn, get: GetFn): Channel<ChatStreamEvent> {
           inputTokens: turnInputTokens > 0 ? turnInputTokens : undefined,
           outputTokens: turnOutputTokens > 0 ? turnOutputTokens : undefined,
         };
-        set((s) => ({
-          messages: [...s.messages, assistantMsg],
-          isStreaming: false,
-          streamingText: "",
-          streamingThinking: "",
-          activeToolCalls: [],
-          pendingConfirm: null,
-        }));
+        set((s) => {
+          const now = new Date().toISOString();
+          const sessions = s.sessions.map((sess) =>
+            sess.id === s.activeSessionId
+              ? { ...sess, updatedAt: now }
+              : sess,
+          );
+          return {
+            messages: [...s.messages, assistantMsg],
+            isStreaming: false,
+            streamingText: "",
+            streamingThinking: "",
+            activeToolCalls: [],
+            pendingConfirm: null,
+            sessions,
+          };
+        });
         turnStartedAt = 0;
         turnInputTokens = 0;
         turnOutputTokens = 0;
+        // Refresh list so updatedAt/mtime grouping stays accurate.
+        void get().fetchSessions();
         break;
       }
     }
@@ -324,12 +359,18 @@ async function doNewSession(
     // Draft is active but NOT listed in history until it has user content.
     sessions: s.sessions.filter((x) => x.id !== session.id),
     activeSessionId: session.id,
+    activeReadOnly: false,
+    activeChannel: null,
     messages: [],
     streamingText: "",
     streamingThinking: "",
     activeToolCalls: [],
     inputTokens: 0,
     outputTokens: 0,
+    lastReflection: null,
+    microReview: null,
+    microReviewOpen: false,
+    proposedSkills: [],
     // Keep path for promoting into the list after first message.
     draftSession: session,
   }));
@@ -342,12 +383,18 @@ async function doLoadSession(
   const data = await invoke<LoadedSessionData>("load_session", { path });
   set({
     activeSessionId: data.id,
+    activeReadOnly: !!data.readOnly,
+    activeChannel: data.channel ?? null,
     messages: data.messages,
     inputTokens: data.inputTokens,
     outputTokens: data.outputTokens,
     streamingText: "",
     streamingThinking: "",
     activeToolCalls: [],
+    lastReflection: null,
+    microReview: null,
+    microReviewOpen: false,
+    proposedSkills: [],
   });
 }
 
@@ -357,6 +404,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sessionsLoading: false,
   sessionsError: null,
   activeSessionId: null,
+  activeReadOnly: false,
+  activeChannel: null,
   messages: [],
   streamingText: "",
   streamingThinking: "",
@@ -404,14 +453,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     if (!leavingId || !hadContent) return;
 
+    try {
+      const needed = await invoke<boolean>("session_needs_distill", {
+        sessionId: leavingId,
+      });
+      if (!needed) return;
+    } catch {
+      // If the check fails, still try a distill rather than go silent forever.
+    }
+
     const jobId = get().reflectJobId + 1;
     set({
       reflectJobId: jobId,
       sessionEnd: { status: "background", sessionId: leavingId },
     });
 
-    // 2) Background reflection; open review when candidates exist (backend seeds
-    //    a work episode on timeout/empty so we rarely die silent).
+    // 2) Background reflection; open review when candidates exist.
     void (async () => {
       const t = useUiStore.getState().t;
       try {
@@ -524,6 +581,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return {
           sessions: nextSessions,
           activeSessionId: null,
+          draftSession: null,
           messages: [],
           streamingText: "",
           streamingThinking: "",
@@ -536,6 +594,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     if (isActive) {
       await get().runAfterSessionEnd(remove);
+      if (!get().activeSessionId) {
+        await doNewSession(set, get);
+      }
     } else {
       await remove();
     }
@@ -545,11 +606,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { activeSessionId } = get();
     if (!activeSessionId || get().isStreaming) return;
 
+    // License / trial lock (docs/license-ux.md).
+    const lic = useLicenseStore.getState();
+    if (lic.status && !lic.status.canUseMain) {
+      toast.info(useUiStore.getState().t("license.toastLocked"));
+      void lic.refresh();
+      return;
+    }
+
     // No API key configured → guide to Settings instead of firing a doomed
     // request. The user's input is untouched (we return before appending).
     if (useUiStore.getState().hasApiKey === false) {
       toast.info(useUiStore.getState().t("toast.apiKeyNeededSend"));
       useNavStore.getState().setPanel("settings");
+      useSettingsNavStore.getState().openTo("dialogue");
       return;
     }
 
@@ -597,7 +667,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     });
 
-    const onEvent = bindStreamChannel(set, get);
+    const onEvent = bindStreamChannel(set, get, activeSessionId);
     try {
       await invoke("send_message", {
         sessionId: activeSessionId,
@@ -607,8 +677,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (err) {
       // A rejected invoke (e.g. missing API key via direct call, bad state)
       // must not leave the UI stuck in "generating".
-      set({ isStreaming: false });
-      toast.error(String(err));
+      set({ isStreaming: false, pendingConfirm: null });
+      const msg = String(err).replace(/^(config|session):\s*/i, "");
+      toast.error(msg);
     }
   },
 
@@ -638,15 +709,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingConfirm: null,
     });
 
-    const onEvent = bindStreamChannel(set, get);
+    const onEvent = bindStreamChannel(set, get, activeSessionId);
     try {
       await invoke("regenerate_turn", {
         sessionId: activeSessionId,
         onEvent,
       });
     } catch (e) {
-      set({ isStreaming: false });
-      toast.error(String(e));
+      set({ isStreaming: false, pendingConfirm: null });
+      toast.error(String(e).replace(/^(config|session):\s*/i, ""));
     }
   },
 

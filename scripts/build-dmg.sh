@@ -10,6 +10,9 @@
 #   TAURI_TARGET=universal-apple-darwin scripts/build-dmg.sh
 #
 # Notes:
+# - Never bundle scripts/license-issuer.html or scripts/issue-license.py
+#   (developer-only signing tools; they are not under frontendDist or
+#   bundle.resources and must stay out of the DMG).
 # - The resulting DMG is unsigned. macOS Gatekeeper will warn on first launch.
 #   For distribution, add codesigning + notarization separately.
 # - First run can take 5-10 minutes (Tauri pulls in webkit bindings, etc.).

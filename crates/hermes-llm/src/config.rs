@@ -245,9 +245,8 @@ fn default_ui_theme() -> String {
 /// Configuration for the `web_search` / `web_fetch` tools.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebConfig {
-    /// Search backend: `"scraper"` (Brave HTML, no key), `"tavily"`, or
-    /// `"brave_api"`. API backends fall back to the scraper when their key is
-    /// empty.
+    /// Preferred search backend: `scraper` | `tavily` | `brave_api` | `searxng`.
+    /// Failures cascade through free fallbacks (DuckDuckGo / Bing / curl).
     #[serde(default = "default_search_backend")]
     pub search_backend: String,
     /// Tavily Search API key (used when `search_backend = "tavily"`).
@@ -256,6 +255,9 @@ pub struct WebConfig {
     /// Brave Search API subscription token (used when `search_backend = "brave_api"`).
     #[serde(default)]
     pub brave_api_key: String,
+    /// SearXNG base URL (self-hosted recommended), e.g. `http://127.0.0.1:8080`.
+    #[serde(default)]
+    pub searxng_url: String,
     /// TTL (seconds) for the in-process fetch/search result cache.
     #[serde(default = "default_cache_ttl_secs")]
     pub cache_ttl_secs: u64,
@@ -272,6 +274,7 @@ impl Default for WebConfig {
             search_backend: default_search_backend(),
             tavily_api_key: String::new(),
             brave_api_key: String::new(),
+            searxng_url: String::new(),
             cache_ttl_secs: default_cache_ttl_secs(),
             extract_model: String::new(),
         }
@@ -470,9 +473,10 @@ theme = "system"
 persist_thinking = false
 
 [web]
-search_backend = "scraper"   # scraper | tavily | brave_api
+search_backend = "scraper"   # scraper | tavily | brave_api | searxng
 tavily_api_key = ""
 brave_api_key = ""
+searxng_url = ""             # e.g. http://127.0.0.1:8080  (self-hosted SearXNG)
 cache_ttl_secs = 900
 extract_model = ""           # empty = reuse main model; e.g. a Haiku / mini tier
 "#;

@@ -42,6 +42,22 @@ pub struct InboxItem {
     pub source: InboxSource,
     pub fingerprint: String,
     pub payload: InboxPayload,
+    /// Distill run that produced this item (not shown in the review UI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distill_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through_at: Option<String>,
+}
+
+/// Marks stamped on a full-session distill so a later run can replace this
+/// session's previous pending items.
+#[derive(Debug, Clone, Default)]
+pub struct EnqueueMark {
+    pub session_id: Option<String>,
+    pub distill_id: Option<String>,
+    pub through_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -92,16 +108,67 @@ fn fingerprint_skill(c: &SkillCandidate) -> String {
 /// Quality gate: only durable, non-noise, self-contained when episode.
 pub fn memory_passes_gate(c: &MemoryCandidate) -> bool {
     let fact = c.fact.trim();
-    if fact.is_empty() || fact.chars().count() < 8 {
+    if fact.is_empty() || fact.chars().count() < 12 {
         return false;
     }
     if is_internal_noise_text(fact) {
         return false;
     }
+    if is_low_value_memory(fact) || hermes_memory::is_worthless_for_living(fact) {
+        return false;
+    }
     if is_work_episode(c) && !episode_is_self_contained(fact) {
         return false;
     }
+    // Hollow template leftovers from offline fallbacks.
+    if fact.contains("以当时对话中的实际操作为准")
+        || fact.contains("若有文件路径以对话中写明的为准")
+        || fact.contains("写入记忆时以本条为准（不依赖原会话文件）")
+            && fact.contains("做法：")
+            && fact.matches("做法：").count() >= 1
+            && !fact.contains("outputs/")
+            && !fact.contains("偏好")
+    {
+        // Allow only if there is a concrete path or preference signal.
+        let has_path = fact.contains('/') || fact.contains(".md") || fact.contains(".docx");
+        let has_pref = fact.contains("偏好") || fact.contains("习惯") || fact.contains("标准");
+        if !has_path && !has_pref {
+            return false;
+        }
+    }
     true
+}
+
+/// Greeting / one-shot task paste / pure URL — not worth durable memory.
+fn is_low_value_memory(fact: &str) -> bool {
+    let f = fact.trim();
+    let lower = f.to_lowercase();
+    // Pure URL-ish
+    if f.starts_with("http://") || f.starts_with("https://") {
+        return true;
+    }
+    // Greeting-only episodes
+    let greet = ["你好", "您好", "hello", "hi", "嗨", "在吗", "开场寒暄"];
+    if greet.iter().any(|g| f == *g || lower == *g) {
+        return true;
+    }
+    if f.contains("开场寒暄") && f.contains("未进行任何实际工作") {
+        return true;
+    }
+    // Template with only a raw user dump and no real method
+    if f.contains("【工作情节】")
+        && f.contains("以当时对话中的实际操作为准")
+        && !f.contains("偏好")
+        && !f.contains("标准")
+        && !f.contains("outputs/")
+    {
+        // Title is just URL or very short task
+        let first = f.lines().next().unwrap_or("");
+        if first.contains("http") || first.chars().count() < 24 {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn skill_passes_gate(c: &SkillCandidate) -> bool {
@@ -110,28 +177,41 @@ pub fn skill_passes_gate(c: &SkillCandidate) -> bool {
 
 /// Enqueue from a reflection output. Returns how many **new** items were added.
 pub fn enqueue_from_reflection(output: &ReflectionOutput, source: InboxSource) -> Result<usize> {
+    enqueue_from_reflection_marked(output, source, EnqueueMark::default())
+}
+
+/// Same as [`enqueue_from_reflection`], then drop this session's older pending
+/// items so a full re-distill replaces rather than stacks.
+pub fn enqueue_from_reflection_marked(
+    output: &ReflectionOutput,
+    source: InboxSource,
+    mark: EnqueueMark,
+) -> Result<usize> {
     let mut file = load_file()?;
-    let existing: std::collections::HashSet<String> =
-        file.items.iter().map(|i| i.fingerprint.clone()).collect();
-    let mut added = 0usize;
+    let mut incoming: Vec<InboxItem> = Vec::new();
 
     for c in &output.memory_candidates {
         if !memory_passes_gate(c) {
             continue;
         }
         let fp = fingerprint_memory(c);
-        if existing.contains(&fp) || file.items.iter().any(|i| i.fingerprint == fp) {
+        if incoming.iter().any(|i| i.fingerprint == fp)
+            || file.items.iter().any(|i| {
+                i.fingerprint == fp && i.session_id.as_deref() != mark.session_id.as_deref()
+            })
+        {
             continue;
         }
-        let id = format!("pend_m_{fp}");
-        file.items.push(InboxItem {
-            id,
+        incoming.push(InboxItem {
+            id: format!("pend_m_{fp}"),
             created_at: Utc::now(),
             source,
             fingerprint: fp,
             payload: InboxPayload::Memory(c.clone()),
+            distill_id: mark.distill_id.clone(),
+            session_id: mark.session_id.clone(),
+            through_at: mark.through_at.clone(),
         });
-        added += 1;
     }
 
     for c in &output.skill_candidates {
@@ -139,39 +219,69 @@ pub fn enqueue_from_reflection(output: &ReflectionOutput, source: InboxSource) -
             continue;
         }
         let fp = fingerprint_skill(c);
-        if file.items.iter().any(|i| i.fingerprint == fp) {
+        if incoming.iter().any(|i| i.fingerprint == fp)
+            || file.items.iter().any(|i| {
+                i.fingerprint == fp && i.session_id.as_deref() != mark.session_id.as_deref()
+            })
+        {
             continue;
         }
-        let id = format!("pend_s_{fp}");
-        file.items.push(InboxItem {
-            id,
+        incoming.push(InboxItem {
+            id: format!("pend_s_{fp}"),
             created_at: Utc::now(),
             source,
             fingerprint: fp,
             payload: InboxPayload::Skill(c.clone()),
+            distill_id: mark.distill_id.clone(),
+            session_id: mark.session_id.clone(),
+            through_at: mark.through_at.clone(),
         });
-        added += 1;
     }
 
-    // Cap size: drop oldest first.
+    // Empty re-distill must not wipe unreviewed items from this session.
+    if incoming.is_empty() {
+        return Ok(0);
+    }
+
+    if let Some(sid) = mark.session_id.as_deref() {
+        file.items.retain(|i| i.session_id.as_deref() != Some(sid));
+    }
+    let added = incoming.len();
+    file.items.extend(incoming);
+
     if file.items.len() > MAX_ITEMS {
         let drop_n = file.items.len() - MAX_ITEMS;
         file.items.drain(0..drop_n);
     }
 
-    if added > 0 {
-        save_file(&file)?;
-    }
+    save_file(&file)?;
     Ok(added)
 }
 
+/// Drop items that no longer pass quality gates (garbage cleanup).
+pub fn prune_low_quality() -> Result<usize> {
+    let mut file = load_file()?;
+    let before = file.items.len();
+    file.items.retain(|item| match &item.payload {
+        InboxPayload::Memory(c) => memory_passes_gate(c),
+        InboxPayload::Skill(c) => skill_passes_gate(c),
+    });
+    let removed = before.saturating_sub(file.items.len());
+    if removed > 0 {
+        save_file(&file)?;
+    }
+    Ok(removed)
+}
+
 pub fn list() -> Result<Vec<InboxItem>> {
+    let _ = prune_low_quality();
     let mut items = load_file()?.items;
     items.sort_by_key(|b| std::cmp::Reverse(b.created_at));
     Ok(items)
 }
 
 pub fn count() -> Result<usize> {
+    let _ = prune_low_quality();
     Ok(load_file()?.items.len())
 }
 
@@ -225,6 +335,16 @@ mod tests {
             "【工作情节】季度复盘\n- 情境：用户要三段结构做复盘\n- 做法：先结论后证据再动作\n- 产出：outputs/retro.md\n- 用户反馈/修正：无\n- 可复用点：先结论后证据",
         );
         assert!(memory_passes_gate(&good));
+        let env = MemoryCandidate {
+            fact: "本机 Python 环境已安装 python-docx 1.2.0，可用来生成 .docx".into(),
+            tags: vec!["environment".into()],
+            zone: "general".into(),
+            scope: Scope::User,
+            confidence: Confidence::Medium,
+            rationale: "env".into(),
+            supersedes: vec![],
+        };
+        assert!(!memory_passes_gate(&env));
     }
 
     #[test]

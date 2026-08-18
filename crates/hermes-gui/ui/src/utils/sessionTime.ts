@@ -22,7 +22,11 @@ function dayBucket(iso: string, now = new Date()): SessionGroupId {
   return "earlier";
 }
 
-/** Group sessions preserving input order within each bucket. */
+function activityIso(s: SessionSummary): string {
+  return s.updatedAt && s.updatedAt.length > 0 ? s.updatedAt : s.createdAt;
+}
+
+/** Group sessions by last activity day (not create day). */
 export function groupSessionsByDay(sessions: SessionSummary[]): SessionGroup[] {
   const buckets: Record<SessionGroupId, SessionSummary[]> = {
     today: [],
@@ -30,7 +34,7 @@ export function groupSessionsByDay(sessions: SessionSummary[]): SessionGroup[] {
     earlier: [],
   };
   for (const s of sessions) {
-    buckets[dayBucket(s.createdAt)].push(s);
+    buckets[dayBucket(activityIso(s))].push(s);
   }
   const order: SessionGroupId[] = ["today", "yesterday", "earlier"];
   return order
@@ -53,4 +57,9 @@ export function formatSessionTime(iso: string, locale: string): string {
   } catch {
     return d.toISOString().slice(0, 10);
   }
+}
+
+/** Prefer updatedAt for list labels. */
+export function formatSessionActivity(s: SessionSummary, locale: string): string {
+  return formatSessionTime(activityIso(s), locale);
 }

@@ -37,10 +37,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final List<Attachment> _pending = [];
 
   static const _suggestions = [
-    '帮我解释一段报错',
-    '总结这个项目',
-    '写一个 Rust 函数',
-    '头脑风暴几个点子',
+    '帮我把下周要干的事排个优先级',
+    '帮我把最近的思路整理成一份方案大纲',
+    '帮我梳理这件事的利弊，给我 2～3 个选项',
+    '读一下这份资料，把重点讲给我',
   ];
 
   @override
@@ -324,7 +324,7 @@ class _EmptyState extends StatelessWidget {
             ),
             const SizedBox(height: HermesSpacing.sm),
             Text(
-              '你的本地 AI 工作伙伴。选个起点，或直接输入。',
+              '本地工作搭子。选个起点，或直接说这轮要推进什么。',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: scheme.onSurfaceVariant,
@@ -632,7 +632,7 @@ class _Composer extends StatelessWidget {
                         border: InputBorder.none,
                         enabledBorder: InputBorder.none,
                         focusedBorder: InputBorder.none,
-                        hintText: '发消息给 Hermes…',
+                        hintText: '这轮要推进什么…',
                         isDense: true,
                         contentPadding: const EdgeInsets.symmetric(vertical: 12),
                       ),

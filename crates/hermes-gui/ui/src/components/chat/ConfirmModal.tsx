@@ -1,34 +1,96 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ShieldAlert, Check, Ban, ShieldCheck } from "lucide-react";
 import { useChatStore } from "../../store/chatStore";
 import { useUiStore } from "../../store/uiStore";
+import { ui } from "../common/ui";
 
 export function ConfirmModal() {
   const pending = useChatStore((s) => s.pendingConfirm);
   const respondConfirm = useChatStore((s) => s.respondConfirm);
   const [reason, setReason] = useState("");
   const t = useUiStore((s) => s.t);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const denyRef = useRef<HTMLButtonElement>(null);
+
+  // Safety: default focus Deny (not Allow); Esc = deny; trap Tab inside dialog.
+  useEffect(() => {
+    if (!pending) return;
+    setReason("");
+    const id = window.setTimeout(() => denyRef.current?.focus(), 0);
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setReason("");
+        void respondConfirm("deny");
+        return;
+      }
+      if (e.key !== "Tab" || !panelRef.current) return;
+      const focusable = panelRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), textarea:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (active === first || !panelRef.current.contains(active)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else if (active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.clearTimeout(id);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [pending, respondConfirm]);
 
   if (!pending) return null;
 
   const handle = (action: "allow" | "alwaysAllow" | "deny") => {
     const r = action === "deny" ? reason : undefined;
     setReason("");
-    respondConfirm(action, r);
+    void respondConfirm(action, r);
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px]">
-      <div className="w-full max-w-md mx-4 rounded-2xl border border-app-border dark:border-slate-700 bg-app-surface dark:bg-slate-900 shadow-2xl">
+    <div
+      className={`${ui.overlay} z-50`}
+      role="presentation"
+      onMouseDown={(e) => {
+        // Backdrop click does not auto-allow; ignore (must choose explicitly).
+        if (e.target === e.currentTarget) e.preventDefault();
+      }}
+    >
+      <div
+        ref={panelRef}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+        aria-describedby="confirm-desc"
+        className="w-full max-w-md mx-4 rounded-2xl border border-app-border dark:border-slate-700 bg-app-surface dark:bg-slate-900 shadow-2xl"
+      >
         <div className="flex items-start gap-3 px-5 pt-5 pb-3">
           <div className="shrink-0 mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-500">
             <ShieldAlert size={18} />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold text-app-fg dark:text-slate-100">
+            <div
+              id="confirm-title"
+              className="text-sm font-semibold text-app-fg dark:text-slate-100"
+            >
               {t("confirm.title")}
             </div>
-            <div className="mt-0.5 text-xs text-app-fg-secondary dark:text-slate-400">
+            <div
+              id="confirm-desc"
+              className="mt-0.5 text-xs text-app-fg-secondary dark:text-slate-400"
+            >
               {t("confirm.description")}
             </div>
           </div>
@@ -36,7 +98,9 @@ export function ConfirmModal() {
 
         <div className="px-5 pb-3 space-y-2">
           <div className="flex items-center gap-2 text-xs">
-            <span className="text-app-fg-secondary dark:text-slate-400">{t("confirm.tool")}</span>
+            <span className="text-app-fg-secondary dark:text-slate-400">
+              {t("confirm.tool")}
+            </span>
             <span className="font-mono px-1.5 py-0.5 rounded-md bg-app-muted dark:bg-slate-800 text-app-fg dark:text-slate-200">
               {pending.toolName}
             </span>
@@ -67,6 +131,7 @@ export function ConfirmModal() {
 
         <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-app-border dark:border-slate-800 bg-app-muted/40 dark:bg-slate-950/40 rounded-b-2xl">
           <button
+            ref={denyRef}
             type="button"
             onClick={() => handle("deny")}
             className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl border border-app-border dark:border-slate-600 text-app-fg dark:text-slate-200 hover:bg-app-muted dark:hover:bg-slate-800"
@@ -86,7 +151,6 @@ export function ConfirmModal() {
           <button
             type="button"
             onClick={() => handle("allow")}
-            autoFocus
             className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl bg-app-primary text-white hover:bg-app-primary-hover"
           >
             <Check size={13} />

@@ -64,20 +64,19 @@ pub async fn run(
         });
     }
 
-    let result = match ctx {
-        Some(c) => match c.effective_backend() {
-            SearchBackend::Tavily => tavily_search(&a.query, a.limit, &c.tavily_api_key).await,
-            SearchBackend::BraveApi => brave_api_search(&a.query, a.limit, &c.brave_api_key).await,
-            SearchBackend::Scraper => scraper_search(&a.query, a.limit).await,
-        },
-        None => scraper_search(&a.query, a.limit).await,
-    };
+    // Cascade: preferred backend → other configured APIs → Brave HTML → DuckDuckGo HTML.
+    let result = search_with_fallback(ctx, &a.query, a.limit).await;
 
     match result {
-        Ok(content) if !content.trim().is_empty() => {
+        Ok((content, via)) if !content.trim().is_empty() => {
             web_cache::put(cache_key, content.clone());
+            let prefix = if via == "primary" {
+                String::new()
+            } else {
+                format!("(via {via} fallback)\n")
+            };
             Ok(ToolCallOutcome {
-                content,
+                content: format!("{prefix}{content}"),
                 is_error: false,
             })
         }
@@ -95,10 +94,310 @@ pub async fn run(
     }
 }
 
+async fn search_with_fallback(
+    ctx: Option<&WebToolsContext>,
+    query: &str,
+    limit: usize,
+) -> Result<(String, &'static str)> {
+    let mut errors: Vec<String> = Vec::new();
+
+    // 1) Preferred backend
+    if let Some(c) = ctx {
+        let primary = match c.effective_backend() {
+            SearchBackend::Tavily if !c.tavily_api_key.trim().is_empty() => {
+                tavily_search(query, limit, &c.tavily_api_key)
+                    .await
+                    .map(|s| (s, "tavily"))
+            }
+            SearchBackend::BraveApi if !c.brave_api_key.trim().is_empty() => {
+                brave_api_search(query, limit, &c.brave_api_key)
+                    .await
+                    .map(|s| (s, "brave_api"))
+            }
+            SearchBackend::Searxng if !c.searxng_url.trim().is_empty() => {
+                searxng_search(query, limit, &c.searxng_url)
+                    .await
+                    .map(|s| (s, "searxng"))
+            }
+            SearchBackend::Scraper | SearchBackend::Searxng | SearchBackend::Tavily
+            | SearchBackend::BraveApi => scraper_search(query, limit)
+                .await
+                .map(|s| (s, "brave_html")),
+        };
+        match primary {
+            Ok(pair) if !pair.0.trim().is_empty() => return Ok(pair),
+            Ok(_) => errors.push("primary returned empty".into()),
+            Err(e) => errors.push(format!("primary: {e}")),
+        }
+
+        // 2) Other configured APIs / SearXNG
+        if !c.searxng_url.trim().is_empty() {
+            match searxng_search(query, limit, &c.searxng_url).await {
+                Ok(s) if !s.trim().is_empty() => return Ok((s, "searxng")),
+                Ok(_) => {}
+                Err(e) => errors.push(format!("searxng: {e}")),
+            }
+        }
+        if !c.tavily_api_key.trim().is_empty() {
+            match tavily_search(query, limit, &c.tavily_api_key).await {
+                Ok(s) if !s.trim().is_empty() => return Ok((s, "tavily")),
+                Ok(_) => {}
+                Err(e) => errors.push(format!("tavily: {e}")),
+            }
+        }
+        if !c.brave_api_key.trim().is_empty() {
+            match brave_api_search(query, limit, &c.brave_api_key).await {
+                Ok(s) if !s.trim().is_empty() => return Ok((s, "brave_api")),
+                Ok(_) => {}
+                Err(e) => errors.push(format!("brave_api: {e}")),
+            }
+        }
+    } else {
+        match scraper_search(query, limit).await {
+            Ok(s) if !s.trim().is_empty() => return Ok((s, "brave_html")),
+            Ok(_) => errors.push("brave_html empty".into()),
+            Err(e) => errors.push(format!("brave_html: {e}")),
+        }
+    }
+
+    // 3) Free HTML scrapers (no key)
+    match duckduckgo_search(query, limit).await {
+        Ok(s) if !s.trim().is_empty() => return Ok((s, "duckduckgo")),
+        Ok(_) => errors.push("duckduckgo empty".into()),
+        Err(e) => errors.push(format!("duckduckgo: {e}")),
+    }
+    match bing_search(query, limit).await {
+        Ok(s) if !s.trim().is_empty() => return Ok((s, "bing_html")),
+        Ok(_) => errors.push("bing_html empty".into()),
+        Err(e) => errors.push(format!("bing_html: {e}")),
+    }
+
+    // 4) Last resort: system `curl` (when reqwest/TLS path is blocked or rate-limited)
+    match duckduckgo_search_curl(query, limit).await {
+        Ok(s) if !s.trim().is_empty() => return Ok((s, "curl+duckduckgo")),
+        Ok(_) => errors.push("curl+ddg empty".into()),
+        Err(e) => errors.push(format!("curl+ddg: {e}")),
+    }
+    match bing_search_curl(query, limit).await {
+        Ok(s) if !s.trim().is_empty() => return Ok((s, "curl+bing")),
+        Ok(_) => errors.push("curl+bing empty".into()),
+        Err(e) => errors.push(format!("curl+bing: {e}")),
+    }
+
+    Err(hermes_core::Error::ToolHost(format!(
+        "all search backends failed: {}",
+        errors.join(" | ")
+    )))
+}
+
 struct SearchResult {
     title: String,
     url: String,
     snippet: String,
+}
+
+/// A result is usable only if it is a real page a person could read.
+/// Stylesheets, scripts, fonts, trackers, and CDN asset URLs are not hits.
+fn is_usable_result(r: &SearchResult) -> bool {
+    if r.url.trim().is_empty() {
+        return false;
+    }
+    let url = r.url.to_ascii_lowercase();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return false;
+    }
+    if is_junk_url(&url) {
+        return false;
+    }
+    if r.title.trim().is_empty() && r.snippet.trim().is_empty() {
+        return false;
+    }
+    true
+}
+
+fn is_junk_url(url: &str) -> bool {
+    let path = url.split('?').next().unwrap_or(url);
+    const BAD_EXT: &[&str] = &[
+        ".css", ".js", ".mjs", ".cjs", ".map", ".woff", ".woff2", ".ttf", ".eot", ".ico", ".less",
+        ".scss", ".sass",
+    ];
+    if BAD_EXT.iter().any(|e| path.ends_with(e)) {
+        return true;
+    }
+    const BAD_NEEDLES: &[&str] = &[
+        "/css/",
+        "/static/css",
+        "/assets/css",
+        "/gtm.js",
+        "googletagmanager.com",
+        "google-analytics.com",
+        "doubleclick.net",
+        "scorecardresearch.com",
+        "pagead2.googlesyndication",
+        "r.bing.com/",
+        "www.bing.com/th?",
+        "www.bing.com/rp/",
+        "bing.com/ck/",
+        "bing.com/dict",
+        "hanyu.baidu.com",
+        "dict.youdao.com",
+        "zdic.net",
+        "dict.cn/",
+        "iciba.com",
+        "statics.teams.cdn",
+        "browser.events.data.microsoft.com",
+        "cdn.search.brave.com/",
+    ];
+    BAD_NEEDLES.iter().any(|n| url.contains(n))
+}
+
+fn keep_usable(results: Vec<SearchResult>) -> Vec<SearchResult> {
+    results.into_iter().filter(is_usable_result).collect()
+}
+
+fn keep_relevant(results: Vec<SearchResult>, query: &str) -> Vec<SearchResult> {
+    keep_on_topic(keep_usable(results), query)
+}
+
+fn format_usable(results: Vec<SearchResult>, query: &str) -> Result<String> {
+    let kept = keep_relevant(results, query);
+    if kept.is_empty() {
+        return Err(hermes_core::Error::ToolHost(
+            "no usable on-topic results".into(),
+        ));
+    }
+    Ok(format_results(&kept))
+}
+
+/// A hit must share the query's content, not just parse as a page.
+/// Bing/DDG HTML often returns dictionary stubs for one CJK character
+/// (「具」「人形」「银河系」) that would otherwise count as success.
+fn keep_on_topic(results: Vec<SearchResult>, query: &str) -> Vec<SearchResult> {
+    let tokens = query_content_tokens(query);
+    if tokens.is_empty() {
+        return results;
+    }
+    results
+        .into_iter()
+        .filter(|r| result_on_topic(r, &tokens))
+        .collect()
+}
+
+struct QueryTokens {
+    english: Vec<String>,
+    bigrams: Vec<String>,
+    trigrams: Vec<String>,
+}
+
+impl QueryTokens {
+    fn is_empty(&self) -> bool {
+        self.english.is_empty() && self.bigrams.is_empty() && self.trigrams.is_empty()
+    }
+}
+
+fn query_content_tokens(query: &str) -> QueryTokens {
+    const STOP_EN: &[&str] = &[
+        "the", "and", "for", "are", "but", "not", "you", "all", "can", "had", "her", "was",
+        "one", "our", "out", "has", "how", "what", "when", "who", "why", "from", "with",
+        "this", "that", "have", "been", "they", "will", "about", "which", "their",
+    ];
+    const STOP_CJK: &[&str] = &[
+        "最近", "有哪", "哪些", "什么", "怎么", "如何", "帮我", "查询", "一下", "今天",
+        "这个", "那个", "可以", "一个", "我们", "他们", "自己", "进行", "相关", "关于",
+        "以及", "或者", "如果", "因为", "所以", "但是", "还是", "不是", "没有", "就是",
+        "请问", "看看", "搜搜", "找找", "下今", "的事", "有没", "没有", "一些", "这些",
+        "那些", "是否", "需要", "帮查",
+    ];
+
+    let mut english = Vec::new();
+    for w in query.split(|c: char| !c.is_ascii_alphanumeric()) {
+        let w = w.to_ascii_lowercase();
+        if w.len() >= 3 && !STOP_EN.contains(&w.as_str()) {
+            english.push(w);
+        }
+    }
+
+    let mut bigrams = Vec::new();
+    let mut trigrams = Vec::new();
+    let mut run = String::new();
+    let flush = |run: &str, bigrams: &mut Vec<String>, trigrams: &mut Vec<String>| {
+        let chars: Vec<char> = run.chars().collect();
+        if chars.len() < 2 {
+            return;
+        }
+        for w in chars.windows(2) {
+            let s: String = w.iter().collect();
+            if !STOP_CJK.contains(&s.as_str()) {
+                bigrams.push(s);
+            }
+        }
+        for w in chars.windows(3) {
+            let s: String = w.iter().collect();
+            trigrams.push(s);
+        }
+    };
+    for c in query.chars() {
+        if is_cjk(c) {
+            run.push(c);
+        } else if !run.is_empty() {
+            flush(&run, &mut bigrams, &mut trigrams);
+            run.clear();
+        }
+    }
+    if !run.is_empty() {
+        flush(&run, &mut bigrams, &mut trigrams);
+    }
+
+    QueryTokens {
+        english,
+        bigrams,
+        trigrams,
+    }
+}
+
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0xF900..=0xFAFF)
+}
+
+fn result_on_topic(r: &SearchResult, tokens: &QueryTokens) -> bool {
+    if tokens.english.is_empty() && tokens.bigrams.is_empty() && tokens.trigrams.is_empty() {
+        return true;
+    }
+    let hay = format!("{} {} {}", r.title, r.snippet, r.url);
+    let hay_l = hay.to_ascii_lowercase();
+
+    let en = tokens
+        .english
+        .iter()
+        .filter(|t| hay_l.contains(t.as_str()))
+        .count();
+    let tri = tokens
+        .trigrams
+        .iter()
+        .filter(|t| hay.contains(t.as_str()))
+        .count();
+    let bi = tokens
+        .bigrams
+        .iter()
+        .filter(|t| hay.contains(t.as_str()))
+        .count();
+
+    if en > 0 || tri > 0 {
+        return true;
+    }
+    if bi >= 2 {
+        return true;
+    }
+    // Short query: a single leftover 2-gram ("具身") is the whole topic.
+    if tokens.trigrams.is_empty() && tokens.english.is_empty() && tokens.bigrams.len() <= 2 && bi >= 1
+    {
+        return true;
+    }
+    if tokens.bigrams.is_empty() && tokens.trigrams.is_empty() && tokens.english.len() == 1 && en >= 1
+    {
+        return true;
+    }
+    false
 }
 
 fn format_results(results: &[SearchResult]) -> String {
@@ -140,6 +439,270 @@ fn host_of(url: &str) -> String {
         .to_ascii_lowercase()
 }
 
+// ── Free backends & curl last-resort ────────────────────────────────────────
+
+const BROWSER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+    AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+
+/// Fetch URL body via reqwest; on hard failure callers may try [`curl_get`].
+async fn http_get_text(url: &str) -> Result<String> {
+    let resp = HTTP_CLIENT
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| hermes_core::Error::ToolHost(format!("http get: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(hermes_core::Error::ToolHost(format!(
+            "HTTP {}",
+            resp.status()
+        )));
+    }
+    resp.text()
+        .await
+        .map_err(|e| hermes_core::Error::ToolHost(format!("body: {e}")))
+}
+
+/// Last-resort GET using system `curl` (often less blocked than embedded TLS).
+async fn curl_get(url: &str) -> Result<String> {
+    let out = tokio::process::Command::new("curl")
+        .args([
+            "-sL",
+            "--max-time",
+            "25",
+            "-A",
+            BROWSER_UA,
+            "-H",
+            "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8",
+            url,
+        ])
+        .output()
+        .await
+        .map_err(|e| hermes_core::Error::ToolHost(format!("curl not available: {e}")))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(hermes_core::Error::ToolHost(format!(
+            "curl exit {:?}: {err}",
+            out.status.code()
+        )));
+    }
+    let body = String::from_utf8_lossy(&out.stdout).into_owned();
+    if body.trim().is_empty() {
+        return Err(hermes_core::Error::ToolHost("curl empty body".into()));
+    }
+    Ok(body)
+}
+
+/// SearXNG JSON API: `{base}/search?q=...&format=json`
+async fn searxng_search(query: &str, limit: usize, base_url: &str) -> Result<String> {
+    let base = base_url.trim().trim_end_matches('/');
+    let url = format!(
+        "{base}/search?q={}&format=json&categories=general",
+        urlencoding::encode(query)
+    );
+    let body = http_get_text(&url).await.map_err(|e| {
+        hermes_core::Error::ToolHost(format!("searxng: {e}"))
+    })?;
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| hermes_core::Error::ToolHost(format!("searxng json: {e}")))?;
+    let results = v
+        .get("results")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .take(limit)
+                .filter_map(|r| {
+                    let title = r.get("title")?.as_str()?.to_string();
+                    let url = r.get("url")?.as_str()?.to_string();
+                    let snippet = r
+                        .get("content")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some(SearchResult {
+                        title,
+                        url,
+                        snippet,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    format_usable(results, query).map_err(|_| hermes_core::Error::ToolHost("searxng: no results".into()))
+}
+
+async fn duckduckgo_search(query: &str, limit: usize) -> Result<String> {
+    let url = format!(
+        "https://html.duckduckgo.com/html/?q={}",
+        urlencoding::encode(query)
+    );
+    let body = http_get_text(&url).await?;
+    let results = parse_duckduckgo_html(&body, limit);
+    format_usable(results, query)
+        .map_err(|_| hermes_core::Error::ToolHost("duckduckgo: no results".into()))
+}
+
+async fn duckduckgo_search_curl(query: &str, limit: usize) -> Result<String> {
+    let url = format!(
+        "https://html.duckduckgo.com/html/?q={}",
+        urlencoding::encode(query)
+    );
+    let body = curl_get(&url).await?;
+    let results = parse_duckduckgo_html(&body, limit);
+    format_usable(results, query)
+        .map_err(|_| hermes_core::Error::ToolHost("curl+duckduckgo: no results".into()))
+}
+
+async fn bing_search(query: &str, limit: usize) -> Result<String> {
+    let url = format!(
+        "https://www.bing.com/search?q={}",
+        urlencoding::encode(query)
+    );
+    let body = http_get_text(&url).await?;
+    let results = parse_bing_html(&body, limit);
+    format_usable(results, query).map_err(|_| hermes_core::Error::ToolHost("bing: no results".into()))
+}
+
+async fn bing_search_curl(query: &str, limit: usize) -> Result<String> {
+    let url = format!(
+        "https://www.bing.com/search?q={}",
+        urlencoding::encode(query)
+    );
+    let body = curl_get(&url).await?;
+    let results = parse_bing_html(&body, limit);
+    format_usable(results, query)
+        .map_err(|_| hermes_core::Error::ToolHost("curl+bing: no results".into()))
+}
+
+fn parse_bing_html(html: &str, limit: usize) -> Vec<SearchResult> {
+    let mut out = Vec::new();
+    let mut rest = html;
+    while out.len() < limit {
+        let Some(idx) = rest.find("class=\"b_algo\"") else {
+            break;
+        };
+        let slice = &rest[idx..];
+        let href = slice
+            .find("href=\"")
+            .and_then(|i| {
+                let s = &slice[i + 6..];
+                s.find('"').map(|e| s[..e].to_string())
+            })
+            .unwrap_or_default();
+        let title = slice
+            .find("<h2")
+            .and_then(|i| {
+                let s = &slice[i..];
+                s.find('>')
+                    .and_then(|j| s[j + 1..].find("</h2>").map(|e| strip_tags(&s[j + 1..j + 1 + e])))
+            })
+            .unwrap_or_default();
+        let snippet = slice
+            .find("class=\"b_caption\"")
+            .or_else(|| slice.find("class=\"b_lineclamp"))
+            .and_then(|i| {
+                let s = &slice[i..];
+                s.find('>')
+                    .and_then(|j| s[j + 1..].find("</p>").map(|e| strip_tags(&s[j + 1..j + 1 + e])))
+            })
+            .unwrap_or_default();
+        if !title.is_empty() && href.starts_with("http") {
+            out.push(SearchResult {
+                title,
+                url: href,
+                snippet,
+            });
+        }
+        rest = &rest[idx + 12..];
+    }
+    out
+}
+
+/// Minimal DDG HTML result parser (result__a + result__snippet).
+fn parse_duckduckgo_html(html: &str, limit: usize) -> Vec<SearchResult> {
+    let mut out = Vec::new();
+    // Very small parser: look for result__a href + text
+    let mut rest = html;
+    while out.len() < limit {
+        let Some(a_idx) = rest.find("result__a") else {
+            break;
+        };
+        let slice = &rest[a_idx..];
+        let href = slice
+            .find("href=\"")
+            .and_then(|i| {
+                let s = &slice[i + 6..];
+                s.find('"').map(|e| s[..e].to_string())
+            })
+            .unwrap_or_default();
+        let title = slice
+            .find('>')
+            .and_then(|i| {
+                let s = &slice[i + 1..];
+                s.find("</a>").map(|e| strip_tags(&s[..e]))
+            })
+            .unwrap_or_default();
+        let snippet = slice
+            .find("result__snippet")
+            .and_then(|i| {
+                let s = &slice[i..];
+                s.find('>')
+                    .and_then(|j| s[j + 1..].find("</").map(|e| strip_tags(&s[j + 1..j + 1 + e])))
+            })
+            .unwrap_or_default();
+        let url = decode_ddg_redirect(&href);
+        if !title.is_empty() && !url.is_empty() {
+            out.push(SearchResult {
+                title,
+                url,
+                snippet,
+            });
+        }
+        rest = &rest[a_idx + 10..];
+    }
+    out
+}
+
+fn strip_tags(s: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    html_entities(&out).trim().to_string()
+}
+
+fn html_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+}
+
+fn decode_ddg_redirect(href: &str) -> String {
+    // //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com
+    if let Some(idx) = href.find("uddg=") {
+        let enc = &href[idx + 5..];
+        let enc = enc.split('&').next().unwrap_or(enc);
+        return urlencoding::decode(enc)
+            .map(|c| c.into_owned())
+            .unwrap_or_else(|_| enc.to_string());
+    }
+    if href.starts_with("http") {
+        return href.to_string();
+    }
+    if href.starts_with("//") {
+        return format!("https:{href}");
+    }
+    href.to_string()
+}
+
 // ── Scraper backend ─────────────────────────────────────────────────────────
 
 async fn scraper_search(query: &str, limit: usize) -> Result<String> {
@@ -172,8 +735,11 @@ async fn scraper_search(query: &str, limit: usize) -> Result<String> {
         .map_err(|e| hermes_core::Error::ToolHost(format!("web_search body: {e}")))?;
     // Parse more than `limit` then dedupe by domain down to `limit`.
     let parsed = parse_brave_html(&body, limit * 3);
-    let results: Vec<SearchResult> = dedupe_by_domain(parsed).into_iter().take(limit).collect();
-    Ok(format_results(&results))
+    let results: Vec<SearchResult> = keep_relevant(dedupe_by_domain(parsed), query)
+        .into_iter()
+        .take(limit)
+        .collect();
+    format_usable(results, query)
 }
 
 // ── Tavily backend ──────────────────────────────────────────────────────────
@@ -230,8 +796,12 @@ async fn tavily_search(query: &str, limit: usize, api_key: &str) -> Result<Strin
         })
         .collect();
     let mut out = String::new();
+    let results = keep_relevant(results, query);
     if let Some(ans) = parsed.answer.filter(|s| !s.trim().is_empty()) {
         out.push_str(&format!("Answer: {ans}\n\nSources:\n"));
+    }
+    if results.is_empty() && out.is_empty() {
+        return Err(hermes_core::Error::ToolHost("tavily: no usable results".into()));
     }
     out.push_str(&format_results(&results));
     Ok(out)
@@ -296,7 +866,7 @@ async fn brave_api_search(query: &str, limit: usize, api_key: &str) -> Result<St
             snippet: r.description,
         })
         .collect();
-    Ok(format_results(&results))
+    format_usable(results, query)
 }
 
 // ── Brave HTML parsing (scraper backend) ──────────────────────────────────────
@@ -448,5 +1018,91 @@ mod tests {
         assert_eq!(deduped.len(), 2);
         assert_eq!(deduped[0].url, "https://x.com/1");
         assert_eq!(deduped[1].url, "https://y.com/1");
+    }
+
+    #[test]
+    fn css_and_tracker_urls_are_not_usable() {
+        let junk = vec![
+            SearchResult {
+                title: "style".into(),
+                url: "https://r.bing.com/rp/abc.css".into(),
+                snippet: "body{}".into(),
+            },
+            SearchResult {
+                title: "script".into(),
+                url: "https://cdn.example.com/app.js".into(),
+                snippet: String::new(),
+            },
+            SearchResult {
+                title: String::new(),
+                url: "https://www.reuters.com/world/".into(),
+                snippet: String::new(),
+            },
+        ];
+        assert!(keep_usable(junk).is_empty());
+        assert!(is_junk_url("https://statics.teams.cdn.office.net/x.css"));
+        assert!(is_junk_url("https://www.bing.com/ck/a?!&&u=a1"));
+        assert!(is_junk_url("https://hanyu.baidu.com/zici/s?wd=x"));
+        assert!(!is_junk_url("https://www.reuters.com/world/china-2026-08-14/"));
+    }
+
+    #[test]
+    fn usable_news_url_kept() {
+        let kept = keep_usable(vec![SearchResult {
+            title: "今日热点".into(),
+            url: "https://www.thepaper.cn/newsDetail_forward_1".into(),
+            snippet: "一条新闻".into(),
+        }]);
+        assert_eq!(kept.len(), 1);
+    }
+
+    #[test]
+    fn dictionary_stub_is_off_topic() {
+        let query = "具身智能最近有哪些投资事件";
+        let junk = vec![
+            SearchResult {
+                title: "具 - 汉语词典".into(),
+                url: "https://hanyu.baidu.com/zici/s?wd=%E5%85%B7".into(),
+                snippet: "具：动词，具备。".into(),
+            },
+            SearchResult {
+                title: "人形 - 释义".into(),
+                url: "https://www.zdic.net/hans/%E4%BA%BA%E5%BD%A2".into(),
+                snippet: "像人的形状。".into(),
+            },
+            SearchResult {
+                title: "银河系".into(),
+                url: "https://baike.baidu.com/item/%E9%93%B6%E6%B2%B3%E7%B3%BB".into(),
+                snippet: "太阳系所在的星系。".into(),
+            },
+        ];
+        assert!(keep_on_topic(junk, query).is_empty());
+    }
+
+    #[test]
+    fn on_topic_news_kept() {
+        let query = "具身智能最近有哪些投资事件";
+        let kept = keep_on_topic(
+            vec![SearchResult {
+                title: "银河通用完成具身智能新一轮融资".into(),
+                url: "https://www.36kr.com/p/embodied-ai".into(),
+                snippet: "具身智能赛道本周再有投资事件。".into(),
+            }],
+            query,
+        );
+        assert_eq!(kept.len(), 1);
+    }
+
+    #[test]
+    fn short_cjk_query_still_matches() {
+        let kept = keep_on_topic(
+            vec![SearchResult {
+                title: "具身智能综述".into(),
+                url: "https://example.com/embodied".into(),
+                snippet: "综述。".into(),
+            }],
+            "具身",
+        );
+        assert_eq!(kept.len(), 1);
     }
 }

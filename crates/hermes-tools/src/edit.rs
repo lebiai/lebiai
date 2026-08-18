@@ -28,14 +28,13 @@ pub fn spec() -> ToolSpec {
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path relative to workspace"},
+                "path": {"type": "string", "description": "Workspace-relative path, or absolute/~/ under Desktop/Documents/Downloads"},
                 "old_string": {"type": "string", "description": "Exact text to find"},
                 "new_string": {"type": "string", "description": "Replacement text"},
                 "replace_all": {"type": "boolean", "description": "Replace all occurrences (default false)"}
             },
             "required": ["path", "old_string", "new_string"]
         }),
-        // Workspace-scoped edits are normal; path escape is hard-blocked in safety.
         requires_confirmation: false,
     }
 }
@@ -43,7 +42,7 @@ pub fn spec() -> ToolSpec {
 pub async fn run(workspace: &Path, args: serde_json::Value) -> Result<ToolCallOutcome> {
     let a: Args = serde_json::from_value(args)
         .map_err(|e| hermes_core::Error::ToolHost(format!("edit: bad args: {e}")))?;
-    let path = safety::resolve(workspace, &a.path)?;
+    let (path, _export) = safety::resolve_for_write(workspace, &a.path)?;
     let content = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| hermes_core::Error::ToolHost(format!("edit read {}: {e}", path.display())))?;

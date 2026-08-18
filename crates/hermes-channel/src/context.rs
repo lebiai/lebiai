@@ -133,8 +133,9 @@ Do not invent capabilities that aren't listed; do not paraphrase a skill from me
         // When compiled profile is active, it already contains all memories.
         // Only inject per-turn memories in the legacy (no palace, no profile) path.
         if self.palace_index.is_none() && self.compiled_profile.is_none() {
+            let living = hermes_memory::living_rules(self.active.to_vec());
             let relevant: Vec<&LoadedMemory> = hermes_memory::search_memories_effective(
-                self.active,
+                &living,
                 user_query,
                 self.limits.relevant_memory_cap + self.pinned.len(),
                 self.memory_effectiveness,

@@ -1,4 +1,4 @@
-//! MCP REST. 1:1 with `hermes-gui/src/commands/mcp.rs`.
+//! MCP REST (GUI MCP commands 的 Flutter 子集；非全量 1:1)。
 
 use std::sync::Arc;
 

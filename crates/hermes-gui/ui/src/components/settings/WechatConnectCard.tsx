@@ -184,7 +184,7 @@ export function WechatConnectCard() {
 
       {confirmLogout && (
         <div
-          className="fixed inset-0 z-[9000] flex items-center justify-center bg-black/45 backdrop-blur-[2px]"
+          className={`${ui.overlay} z-[9000]`}
           onClick={() => setConfirmLogout(false)}
           role="dialog"
           aria-modal="true"

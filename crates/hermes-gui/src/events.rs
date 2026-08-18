@@ -54,6 +54,19 @@ pub enum ChatStreamEvent {
         body: String,
         triggers: Vec<String>,
     },
+    /// Open-work tool finished — sidebar refresh + in-chat cue.
+    #[serde(rename_all = "camelCase")]
+    ZaibanUpdated {
+        action: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        existing_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        existing_title: Option<String>,
+    },
     Done,
 }
 

@@ -152,30 +152,55 @@ pub fn read_session(path: impl AsRef<Path>) -> Result<Session> {
     })
 }
 
-/// List session JSONL files under `dir`, newest first by modified time.
+/// List session JSONL files under `dir` (including `wechat/` etc.), newest first.
 pub fn list_sessions(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
     let dir = dir.as_ref();
     if !dir.exists() {
         return Ok(Vec::new());
     }
-    let mut entries: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
-        .map_err(|source| SessionError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("jsonl") {
-                return None;
-            }
-            let m = e.metadata().ok()?;
-            let t = m.modified().ok()?;
-            Some((t, p))
-        })
-        .collect();
+    let mut entries: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    collect_jsonl(dir, &mut entries)?;
     entries.sort_by_key(|b| std::cmp::Reverse(b.0));
     Ok(entries.into_iter().map(|(_, p)| p).collect())
+}
+
+fn collect_jsonl(
+    dir: &Path,
+    out: &mut Vec<(std::time::SystemTime, PathBuf)>,
+) -> Result<()> {
+    let rd = std::fs::read_dir(dir).map_err(|source| SessionError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    for e in rd.filter_map(|e| e.ok()) {
+        let p = e.path();
+        if p.is_dir() {
+            collect_jsonl(&p, out)?;
+            continue;
+        }
+        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if !name.ends_with(".jsonl") || name.ends_with(".tmp") {
+            continue;
+        }
+        let m = e.metadata().ok();
+        let t = m.and_then(|m| m.modified().ok());
+        if let Some(t) = t {
+            out.push((t, p));
+        }
+    }
+    Ok(())
+}
+
+/// `wechat` / `feishu` / `telegram` when `path` lives under that channel folder.
+pub fn channel_of_session_path(path: &Path) -> Option<&'static str> {
+    let root = hermes_core::data_path("sessions");
+    let rel = path.strip_prefix(&root).ok()?;
+    match rel.iter().next()?.to_str()? {
+        "wechat" => Some("wechat"),
+        "feishu" => Some("feishu"),
+        "telegram" => Some("telegram"),
+        _ => None,
+    }
 }
 
 /// Atomically rewrite a session file from an in-memory [`Session`].
@@ -491,5 +516,16 @@ mod tests {
         let listed = list_sessions(dir.path()).unwrap();
         assert_eq!(listed[0], b);
         assert_eq!(listed[1], a);
+    }
+
+    #[test]
+    fn list_sessions_includes_nested_wechat() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("wechat").join("uid");
+        std::fs::create_dir_all(&nested).unwrap();
+        let inner = nested.join("w.jsonl");
+        std::fs::write(&inner, b"").unwrap();
+        let listed = list_sessions(dir.path()).unwrap();
+        assert!(listed.iter().any(|p| p == &inner), "{listed:?}");
     }
 }

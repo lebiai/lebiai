@@ -1,10 +1,11 @@
 //! Bearer-token auth for the HTTP/WS API.
 //!
 //! One shared secret gates every `/api/v1/*` request. REST clients send
-//! `Authorization: Bearer <token>`; WebSocket clients send `?token=<token>`
-//! on the upgrade GET (browser/`web_socket_channel` WS handshakes can't set
-//! custom headers). [`auth_middleware`] accepts either form, so a single
-//! layer covers both transports.
+//! `Authorization: Bearer <token>`. WebSocket clients should prefer a
+//! **short-lived ticket** from `POST /api/v1/ws-ticket` then
+//! `?ticket=<hex>` (single-use, 60s) so proxy access logs do not retain the
+//! long-lived server token. Legacy `?token=<long-lived>` remains accepted for
+//! older clients.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -104,18 +105,37 @@ fn save_token(path: &PathBuf, token: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// axum middleware: reject any request that lacks a valid token (in either
-/// the `Authorization: Bearer` header or the `?token=` query).
+/// Shared secrets for the auth layer: long-lived bearer + ticket store.
+#[derive(Clone)]
+pub struct AuthState {
+    pub token: Arc<String>,
+    pub tickets: Arc<crate::tickets::TicketStore>,
+}
+
+/// axum middleware: accept Bearer, short-lived `?ticket=`, or legacy `?token=`.
 pub async fn auth_middleware(
-    State(expected): State<Arc<String>>,
+    State(auth): State<AuthState>,
     req: Request,
     next: Next,
 ) -> Response {
-    let provided = bearer_from_headers(req.headers()).or_else(|| token_from_query(req.uri()));
-    match provided.as_deref() {
-        Some(p) if ct_eq(p, expected.as_str()) => next.run(req).await,
-        _ => (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
+    if let Some(p) = bearer_from_headers(req.headers()) {
+        if ct_eq(&p, auth.token.as_str()) {
+            return next.run(req).await;
+        }
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
+    if let Some(ticket) = query_param(req.uri(), "ticket") {
+        if auth.tickets.consume(&ticket) {
+            return next.run(req).await;
+        }
+        return (StatusCode::UNAUTHORIZED, "invalid or expired ticket").into_response();
+    }
+    if let Some(p) = query_param(req.uri(), "token") {
+        if ct_eq(&p, auth.token.as_str()) {
+            return next.run(req).await;
+        }
+    }
+    (StatusCode::UNAUTHORIZED, "unauthorized").into_response()
 }
 
 /// Pull `Bearer <token>` from the Authorization header.
@@ -129,12 +149,12 @@ fn bearer_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
     }
 }
 
-/// Pull `token=` from the URL query string (no `url` crate dependency).
-fn token_from_query(uri: &Uri) -> Option<String> {
+/// Pull a named query parameter (no `url` crate dependency).
+fn query_param(uri: &Uri, key: &str) -> Option<String> {
     let q = uri.query()?;
     for pair in q.split('&') {
         let mut it = pair.splitn(2, '=');
-        if it.next()? == "token" {
+        if it.next()? == key {
             let v = it.next().unwrap_or("");
             let decoded = percent_decode(v);
             if decoded.is_empty() {
@@ -209,24 +229,30 @@ mod tests {
     #[test]
     fn query_token_parsed() {
         let uri: Uri = "ws://h/api/v1/chat?token=abc123".parse().unwrap();
-        assert_eq!(token_from_query(&uri).as_deref(), Some("abc123"));
+        assert_eq!(query_param(&uri, "token").as_deref(), Some("abc123"));
     }
 
     #[test]
     fn query_token_among_others() {
         let uri: Uri = "http://h/p?foo=1&token=secret&bar=2".parse().unwrap();
-        assert_eq!(token_from_query(&uri).as_deref(), Some("secret"));
+        assert_eq!(query_param(&uri, "token").as_deref(), Some("secret"));
     }
 
     #[test]
     fn query_token_percent_decoded() {
         let uri: Uri = "http://h/p?token=a%2Bb%3D".parse().unwrap();
-        assert_eq!(token_from_query(&uri).as_deref(), Some("a+b="));
+        assert_eq!(query_param(&uri, "token").as_deref(), Some("a+b="));
     }
 
     #[test]
     fn no_query_yields_none() {
         let uri: Uri = "http://h/p".parse().unwrap();
-        assert!(token_from_query(&uri).is_none());
+        assert!(query_param(&uri, "token").is_none());
+    }
+
+    #[test]
+    fn query_ticket_param() {
+        let uri: Uri = "ws://h/api/v1/chat?ticket=deadbeef".parse().unwrap();
+        assert_eq!(query_param(&uri, "ticket").as_deref(), Some("deadbeef"));
     }
 }

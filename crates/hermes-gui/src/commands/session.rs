@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use hermes_core::{
     derive_title_from_messages, session_has_user_text, Session, SessionMeta, DEFAULT_SESSION_TITLE,
 };
@@ -16,7 +14,14 @@ pub struct SessionSummary {
     pub id: String,
     pub title: String,
     pub created_at: String,
+    /// Last activity time (file mtime) — used for sidebar day grouping.
+    pub updated_at: String,
     pub path: String,
+    /// `wechat` / `feishu` / `telegram` when this file is a channel log.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// Channel logs are view-only in the desktop composer.
+    pub read_only: bool,
 }
 
 #[derive(Serialize)]
@@ -26,6 +31,9 @@ pub struct LoadedSessionData {
     pub messages: Vec<MessageData>,
     pub input_tokens: u32,
     pub output_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    pub read_only: bool,
 }
 
 #[derive(Serialize)]
@@ -82,7 +90,23 @@ fn content_block_to_data(block: &hermes_core::ContentBlock) -> ContentBlockData 
     }
 }
 
-fn display_title(session: &Session) -> String {
+fn wechat_title(created: &chrono::DateTime<chrono::Utc>) -> String {
+    use chrono::{Datelike, Timelike};
+    let local = created.with_timezone(&chrono::Local);
+    // Process restarts make several files a day — date alone collides.
+    format!(
+        "微信消息 · {}月{}日 {:02}:{:02}",
+        local.month(),
+        local.day(),
+        local.hour(),
+        local.minute()
+    )
+}
+
+fn display_title(session: &Session, channel: Option<&str>) -> String {
+    if channel == Some("wechat") {
+        return wechat_title(&session.meta.created_at);
+    }
     if let Some(t) = session
         .meta
         .title
@@ -96,16 +120,15 @@ fn display_title(session: &Session) -> String {
 }
 
 #[tauri::command]
-pub async fn list_sessions() -> Result<Vec<SessionSummary>, GuiError> {
+pub async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummary>, GuiError> {
     let sessions_dir = hermes_core::data_path("sessions");
     if !sessions_dir.exists() {
         return Ok(Vec::new());
     }
     let _ = hermes_store::purge_empty_sessions(&sessions_dir);
 
-    let mut paths =
+    let paths =
         hermes_store::list_sessions(&sessions_dir).map_err(|e| GuiError::Session(e.to_string()))?;
-    paths.truncate(50);
 
     let mut entries: Vec<SessionSummary> = Vec::new();
     for path in paths {
@@ -113,14 +136,32 @@ pub async fn list_sessions() -> Result<Vec<SessionSummary>, GuiError> {
             if !session_has_user_text(&session.messages) {
                 continue;
             }
+            let updated_at = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .map(|t| {
+                    let dt: chrono::DateTime<chrono::Utc> = t.into();
+                    dt.to_rfc3339()
+                })
+                .unwrap_or_else(|| session.meta.created_at.to_rfc3339());
+            let channel = hermes_store::channel_of_session_path(&path)
+                .map(|s| s.to_string());
+            let read_only = channel.is_some();
             entries.push(SessionSummary {
                 id: session.meta.id.clone(),
-                title: display_title(&session),
+                title: display_title(&session, channel.as_deref()),
                 created_at: session.meta.created_at.to_rfc3339(),
+                updated_at,
                 path: path.to_string_lossy().into_owned(),
+                channel,
+                read_only,
             });
         }
     }
+    // Newest first after empty drafts are gone — empty files must not eat the cap.
+    entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    entries.truncate(50);
+    crate::commands::reflect::spawn_idle_wechat_distill(&state);
     Ok(entries)
 }
 
@@ -145,7 +186,10 @@ pub async fn new_session(state: State<'_, AppState>) -> Result<SessionSummary, G
             id: id.clone(),
             title: DEFAULT_SESSION_TITLE.into(),
             created_at: active.session.meta.created_at.to_rfc3339(),
+            updated_at: active.session.meta.created_at.to_rfc3339(),
             path: active.path.to_string_lossy().into_owned(),
+            channel: None,
+            read_only: false,
         });
     }
 
@@ -178,8 +222,11 @@ pub async fn new_session(state: State<'_, AppState>) -> Result<SessionSummary, G
     Ok(SessionSummary {
         id,
         title: DEFAULT_SESSION_TITLE.into(),
-        created_at,
+        created_at: created_at.clone(),
+        updated_at: created_at,
         path: path.to_string_lossy().into_owned(),
+        channel: None,
+        read_only: false,
     })
 }
 
@@ -188,9 +235,12 @@ pub async fn load_session(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<LoadedSessionData, GuiError> {
-    let path = PathBuf::from(&path);
-    let session =
+    let path = hermes_store::ensure_session_path(&path)
+        .map_err(|e| GuiError::Session(e.to_string()))?;
+    let mut session =
         hermes_store::read_session(&path).map_err(|e| GuiError::Session(e.to_string()))?;
+    // Repair incomplete tool pairs so continue-chat does not 400 on providers.
+    session.messages = hermes_core::sanitize_history_for_provider(&session.messages);
     let id = session.meta.id.clone();
 
     let messages: Vec<MessageData> = session
@@ -205,19 +255,28 @@ pub async fn load_session(
         })
         .collect();
 
+    let channel = hermes_store::channel_of_session_path(&path).map(|s| s.to_string());
+    let read_only = channel.is_some();
+    let writer = if read_only {
+        None
+    } else {
+        Some(SessionWriter::open_append(&path).map_err(|e| GuiError::Session(e.to_string()))?)
+    };
+
     let data = LoadedSessionData {
         id: id.clone(),
         messages,
         input_tokens: session.total_input_tokens,
         output_tokens: session.total_output_tokens,
+        channel: channel.clone(),
+        read_only,
     };
 
-    let writer = SessionWriter::open_append(&path).map_err(|e| GuiError::Session(e.to_string()))?;
     state.sessions.lock().await.insert(
         id,
         ActiveSession {
             session,
-            writer: Some(writer),
+            writer,
             path,
         },
     );
@@ -226,10 +285,13 @@ pub async fn load_session(
 }
 
 #[tauri::command]
-pub async fn delete_session(path: String) -> Result<(), GuiError> {
-    let path = PathBuf::from(&path);
+pub async fn delete_session(state: State<'_, AppState>, path: String) -> Result<(), GuiError> {
+    let path = hermes_store::ensure_session_path(&path)
+        .map_err(|e| GuiError::Session(e.to_string()))?;
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| GuiError::Session(e.to_string()))?;
     }
+    let mut sessions = state.sessions.lock().await;
+    sessions.retain(|_, a| a.path != path);
     Ok(())
 }

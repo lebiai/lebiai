@@ -6,7 +6,7 @@ name: Release Installers
 #
 # Trigger: push a tag `v*` or run manually (Actions → Release Installers →
 # Run workflow). Artifacts are unsigned — codesigning/notarization is a
-# distribution follow-up, documented in docs/install.md.
+# distribution follow-up, documented in docs/guide/install.md.
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ on:
       tag:
         description: "Release tag to attach installers to"
         required: false
-        default: "v1.0.0"
+        default: "v1.1.0"
   push:
     tags: ["v*"]
 
@@ -109,7 +109,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
-          body_path: docs/release-notes.md
+          body_path: docs/releases/release-notes.md
           files: dist/**/*
           fail_on_unmatched_files: true
         env:

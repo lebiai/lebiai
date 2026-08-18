@@ -16,7 +16,9 @@ pub mod danger;
 pub mod permissions;
 
 pub use agent::{run_agent, AgentConfig, AgentEvent, AgentOutput};
-pub use danger::{assess_confirmation, bash_high_risk_reason, ConfirmAssessment};
+pub use danger::{
+    assess_confirmation, bash_high_risk_reason, is_absolute_risk, ConfirmAssessment,
+};
 pub use permissions::{Permission, PermissionChecker};
 
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 25;
@@ -62,6 +64,8 @@ pub fn tool_call_summary(name: &str, input: &serde_json::Value) -> String {
         "memory_search" => "query",
         "memory_save" => "content",
         "memory_delete" => "id",
+        "commitment_save" => "title",
+        "commitment_close" | "commitment_drop" => "id",
         _ => "",
     };
 
@@ -115,6 +119,7 @@ fn flush_with_cancel_pairing(messages: &mut Vec<Message>, mut tool_results: Vec<
         messages.push(Message {
             role: Role::User,
             content: tool_results,
+            at: None,
         });
     }
 }
@@ -263,6 +268,7 @@ where
                         messages.push(Message {
                             role: Role::Assistant,
                             content,
+                            at: None,
                         });
                     }
                     on_event(TurnEvent::Cancelled);
@@ -325,6 +331,7 @@ where
         let assistant_msg = Message {
             role: Role::Assistant,
             content: resp.content.clone(),
+            at: None,
         };
         messages.push(assistant_msg);
 
@@ -363,6 +370,7 @@ where
                 messages.push(Message {
                     role: Role::User,
                     content: tool_results,
+                    at: None,
                 });
             }
             hit_round_cap = false;
@@ -390,6 +398,7 @@ where
                 messages.push(Message {
                     role: Role::User,
                     content: tool_results,
+                    at: None,
                 });
                 continue;
             }
@@ -411,6 +420,23 @@ where
                 input: input.clone(),
             });
 
+            // Advertised tools are the surface allowlist. IM does not list
+            // bash/write/open — those must not run just because the host has them.
+            if !tools.iter().any(|t| t.name == name) {
+                let msg = format!("Tool `{name}` is not available here.");
+                tool_results.push(ContentBlock::ToolResult {
+                    tool_use_id: id.clone(),
+                    content: msg.clone(),
+                    is_error: true,
+                });
+                on_event(TurnEvent::ToolUseResult {
+                    id,
+                    content: msg,
+                    is_error: true,
+                });
+                continue;
+            }
+
             match config.permissions.check(&name, &input) {
                 Permission::Deny => {
                     tool_results.push(ContentBlock::ToolResult {
@@ -425,7 +451,14 @@ where
                     });
                 }
                 Permission::Allow => {
-                    safe_calls.push((id, name, input));
+                    // Allow rules must never bypass absolute high-risk gates
+                    // (e.g. bash rm -rf / skill_install). Those still confirm.
+                    let assessment = assess_confirmation(&name, &input, tools);
+                    if assessment.needs_confirm && is_absolute_risk(&name, &input) {
+                        confirm_calls.push((id, name, input, assessment.reason));
+                    } else {
+                        safe_calls.push((id, name, input));
+                    }
                 }
                 Permission::Prompt => {
                     let assessment = assess_confirmation(&name, &input, tools);
@@ -481,72 +514,90 @@ where
             }
         }
 
-        // Phase 3: Especially-dangerous tools — sequential + confirmation
+        // Phase 3: Especially-dangerous tools — sequential + confirmation.
+        // Fail-closed: no confirmation channel ⇒ deny (never auto-run high-risk
+        // on IM / subagent / ask-without-channel). Surfaces that intentionally
+        // yolo must pass a confirm_tx that auto-Allow (e.g. `hermes ask`).
         for (id, name, input, reason) in confirm_calls {
-            if let Some(tx) = &confirm_tx {
-                let (reply_tx, reply_rx) = oneshot::channel();
-                let summary = tool_call_summary(&name, &input);
-                on_event(TurnEvent::ToolConfirmPending {
-                    id: id.clone(),
-                    tool_name: name.clone(),
-                    summary: summary.clone(),
-                    reason: reason.clone(),
+            let Some(tx) = &confirm_tx else {
+                let msg = format!(
+                    "Tool call denied: `{name}` requires confirmation but this \
+                     surface has no approval UI (fail-closed)."
+                );
+                tool_results.push(ContentBlock::ToolResult {
+                    tool_use_id: id.clone(),
+                    content: msg.clone(),
+                    is_error: true,
                 });
-                let req = ConfirmRequest {
-                    id: id.clone(),
-                    tool_name: name.clone(),
-                    summary,
-                    reason,
-                    reply: reply_tx,
-                };
-                if tx.send(req).await.is_err() {
+                on_event(TurnEvent::ToolUseResult {
+                    id,
+                    content: msg,
+                    is_error: true,
+                });
+                continue;
+            };
+            let (reply_tx, reply_rx) = oneshot::channel();
+            let summary = tool_call_summary(&name, &input);
+            on_event(TurnEvent::ToolConfirmPending {
+                id: id.clone(),
+                tool_name: name.clone(),
+                summary: summary.clone(),
+                reason: reason.clone(),
+            });
+            let req = ConfirmRequest {
+                id: id.clone(),
+                tool_name: name.clone(),
+                summary,
+                reason,
+                reply: reply_tx,
+            };
+            if tx.send(req).await.is_err() {
+                tool_results.push(ContentBlock::ToolResult {
+                    tool_use_id: id,
+                    content: "Tool call denied (confirmation channel closed).".into(),
+                    is_error: true,
+                });
+                continue;
+            }
+            let action = tokio::select! {
+                biased;
+                _ = &mut cancel => {
+                    on_event(TurnEvent::Cancelled);
+                    on_event(TurnEvent::Done);
+                    flush_with_cancel_pairing(&mut messages, tool_results);
+                    let new_messages = messages[turn_start_idx..].to_vec();
+                    return Ok(TurnOutput {
+                        new_messages,
+                        usage: cumulative_usage,
+                    });
+                }
+                r = reply_rx => r,
+            };
+            match action {
+                Ok(ConfirmAction::Allow | ConfirmAction::AlwaysAllow) => {}
+                deny => {
+                    let reason = match deny {
+                        Ok(ConfirmAction::Deny { reason }) => reason,
+                        _ => None,
+                    };
+                    let msg = match reason {
+                        Some(r) => format!("Tool call denied by user. User says: {r}"),
+                        None => "Tool call denied by user.".into(),
+                    };
                     tool_results.push(ContentBlock::ToolResult {
-                        tool_use_id: id,
-                        content: "Tool call denied (confirmation channel closed).".into(),
+                        tool_use_id: id.clone(),
+                        content: msg.clone(),
+                        is_error: true,
+                    });
+                    on_event(TurnEvent::ToolUseResult {
+                        id,
+                        content: msg,
                         is_error: true,
                     });
                     continue;
                 }
-                let action = tokio::select! {
-                    biased;
-                    _ = &mut cancel => {
-                        on_event(TurnEvent::Cancelled);
-                        on_event(TurnEvent::Done);
-                        flush_with_cancel_pairing(&mut messages, tool_results);
-                        let new_messages = messages[turn_start_idx..].to_vec();
-                        return Ok(TurnOutput {
-                            new_messages,
-                            usage: cumulative_usage,
-                        });
-                    }
-                    r = reply_rx => r,
-                };
-                match action {
-                    Ok(ConfirmAction::Allow | ConfirmAction::AlwaysAllow) => {}
-                    deny => {
-                        let reason = match deny {
-                            Ok(ConfirmAction::Deny { reason }) => reason,
-                            _ => None,
-                        };
-                        let msg = match reason {
-                            Some(r) => format!("Tool call denied by user. User says: {r}"),
-                            None => "Tool call denied by user.".into(),
-                        };
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: msg.clone(),
-                            is_error: true,
-                        });
-                        on_event(TurnEvent::ToolUseResult {
-                            id,
-                            content: msg,
-                            is_error: true,
-                        });
-                        continue;
-                    }
-                }
             }
-            // Approved (or no confirmation channel) — execute
+            // User approved — execute
             let outcome = match host.call(&name, input).await {
                 Ok(o) => o,
                 Err(e) => ToolCallOutcome {
@@ -578,26 +629,37 @@ where
                     ..
                 } if !*is_error
                     && resp.content.iter().any(|ab| {
-                        matches!(
-                            ab,
-                            ContentBlock::ToolUse { id, name, .. }
+                        match ab {
+                            ContentBlock::ToolUse { id, name, input }
                                 if id == tool_use_id
-                                    && hermes_core::companion::tool_suggests_deliverable(name)
-                        )
+                                    && hermes_core::companion::tool_suggests_deliverable(name) =>
+                            {
+                                let path = input
+                                    .get("path")
+                                    .or_else(|| input.get("file_path"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                hermes_core::companion::path_looks_like_user_deliverable(path)
+                            }
+                            _ => false,
+                        }
                     })
             )
         });
-        if produced_deliverable {
-            tool_results.push(ContentBlock::Text {
-                text: hermes_core::companion::care_after_tools_nudge().to_string(),
-            });
-        }
-
+        // Tool results ONLY in this user message — never mix Care text here.
+        // OpenAI-compat APIs require pure tool messages immediately after tool_calls.
         let result_msg = Message {
             role: Role::User,
             content: tool_results,
+            at: None,
         };
         messages.push(result_msg);
+
+        if produced_deliverable {
+            messages.push(Message::user_text(
+                hermes_core::companion::care_after_tools_nudge().to_string(),
+            ));
+        }
     }
 
     // If we ran out of tool rounds mid-task, the last message is a User turn of
@@ -663,6 +725,7 @@ where
                     messages.push(Message {
                         role: Role::Assistant,
                         content: resp.content,
+                        at: None,
                     });
                 }
             }
@@ -985,6 +1048,41 @@ mod tests {
             TurnEvent::ToolUseResult { content, is_error: false, .. } if content == "approved-executed"
         )));
         assert_eq!(text_of(out.new_messages.last().unwrap()), "finished");
+    }
+
+    #[tokio::test]
+    async fn run_turn_no_confirm_channel_fail_closed() {
+        let provider = ScriptedProvider::new(vec![
+            tool_resp("t7", "danger_tool", serde_json::json!({})),
+            text_resp("after fail-closed"),
+        ]);
+        let tools = EchoHost.list_tools().await.unwrap();
+        let collected = Arc::new(Mutex::new(Vec::new()));
+        let sink = collected.clone();
+        let out = run_turn(
+            &provider,
+            &EchoHost,
+            &tools,
+            &[Message::user_text("danger")],
+            &config(),
+            None, // no confirmation UI
+            move |e| sink.lock().unwrap().push(e),
+            no_cancel(),
+        )
+        .await
+        .expect("run_turn should succeed");
+        let evs = Arc::try_unwrap(collected).unwrap().into_inner().unwrap();
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            TurnEvent::ToolUseResult { content, is_error: true, .. }
+                if content.contains("fail-closed") || content.contains("no approval")
+        )));
+        assert!(!evs.iter().any(|e| matches!(
+            e,
+            TurnEvent::ToolUseResult { content, is_error: false, .. }
+                if content == "approved-executed"
+        )));
+        assert_eq!(text_of(out.new_messages.last().unwrap()), "after fail-closed");
     }
 
     #[tokio::test]

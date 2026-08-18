@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{anyhow, Context, Result};
-use hermes_channel::{ServeCtx, CHAT_TOOL_WHITELIST};
+use hermes_channel::{ServeCtx, IM_TOOL_WHITELIST};
 use hermes_core::{ContentBlock, Role, Session, SessionEvent, SessionMeta, ToolSpec};
 use hermes_llm::Config;
 use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryEffectiveness, MemoryStore};
@@ -99,7 +99,11 @@ pub async fn run(
     // the user supplied. This is a soft constraint at the LLM level; the
     // hard constraint is the filesystem MCP's allowed-directory which
     // load_tool_host has already rewritten to match.
-    let system = compose_system_prompt(system, &workspace_root);
+    let system = compose_system_prompt(
+        system,
+        &workspace_root,
+        hermes_channel::PromptKind::Dialogue,
+    );
 
     // ---- skill / memory snapshot for this session ----
     let active_memories: Vec<LoadedMemory> = memory_store_arc
@@ -652,9 +656,9 @@ pub(crate) async fn build_channel_ctx() -> Result<Arc<ServeCtx>> {
         .map_err(|e| anyhow!("listing tools: {e}"))?;
     let tools: Vec<ToolSpec> = all_tools
         .into_iter()
-        .filter(|t| CHAT_TOOL_WHITELIST.contains(&t.name.as_str()))
+        .filter(|t| IM_TOOL_WHITELIST.contains(&t.name.as_str()))
         .collect();
-    eprintln!("✓ tools ready: {} whitelisted", tools.len());
+    eprintln!("✓ tools ready: {} IM-whitelisted", tools.len());
 
     let active_memories: Vec<LoadedMemory> = memory_store_arc
         .list_active()
@@ -699,7 +703,7 @@ pub(crate) async fn build_channel_ctx() -> Result<Arc<ServeCtx>> {
     );
     eprintln!("skills:   {} loaded", all_skills.len());
 
-    let base_system = compose_system_prompt(None, &workspace_root);
+    let base_system = compose_system_prompt(None, &workspace_root, hermes_channel::PromptKind::Im);
     let base_turn_cfg = TurnConfig {
         model: model.clone(),
         system: None,

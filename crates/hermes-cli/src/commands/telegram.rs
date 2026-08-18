@@ -168,17 +168,17 @@ pub async fn run() -> Result<()> {
 
             eprintln!("📩 {chat_id}: {text}");
 
+            let key = chat_id.to_string();
             let state = match users.get_mut(&chat_id) {
                 Some(s) => s,
                 None => {
-                    let key = chat_id.to_string();
                     let s = UserState::new(tg.name(), &key, ctx.model(), ctx.provider_name())?;
                     users.insert(chat_id, s);
                     users.get_mut(&chat_id).unwrap()
                 }
             };
 
-            let key = chat_id.to_string();
+            // Allowlist enforced inside serve_inbound (shared with all IM surfaces).
             if let Err(e) = serve_inbound(ctx.as_ref(), &tg, state, &key, &text, chat_id).await {
                 tracing::warn!(error = format!("{e:#}"), "handling inbound message failed");
             }

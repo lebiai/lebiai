@@ -27,7 +27,7 @@ fn current_view(state: &AppState) -> DataDirView {
     DataDirView {
         data_root: data_root().to_string_lossy().into_owned(),
         workspace_root: state.workspace_root(),
-        user_chosen: false,
+        user_chosen: hermes_core::is_user_chosen_data_root(),
     }
 }
 

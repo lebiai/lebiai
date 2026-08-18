@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Pin, PinOff, Trash2, Plus, Search, Brain } from "lucide-react";
+import { Pin, PinOff, Trash2, Plus, Search, Brain, Inbox } from "lucide-react";
 import { useUiStore } from "../../store/uiStore";
+import { useNavStore } from "../../store/navStore";
 import { Button, EmptyState, ui } from "../common/ui";
 import { Select } from "../common/Select";
 import { ConfirmPopover } from "../common/ConfirmPopover";
@@ -23,11 +24,41 @@ interface MemoryItem {
 
 const ALL = "__all__";
 const PINNED = "__pinned__";
+const PENDING = "__pending__";
 
-export function MemoryPanel() {
+type CompanionGroup = "preferences" | "standards" | "work" | "other";
+
+function companionGroup(mem: MemoryItem): CompanionGroup {
+  const z = (mem.zone || "").toLowerCase();
+  const tags = mem.tags.map((tag) => tag.toLowerCase());
+  if (
+    z === "preferences" ||
+    z === "preference" ||
+    z === "core" ||
+    tags.includes("preference")
+  ) {
+    return "preferences";
+  }
+  if (z === "standards" || z === "standard" || tags.includes("standard")) {
+    return "standards";
+  }
+  if (
+    z === "work" ||
+    z === "episode" ||
+    z === "work-episode" ||
+    tags.includes("work-episode")
+  ) {
+    return "work";
+  }
+  return "other";
+}
+
+export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
   const t = useUiStore((state) => state.t);
   const highlightMemoryId = useUiStore((s) => s.highlightMemoryId);
+  const pendingFocusSeq = useNavStore((s) => s.pendingFocusSeq);
   const [memories, setMemories] = useState<MemoryItem[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
   const [activeZone, setActiveZone] = useState<string>(ALL);
   const [query, setQuery] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -38,15 +69,40 @@ export function MemoryPanel() {
   const [newPinned, setNewPinned] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const highlightRef = useRef<HTMLDivElement | null>(null);
+  /** One-shot: land on Pending when there is something to review. */
+  const didAutoFocusPending = useRef(false);
 
   const fetchMemories = async () => {
     const items = await invoke<MemoryItem[]>("list_memories");
     setMemories(items);
   };
 
+  const fetchPendingCount = async () => {
+    try {
+      const n = await invoke<number>("count_pending_review");
+      setPendingCount(n);
+      if (!didAutoFocusPending.current && n > 0) {
+        didAutoFocusPending.current = true;
+        setActiveZone(PENDING);
+      }
+    } catch {
+      setPendingCount(0);
+    }
+  };
+
   useEffect(() => {
-    fetchMemories();
+    void fetchMemories();
+    void fetchPendingCount();
+    const onInbox = () => void fetchPendingCount();
+    window.addEventListener("hermes:inbox-changed", onInbox);
+    return () => window.removeEventListener("hermes:inbox-changed", onInbox);
   }, []);
+
+  useEffect(() => {
+    if (pendingFocusSeq > 0) {
+      setActiveZone(PENDING);
+    }
+  }, [pendingFocusSeq]);
 
   /** When a write lands (chat tool or create), refresh list so the new card can pulse. */
   useEffect(() => {
@@ -59,12 +115,17 @@ export function MemoryPanel() {
     highlightRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [highlightMemoryId, memories]);
 
-  const zones = useMemo(() => {
-    const counts = new Map<string, number>();
+  const groupCounts = useMemo(() => {
+    const counts: Record<CompanionGroup, number> = {
+      preferences: 0,
+      standards: 0,
+      work: 0,
+      other: 0,
+    };
     for (const m of memories) {
-      counts.set(m.zone, (counts.get(m.zone) ?? 0) + 1);
+      counts[companionGroup(m)] += 1;
     }
-    return Array.from(counts.entries()).sort(([a], [b]) => a.localeCompare(b));
+    return counts;
   }, [memories]);
 
   const pinnedCount = useMemo(() => memories.filter((m) => m.pinned).length, [memories]);
@@ -73,7 +134,20 @@ export function MemoryPanel() {
     const q = query.trim().toLowerCase();
     return memories.filter((m) => {
       if (activeZone === PINNED && !m.pinned) return false;
-      if (activeZone !== ALL && activeZone !== PINNED && m.zone !== activeZone) return false;
+      if (
+        activeZone === "preferences" ||
+        activeZone === "standards" ||
+        activeZone === "work" ||
+        activeZone === "other"
+      ) {
+        if (companionGroup(m) !== activeZone) return false;
+      } else if (
+        activeZone !== ALL &&
+        activeZone !== PINNED &&
+        activeZone !== PENDING
+      ) {
+        return false;
+      }
       if (!q) return true;
       return (
         m.body.toLowerCase().includes(q) ||
@@ -81,6 +155,17 @@ export function MemoryPanel() {
       );
     });
   }, [memories, activeZone, query]);
+
+  const groupLabel = (id: string) => {
+    if (id === ALL) return t("memory.all");
+    if (id === PINNED) return t("memory.pinned");
+    if (id === PENDING) return t("memory.pendingZone");
+    if (id === "preferences") return t("memory.groupPreferences");
+    if (id === "standards") return t("memory.groupStandards");
+    if (id === "work") return t("memory.groupWork");
+    if (id === "other") return t("memory.groupOther");
+    return id;
+  };
 
   const handleCreate = async () => {
     if (!newBody.trim()) return;
@@ -98,7 +183,6 @@ export function MemoryPanel() {
       setNewScope("User");
       setNewPinned(false);
       setShowCreate(false);
-      // Seal + toast + pulse (notifyRemembered also sets highlightMemoryId).
       notifyRemembered(item.id);
       await fetchMemories();
     } catch (e) {
@@ -126,18 +210,24 @@ export function MemoryPanel() {
     }
   };
 
+  const showPendingBlock = activeZone === PENDING || activeZone === ALL;
+
   return (
     <div className={`flex-1 flex h-full ${ui.page}`}>
-      <aside className="w-56 border-r border-app-border dark:border-slate-800 flex flex-col bg-app-sidebar dark:bg-slate-900/50">
-        <header className="px-4 py-3 border-b border-app-border dark:border-slate-800 shrink-0">
-          <h2 className={ui.sectionLabel}>{t("memory.zones")}</h2>
-        </header>
+      <aside className="w-56 border-r border-app-border dark:border-slate-800 flex flex-col bg-app-sidebar dark:bg-slate-900/50 select-none">
+        {!embedded && (
+          <header className="px-4 py-3 border-b border-app-border dark:border-slate-800 shrink-0">
+            <h2 className={ui.sectionLabel}>{t("know.tabYou")}</h2>
+          </header>
+        )}
         <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
           <ZoneRow
-            label={t("memory.all")}
-            count={memories.length}
-            active={activeZone === ALL}
-            onClick={() => setActiveZone(ALL)}
+            label={t("memory.pendingZone")}
+            count={pendingCount}
+            active={activeZone === PENDING}
+            onClick={() => setActiveZone(PENDING)}
+            highlight
+            badge={pendingCount > 0}
           />
           <ZoneRow
             label={t("memory.pinned")}
@@ -147,18 +237,29 @@ export function MemoryPanel() {
             highlight
           />
           <div className="my-1.5 border-t border-app-border dark:border-slate-800" />
-          {zones.length === 0 && (
-            <p className="text-xs text-app-fg-tertiary px-3 py-2">{t("memory.noZones")}</p>
-          )}
-          {zones.map(([zone, count]) => (
+          {(
+            [
+              ["preferences", groupCounts.preferences],
+              ["standards", groupCounts.standards],
+              ["work", groupCounts.work],
+              ["other", groupCounts.other],
+            ] as const
+          ).map(([id, count]) => (
             <ZoneRow
-              key={zone}
-              label={zone}
+              key={id}
+              label={groupLabel(id)}
               count={count}
-              active={activeZone === zone}
-              onClick={() => setActiveZone(zone)}
+              active={activeZone === id}
+              onClick={() => setActiveZone(id)}
             />
           ))}
+          <div className="my-1.5 border-t border-app-border dark:border-slate-800" />
+          <ZoneRow
+            label={t("memory.all")}
+            count={memories.length}
+            active={activeZone === ALL}
+            onClick={() => setActiveZone(ALL)}
+          />
         </div>
       </aside>
 
@@ -166,13 +267,19 @@ export function MemoryPanel() {
         <header className={`${ui.header} gap-3`}>
           <div className="flex items-center gap-2 min-w-0">
             <h2 className="text-base font-semibold truncate text-app-fg dark:text-slate-100">
-              {activeZone === ALL
-                ? t("memory.title")
-                : activeZone === PINNED
-                  ? t("memory.pinned")
-                  : activeZone}
+              {groupLabel(activeZone)}
             </h2>
-            <span className="text-xs text-app-fg-tertiary">{filtered.length}</span>
+            {activeZone === PENDING ? (
+              pendingCount > 0 ? (
+                <span className="text-[10px] font-semibold min-w-[1.15rem] h-5 px-1.5 rounded-full bg-amber-500 text-white flex items-center justify-center tabular-nums">
+                  {pendingCount > 99 ? "99+" : pendingCount}
+                </span>
+              ) : (
+                <span className="text-xs text-app-fg-tertiary">0</span>
+              )
+            ) : (
+              <span className="text-xs text-app-fg-tertiary">{filtered.length}</span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <div className="relative">
@@ -210,45 +317,81 @@ export function MemoryPanel() {
                 placeholder={t("memory.tagsPlaceholder")}
                 className={ui.input}
               />
-              <input
+              <Select
                 value={newZone}
-                onChange={(e) => setNewZone(e.target.value)}
-                placeholder={t("memory.zonePlaceholder")}
-                className={ui.input}
+                onChange={setNewZone}
+                options={[
+                  { value: "preferences", label: t("memory.groupPreferences") },
+                  { value: "standards", label: t("memory.groupStandards") },
+                  { value: "work", label: t("memory.groupWork") },
+                  { value: "general", label: t("memory.groupOther") },
+                ]}
               />
             </div>
-            <div className="flex items-center gap-4 flex-wrap">
-              <Select
-                value={newScope}
-                onChange={setNewScope}
-                options={[
-                  { value: "User", label: t("scope.user") },
-                  { value: "Project", label: t("scope.project") },
-                ]}
-                className="w-36"
-              />
-              <label className="flex items-center gap-2 text-sm text-app-fg dark:text-slate-200">
-                <input
-                  type="checkbox"
-                  checked={newPinned}
-                  onChange={(e) => setNewPinned(e.target.checked)}
-                />
-                {t("memory.pinned")}
-              </label>
-              <div className="flex-1" />
-              <Button size="sm" variant="secondary" onClick={() => setShowCreate(false)}>
-                {t("memory.cancel")}
-              </Button>
-              <Button size="sm" onClick={handleCreate} disabled={!newBody.trim()}>
-                {t("memory.save")}
-              </Button>
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-4 flex-wrap">
+                <div className="space-y-1">
+                  <label className="block text-[10px] uppercase tracking-wide text-app-fg-tertiary">
+                    {t("memory.scopeLabel")}
+                  </label>
+                  <Select
+                    value={newScope}
+                    onChange={setNewScope}
+                    options={[
+                      { value: "User", label: t("scope.user") },
+                      { value: "Project", label: t("scope.project") },
+                    ]}
+                    className="w-36"
+                  />
+                </div>
+                <label className="flex items-center gap-2 text-sm text-app-fg dark:text-slate-200 mt-4">
+                  <input
+                    type="checkbox"
+                    checked={newPinned}
+                    onChange={(e) => setNewPinned(e.target.checked)}
+                  />
+                  {t("memory.pinned")}
+                </label>
+                <div className="flex-1" />
+                <div className="flex gap-2 mt-4">
+                  <Button size="sm" variant="secondary" onClick={() => setShowCreate(false)}>
+                    {t("memory.cancel")}
+                  </Button>
+                  <Button size="sm" onClick={handleCreate} disabled={!newBody.trim()}>
+                    {t("memory.save")}
+                  </Button>
+                </div>
+              </div>
+              <p className="text-[11px] text-app-fg-tertiary leading-snug max-w-2xl">
+                {t("memory.scopeHint")}
+              </p>
+              <p className="text-[11px] text-app-fg-tertiary">
+                {newScope === "Project" ? t("scope.projectHint") : t("scope.userHint")}
+              </p>
             </div>
           </div>
         )}
 
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          <PendingReviewSection onAccepted={() => void fetchMemories()} />
-          {filtered.length === 0 && (
+          {showPendingBlock && (
+            <PendingReviewSection
+              onAccepted={() => {
+                void fetchMemories();
+                void fetchPendingCount();
+              }}
+              onChanged={() => void fetchPendingCount()}
+            />
+          )}
+
+          {activeZone === PENDING && pendingCount === 0 && (
+            <EmptyState
+              icon={<Inbox size={22} strokeWidth={1.75} />}
+              title={t("memory.pendingEmptyTitle")}
+              description={t("memory.pendingEmpty")}
+            />
+          )}
+
+          {activeZone !== PENDING && filtered.length === 0 && pendingCount === 0 && (
             <EmptyState
               icon={<Brain size={22} strokeWidth={1.75} />}
               title={
@@ -271,7 +414,7 @@ export function MemoryPanel() {
               }
             />
           )}
-          {filtered.map((mem) => (
+          {activeZone !== PENDING && filtered.map((mem) => (
             <div
               key={mem.id}
               ref={mem.id === highlightMemoryId ? highlightRef : undefined}
@@ -314,21 +457,9 @@ export function MemoryPanel() {
                     {t("memory.pinnedBadge")}
                   </span>
                 )}
-                <span className="text-xs text-app-fg-tertiary">{displayScope(mem.scope, t)}</span>
                 <span className="text-xs text-app-fg-tertiary">
-                  {displayConfidence(mem.confidence, t)}
+                  {groupLabel(companionGroup(mem))}
                 </span>
-                <span className="text-xs px-1.5 py-0.5 rounded-md bg-app-muted dark:bg-slate-800 text-app-fg-secondary dark:text-slate-300">
-                  {mem.zone}
-                </span>
-                {mem.tags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="text-xs px-1.5 py-0.5 rounded-md bg-app-muted dark:bg-slate-800 text-app-fg-secondary"
-                  >
-                    {tag}
-                  </span>
-                ))}
               </div>
             </div>
           ))}
@@ -344,39 +475,43 @@ function ZoneRow({
   active,
   onClick,
   highlight,
+  badge,
 }: {
   label: string;
   count: number;
   active: boolean;
   onClick: () => void;
   highlight?: boolean;
+  /** Amber pill like the sidebar inbox badge */
+  badge?: boolean;
 }) {
   return (
     <div
       onClick={onClick}
       className={`flex items-center justify-between px-3 py-1.5 rounded-lg cursor-pointer text-sm transition-colors ${
-        active ? ui.navItemActive : ui.navItemIdle
+        active
+          ? badge
+            ? "bg-amber-100/90 dark:bg-amber-950/40 text-amber-950 dark:text-amber-100 font-medium ring-1 ring-amber-300/80 dark:ring-amber-700/60"
+            : ui.navItemActive
+          : ui.navItemIdle
       }`}
     >
-      <span className={`truncate ${highlight ? "text-amber-700 dark:text-amber-300" : ""}`}>
+      <span
+        className={`truncate ${
+          highlight && !active ? "text-amber-700 dark:text-amber-300" : ""
+        }`}
+      >
         {label}
       </span>
-      <span className="text-[11px] text-app-fg-tertiary ml-2">{count}</span>
+      {badge && count > 0 ? (
+        <span className="ml-2 text-[10px] font-semibold min-w-[1.15rem] h-4 px-1 rounded-full bg-amber-500 text-white flex items-center justify-center tabular-nums shrink-0">
+          {count > 99 ? "99+" : count}
+        </span>
+      ) : (
+        <span className="text-[11px] text-app-fg-tertiary ml-2 tabular-nums">{count}</span>
+      )}
     </div>
   );
 }
 
-function displayScope(scope: string, t: ReturnType<typeof useUiStore.getState>["t"]) {
-  return scope === "Project" ? t("scope.project") : t("scope.user");
-}
 
-function displayConfidence(
-  confidence: string,
-  t: ReturnType<typeof useUiStore.getState>["t"]
-) {
-  const normalized = confidence.toLowerCase();
-  if (normalized === "high") return t("confidence.high");
-  if (normalized === "medium") return t("confidence.medium");
-  if (normalized === "low") return t("confidence.low");
-  return confidence;
-}

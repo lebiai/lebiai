@@ -5,9 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:hermes_app/ui/features/chat/view_models/chat_providers.dart';
 import 'package:hermes_app/ui/theme/app_dimensions.dart';
 
-/// One tool-call card. Status state machine:
-/// `calling` (spinner) → `result` (✓ green / ✗ red). Tap to expand the full
-/// input JSON and result text.
+/// One work-step card. Status: calling → result. Headline is a human verb,
+/// not the engine tool name. Tap to expand details.
 class ToolCardView extends StatefulWidget {
   const ToolCardView({super.key, required this.call});
 
@@ -32,9 +31,9 @@ class _ToolCardViewState extends State<ToolCardView> {
             ? const Color(0xFF22C55E)
             : scheme.primary;
 
-    final subtitle = call.summary.isEmpty
-        ? (isResult ? '完成' : '调用中…')
-        : call.summary;
+    final headline = _humanToolLabel(call.name);
+    final object = _objectFromSummary(call.summary, call.name);
+    final subtitle = object ?? (isResult ? '完成' : '进行中…');
 
     return Container(
       decoration: BoxDecoration(
@@ -66,7 +65,7 @@ class _ToolCardViewState extends State<ToolCardView> {
                             children: [
                               Flexible(
                                 child: Text(
-                                  call.name,
+                                  headline,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -74,12 +73,6 @@ class _ToolCardViewState extends State<ToolCardView> {
                                     fontSize: 13.5,
                                   ),
                                 ),
-                              ),
-                              const SizedBox(width: 6),
-                              Icon(
-                                Icons.terminal,
-                                size: 12,
-                                color: scheme.onSurfaceVariant.withValues(alpha: 0.6),
                               ),
                             ],
                           ),
@@ -244,4 +237,50 @@ class _CodeBox extends StatelessWidget {
       ),
     );
   }
+}
+
+String _humanToolLabel(String name) {
+  switch (name) {
+    case 'web_search':
+    case 'web_fetch':
+      return '查资料';
+    case 'read':
+      return '看文件';
+    case 'write':
+    case 'edit':
+      return '写文件';
+    case 'open':
+      return '打开';
+    case 'bash':
+    case 'git':
+    case 'glob':
+    case 'grep':
+      return '在工作区做事';
+    case 'memory_search':
+    case 'memory_delete':
+      return '对照笔记';
+    case 'memory_save':
+      return '记下一条';
+    case 'think':
+      return '在想';
+    default:
+      if (name.startsWith('palace_')) return '对照笔记';
+      if (name.startsWith('skill_') || name == 'propose_skill') return '读做法';
+      if (name.startsWith('todo_')) return '整理步骤';
+      return '做事';
+  }
+}
+
+String? _objectFromSummary(String summary, String name) {
+  final trimmed = summary.trim();
+  if (trimmed.isEmpty) return null;
+  final colon = trimmed.indexOf(':');
+  if (colon >= 0) {
+    final rest = trimmed.substring(colon + 1).trim();
+    if (rest.isNotEmpty) {
+      return rest.length > 80 ? '${rest.substring(0, 79)}…' : rest;
+    }
+  }
+  if (trimmed == name || trimmed.startsWith('$name ')) return null;
+  return trimmed.length > 80 ? '${trimmed.substring(0, 79)}…' : trimmed;
 }

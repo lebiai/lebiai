@@ -68,7 +68,9 @@ const MICRO_REFLECT_SYSTEM: &str = r##"You are a micro-reflection module. You ju
 
 Rules:
 - Default to empty arrays. Most turns produce nothing.
-- Only propose a memory if the user stated a durable preference, convention, or fact.
+- Only propose a memory if it is a living rule that will still hold next time (how they work — not what happened this turn).
+- If it updates an existing memory of the same kind of work, set supersedes to that id. Never add a second peer rule for the same kind of work.
+- Never persist today's mood, tool/environment facts, or a recap of the task.
 - Only propose a skill if the assistant followed a multi-step procedure that would be reusable verbatim next time.
 - Never propose more than 1 memory and 1 skill per micro-reflection.
 - Confidence should be "low" or "medium" — never "high" for micro-reflection (that's reserved for explicit user requests caught by full reflection).
@@ -112,12 +114,14 @@ pub async fn micro_reflect(
     let json_str = crate::runner::strip_code_fence_pub(&text);
 
     match serde_json::from_str(json_str) {
-        Ok(out) => Ok(out),
+        Ok(out) => Ok(crate::episode::finalize_reflection_output_with(out, memories)),
         Err(first_err) => {
             if let Some(repaired) = crate::runner::repair_truncated_json(json_str) {
                 if let Ok(out) = serde_json::from_str(&repaired) {
                     tracing::info!("recovered truncated micro-reflection JSON");
-                    return Ok(out);
+                    return Ok(crate::episode::finalize_reflection_output_with(
+                        out, memories,
+                    ));
                 }
             }
             Err(ReflectError::ParseFailed {
@@ -200,6 +204,7 @@ mod tests {
             content: vec![ContentBlock::Text {
                 text: text.to_string(),
             }],
+            at: None,
         }
     }
 
@@ -209,6 +214,7 @@ mod tests {
             content: vec![ContentBlock::Text {
                 text: text.to_string(),
             }],
+            at: None,
         }
     }
 

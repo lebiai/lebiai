@@ -11,6 +11,7 @@ pub mod error;
 pub mod events;
 pub mod routes;
 pub mod state;
+pub mod tickets;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -27,14 +28,36 @@ use axum::Router;
 /// installs a subscriber before reaching here.
 pub async fn serve(host: IpAddr, port: u16, token: Arc<String>) -> Result<()> {
     let state = Arc::new(state::AppState::init().await?);
-    let app: Router = routes::build(state, token.clone());
+    let tickets = state.ws_tickets.clone();
+    let app: Router = routes::build(state, token.clone(), tickets);
     let addr = SocketAddr::from((host, port));
     tracing::info!(%addr, "hermes-server listening");
+    // Never log the full secret — only a short fingerprint for operators.
+    let fingerprint = token_fingerprint(token.as_str());
     tracing::info!(
-        token = %token,
-        "auth token (set this in the client's server settings; REST: Authorization header, WS: ?token=)"
+        token_fp = %fingerprint,
+        "auth required (REST: Authorization Bearer; WS prefer POST /api/v1/ws-ticket then ?ticket=). Full token is in ~/.lebi-ai/server.token — not logged."
+    );
+    // One-time human-readable hint on stdout only (not structured logs).
+    eprintln!(
+        "hermes-server auth token fingerprint: {fingerprint} (full value: ~/.lebi-ai/server.token)"
     );
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    if !addr.ip().is_loopback() {
+        tracing::warn!(
+            %addr,
+            "binding non-loopback address — ensure TLS (reverse proxy) and protect server.token; traffic is HTTP cleartext"
+        );
+    }
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// First 4 + last 4 chars of the token (or shorter mask) for safe logs.
+fn token_fingerprint(token: &str) -> String {
+    let t = token.trim();
+    if t.len() <= 8 {
+        return "****".into();
+    }
+    format!("{}…{}", &t[..4], &t[t.len() - 4..])
 }

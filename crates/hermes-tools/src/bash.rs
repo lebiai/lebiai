@@ -1,11 +1,12 @@
-//! `bash` — run a shell command inside the workspace.
+//! `bash` — run a shell command inside the workspace (sandboxed when possible).
 
 use std::path::Path;
 use std::time::Duration;
 
 use hermes_core::{Result, ToolCallOutcome, ToolSpec};
 use serde::Deserialize;
-use tokio::process::Command;
+
+use crate::bash_sandbox::{sandboxed_shell, SandboxMode};
 
 #[derive(Deserialize)]
 struct Args {
@@ -18,15 +19,8 @@ fn default_timeout() -> u64 {
     120_000
 }
 
-/// Maximum characters of combined stdout+stderr returned to the model.
-/// Output beyond this is elided head+tail so the model still sees how a
-/// command started and how it ended, without flooding the context window.
 const MAX_OUTPUT_CHARS: usize = 30_000;
 
-/// Cap `s` to at most `max` chars, keeping a head and a tail with an elision
-/// marker in the middle. Favors the tail, where errors and exit summaries
-/// usually live. Mirrors `hermes_core::compaction`'s preview helper; kept
-/// local to avoid a cross-crate dependency for one small function.
 fn cap_output(s: &str, max: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= max {
@@ -43,9 +37,12 @@ fn cap_output(s: &str, max: usize) -> String {
 pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "bash".into(),
-        description:
-            "Run a shell command in the workspace directory. Returns stdout, stderr, and exit code."
-                .into(),
+        description: "Run a shell command in the workspace directory (OS sandbox when available: \
+            macOS seatbelt / Linux bwrap). File writes outside the workspace are blocked by the \
+            sandbox when active. Returns stdout, stderr, exit code, and sandbox mode. \
+            Do NOT use bash to open files, videos, or web pages — use the `open` tool. \
+            Do NOT guess Microsoft Word / Pages / WPS via `open -a` or osascript."
+            .into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -63,16 +60,21 @@ pub async fn run(workspace: &Path, args: serde_json::Value) -> Result<ToolCallOu
     let a: Args = serde_json::from_value(args)
         .map_err(|e| hermes_core::Error::ToolHost(format!("bash: bad args: {e}")))?;
 
+    if let Some(target) = intercept_open_target(&a.command) {
+        return crate::open::run(workspace, serde_json::json!({ "target": target })).await;
+    }
+    if looks_like_app_open_workaround(&a.command) {
+        return Ok(ToolCallOutcome {
+            content: "Use the `open` tool with the file path or https URL. \
+                      Do not launch Word / Pages / WPS / Finder from bash."
+                .into(),
+            is_error: true,
+        });
+    }
+
     let timeout = Duration::from_millis(a.timeout_ms.min(600_000));
-    let result = tokio::time::timeout(timeout, async {
-        Command::new("sh")
-            .arg("-c")
-            .arg(&a.command)
-            .current_dir(workspace)
-            .output()
-            .await
-    })
-    .await;
+    let (mut cmd, mode) = sandboxed_shell(workspace, &a.command);
+    let result = tokio::time::timeout(timeout, cmd.output()).await;
 
     match result {
         Ok(Ok(output)) => {
@@ -93,12 +95,17 @@ pub async fn run(workspace: &Path, args: serde_json::Value) -> Result<ToolCallOu
             if out.is_empty() {
                 out.push_str("(no output)");
             }
-            // Cap combined stdout+stderr so a runaway command (e.g. `find /`)
-            // can't flood the model's context. The exit-code line is appended
-            // after the cap so it is never elided.
             let out = cap_output(&out, MAX_OUTPUT_CHARS);
+            let sandbox_note = if mode == SandboxMode::Unsandboxed {
+                format!(
+                    "\n[{}] writes outside workspace are NOT OS-enforced on this platform",
+                    mode.label()
+                )
+            } else {
+                format!("\n[{}]", mode.label())
+            };
             Ok(ToolCallOutcome {
-                content: format!("{out}\n[exit code: {code}]"),
+                content: format!("{out}\n[exit code: {code}]{sandbox_note}"),
                 is_error: code != 0,
             })
         }
@@ -111,6 +118,114 @@ pub async fn run(workspace: &Path, args: serde_json::Value) -> Result<ToolCallOu
             is_error: true,
         }),
     }
+}
+
+/// If `command` is just the OS opener (`open` / `xdg-open` / `start`), return
+/// the file or URL so we can run the unsandboxed `open` tool instead.
+fn intercept_open_target(command: &str) -> Option<String> {
+    let tokens = tokenize_shellish(strip_leading_env(command.trim()));
+    if tokens.is_empty() {
+        return None;
+    }
+    let prog = tokens[0]
+        .rsplit('/')
+        .next()
+        .unwrap_or(&tokens[0])
+        .to_ascii_lowercase();
+    let mut i = 1usize;
+    match prog.as_str() {
+        "open" | "xdg-open" => {}
+        "start" => {}
+        "cmd" => {
+            let next = tokens.get(1).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+            if next != "/c" && next != "/k" {
+                return None;
+            }
+            let third = tokens.get(2).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+            if third != "start" {
+                return None;
+            }
+            i = 3;
+        }
+        _ => return None,
+    }
+    while i < tokens.len() {
+        let t = &tokens[i];
+        if t == "-a" || t == "-b" || t == "--args" {
+            i += 2;
+            continue;
+        }
+        if t.starts_with('-') || t.is_empty() {
+            i += 1;
+            continue;
+        }
+        return Some(t.clone());
+    }
+    None
+}
+
+fn looks_like_app_open_workaround(command: &str) -> bool {
+    let c = command.to_ascii_lowercase();
+    if !(c.contains("osascript") || c.contains("osacompile") || c.contains("finder")) {
+        return false;
+    }
+    c.contains("word")
+        || c.contains("pages")
+        || c.contains("wps")
+        || c.contains("excel")
+        || c.contains("microsoft")
+        || c.contains("open")
+}
+
+fn strip_leading_env(cmd: &str) -> &str {
+    let mut rest = cmd;
+    while let Some(eq) = rest.find('=') {
+        let key = &rest[..eq];
+        if key.is_empty()
+            || key.contains(char::is_whitespace)
+            || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            break;
+        }
+        let after = &rest[eq + 1..];
+        let skip = if let Some(stripped) = after.strip_prefix('"') {
+            stripped.find('"').map(|i| i + 2)
+        } else {
+            after.find(char::is_whitespace)
+        };
+        match skip {
+            Some(n) => rest = after[n..].trim_start(),
+            None => return "",
+        }
+    }
+    rest
+}
+
+fn tokenize_shellish(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for c in s.chars() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            } else {
+                cur.push(c);
+            }
+        } else if c == '"' || c == '\'' {
+            quote = Some(c);
+        } else if c.is_whitespace() {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(c);
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -128,14 +243,63 @@ mod tests {
         let s = format!("{}{}", "H".repeat(50_000), "T".repeat(50_000));
         let capped = cap_output(&s, 30_000);
         assert!(capped.contains("chars elided"));
-        // Stays within the cap plus the short marker line.
-        assert!(
-            capped.chars().count() < 31_000,
-            "len {}",
-            capped.chars().count()
-        );
-        // Head from the start, tail from the end are both preserved.
+        assert!(capped.chars().count() < 31_000);
         assert!(capped.starts_with("HHH"));
         assert!(capped.ends_with("TTT"));
+    }
+
+    #[tokio::test]
+    async fn sandbox_echo_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run(
+            dir.path(),
+            serde_json::json!({"command": "echo lebi-sandbox-ok"}),
+        )
+        .await
+        .unwrap();
+        assert!(out.content.contains("lebi-sandbox-ok"), "{}", out.content);
+        assert!(!out.is_error);
+        assert!(out.content.contains("sandbox="));
+    }
+
+    #[test]
+    fn intercepts_macos_open_and_word_workaround() {
+        assert_eq!(
+            intercept_open_target("open ~/Desktop/a.docx").as_deref(),
+            Some("~/Desktop/a.docx")
+        );
+        assert_eq!(
+            intercept_open_target("open -a \"Microsoft Word\" ~/Desktop/a.docx").as_deref(),
+            Some("~/Desktop/a.docx")
+        );
+        assert_eq!(
+            intercept_open_target("xdg-open https://example.com/x").as_deref(),
+            Some("https://example.com/x")
+        );
+        assert!(intercept_open_target("python3 -c \"open('x')\"").is_none());
+        assert!(intercept_open_target("ls -la").is_none());
+        assert!(looks_like_app_open_workaround(
+            "osascript -e 'tell application \"Microsoft Word\" to open POSIX file \"/tmp/a.docx\"'"
+        ));
+        assert!(!looks_like_app_open_workaround("echo hello"));
+    }
+
+    #[tokio::test]
+    async fn bash_open_missing_file_does_not_hit_sandbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run(
+            dir.path(),
+            serde_json::json!({"command": "open outputs/missing.docx"}),
+        )
+        .await
+        .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("does not exist") || out.content.contains("open:"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("LSOpenURLsWithCompletionHandler"));
+        assert!(!out.content.contains("sandbox="));
     }
 }

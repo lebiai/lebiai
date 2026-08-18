@@ -1,13 +1,17 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use hermes_channel::{compose_system_prompt, ServeCtx, UserState, CHAT_TOOL_WHITELIST};
+use hermes_channel::{
+    compose_system_prompt, PromptKind, ServeCtx, UserState, IM_TOOL_WHITELIST,
+};
 use hermes_core::{LlmProvider, Session, SessionMeta, ToolHost, ToolSpec};
 use hermes_llm::Config;
 use hermes_mcp::{McpConfig, McpToolHost, ServerSpec};
+use hermes_commitments::CommitmentStore;
 use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryEffectiveness, MemoryStore};
 use hermes_reflect::SkillCandidate;
 use hermes_skills::{FsSkillStore, LoadedSkill, SkillEffectiveness, SkillStore};
@@ -64,6 +68,7 @@ pub struct AppState {
     pub skill_store: Arc<FsSkillStore>,
     /// Shared with BuiltinToolHost so agent tools (`memory_save` etc.) hit the same store.
     pub memory_store: Arc<FsMemoryStore>,
+    pub commitment_store: Arc<CommitmentStore>,
     pub sessions: Sessions,
     pub cancel_tokens: CancelTokens,
     pub confirm_tokens: ConfirmTokens,
@@ -79,6 +84,48 @@ pub struct AppState {
     pub micro_turns_since: Arc<Mutex<HashMap<String, usize>>>,
     /// WeChat (iLink Bot) connection state.
     pub wechat: WechatState,
+    /// One in-flight idle WeChat distill at a time, plus a cooldown so
+    /// sidebar refreshes do not spawn parallel LLM jobs.
+    pub idle_wechat_distill: Arc<IdleDistillGate>,
+}
+
+/// Single-flight + cooldown for `spawn_idle_wechat_distill`.
+pub struct IdleDistillGate {
+    inflight: AtomicBool,
+    last_finished: std::sync::Mutex<Option<Instant>>,
+}
+
+impl IdleDistillGate {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            inflight: AtomicBool::new(false),
+            last_finished: std::sync::Mutex::new(None),
+        })
+    }
+
+    /// `true` if this caller should run. Caller **must** call [`finish`].
+    pub fn try_begin(&self, cooldown: Duration) -> bool {
+        if self.inflight.load(Ordering::SeqCst) {
+            return false;
+        }
+        if let Ok(last) = self.last_finished.lock() {
+            if let Some(t) = *last {
+                if t.elapsed() < cooldown {
+                    return false;
+                }
+            }
+        }
+        self.inflight
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    pub fn finish(&self) {
+        if let Ok(mut last) = self.last_finished.lock() {
+            *last = Some(Instant::now());
+        }
+        self.inflight.store(false, Ordering::SeqCst);
+    }
 }
 
 /// In-memory chat session. Disk is deferred until the first user message
@@ -158,6 +205,7 @@ impl AppState {
         hermes_skills::bundled::auto_install_bundled(&skill_store);
         let memory_store: Arc<FsMemoryStore> =
             Arc::new(FsMemoryStore::new(base.join("memories"), None));
+        let commitment_store: Arc<CommitmentStore> = Arc::new(CommitmentStore::standard());
 
         let web_ctx = Arc::new(WebToolsContext {
             extract_provider: provider.clone(),
@@ -166,12 +214,14 @@ impl AppState {
             search_backend: SearchBackend::parse(&config.web.search_backend),
             tavily_api_key: config.web.tavily_api_key.clone(),
             brave_api_key: config.web.brave_api_key.clone(),
+            searxng_url: config.web.searxng_url.clone(),
             cache_ttl_secs: config.web.cache_ttl_secs,
         });
 
         let host = load_tool_host(
             &workspace_root,
             Some(memory_store.clone() as Arc<dyn MemoryStore>),
+            Some(commitment_store.clone()),
             Some(skill_store.clone() as Arc<dyn SkillStore>),
             Some(propose_ctx),
             Some(web_ctx),
@@ -193,6 +243,7 @@ impl AppState {
             config: RwLock::new(config),
             skill_store,
             memory_store,
+            commitment_store,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             cancel_tokens: Arc::new(Mutex::new(HashMap::new())),
             confirm_tokens: Arc::new(Mutex::new(HashMap::new())),
@@ -215,6 +266,7 @@ impl AppState {
                     last_error: None,
                 })),
             },
+            idle_wechat_distill: IdleDistillGate::new(),
         })
     }
 
@@ -263,7 +315,7 @@ impl AppState {
             .lock()
             .await
             .iter()
-            .filter(|t| CHAT_TOOL_WHITELIST.contains(&t.name.as_str()))
+            .filter(|t| IM_TOOL_WHITELIST.contains(&t.name.as_str()))
             .cloned()
             .collect();
         let active_memories = self.active_memories.lock().await.clone();
@@ -287,7 +339,7 @@ impl AppState {
             }
         };
         let compiled_profile: Option<String> = hermes_memory::load_profile().unwrap_or(None);
-        let base_system = compose_system_prompt(None, &workspace_root);
+        let base_system = compose_system_prompt(None, &workspace_root, PromptKind::Im);
         let provider_name = provider.name().to_string();
         let (limits, allow_rules, deny_rules) = {
             let cfg = self.config.read().unwrap();
@@ -328,6 +380,7 @@ impl AppState {
 async fn load_tool_host(
     workspace_root: &Path,
     memory_store: Option<Arc<dyn MemoryStore>>,
+    commitment_store: Option<Arc<CommitmentStore>>,
     skill_store: Option<Arc<dyn SkillStore>>,
     propose_ctx: Option<Arc<ProposeContext>>,
     web_ctx: Option<Arc<WebToolsContext>>,
@@ -335,6 +388,9 @@ async fn load_tool_host(
     let mut builtin = BuiltinToolHost::new(workspace_root.to_path_buf());
     if let Some(store) = memory_store {
         builtin = builtin.with_memory_store(store);
+    }
+    if let Some(store) = commitment_store {
+        builtin = builtin.with_commitment_store(store);
     }
     if let Some(store) = skill_store {
         builtin = builtin.with_skill_store(store);

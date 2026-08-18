@@ -7,7 +7,7 @@ import {
   useState,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Sparkles, X } from "lucide-react";
+import { Sparkles, X, ListTodo } from "lucide-react";
 import { useChatStore } from "../../store/chatStore";
 import { useUiStore } from "../../store/uiStore";
 import { useNavStore } from "../../store/navStore";
@@ -24,6 +24,10 @@ import { ConfirmModal } from "./ConfirmModal";
 import { ProposedSkillModal } from "./ProposedSkillModal";
 import { WelcomeScenes } from "./WelcomeScenes";
 import { MicroReviewModal } from "../reflect/MicroReviewModal";
+import { ZaibanCue } from "../zaiban/ZaibanCue";
+import { WorkDrawer } from "../work/WorkDrawer";
+import { useWorkDrawerStore } from "../../store/workDrawerStore";
+import { useZaibanStore } from "../../store/zaibanStore";
 
 /** Enable windowing when the transcript is long enough to matter. */
 const VIRTUAL_THRESHOLD = 28;
@@ -59,25 +63,29 @@ function messageKey(
 export function ChatView() {
   const {
     activeSessionId,
+    activeReadOnly,
     sessions,
     messages,
     isStreaming,
     streamingText,
     streamingThinking,
     activeToolCalls,
-    inputTokens,
-    outputTokens,
     lastReflection,
     clearReflection,
     openMicroReview,
     microReview,
-    newSession,
     regenerateLast,
     editAndResend,
   } = useChatStore();
   const t = useUiStore((s) => s.t);
   const setComposerPrefill = useUiStore((s) => s.setComposerPrefill);
-  const setPanel = useNavStore((s) => s.setPanel);
+  const drawerOpen = useWorkDrawerStore((s) => s.open);
+  const toggleDrawer = useWorkDrawerStore((s) => s.toggle);
+  const closeDrawer = useWorkDrawerStore((s) => s.close);
+  const owedCount = useZaibanStore((s) => s.list?.owedCount ?? 0);
+  const overdueCount = useZaibanStore((s) => s.list?.overdueCount ?? 0);
+  const pendingConfirm = useChatStore((s) => s.pendingConfirm);
+
   const parentRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   /** Keys already present when session loaded / previously rendered — no re-enter. */
@@ -90,6 +98,9 @@ export function ChatView() {
     rawStart: number;
     text: string;
   } | null>(null);
+
+  const readOnly =
+    activeReadOnly || !!sessions.find((s) => s.id === activeSessionId)?.readOnly;
 
   const sessionTitle = useMemo(() => {
     if (!activeSessionId) return t("chat.header");
@@ -197,27 +208,22 @@ export function ChatView() {
     void editAndResend(rawStart, text);
   };
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && drawerOpen && !pendingConfirm) {
+        e.preventDefault();
+        closeDrawer();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawerOpen, closeDrawer, pendingConfirm]);
+
   if (!activeSessionId) {
     return (
       <div className={`flex flex-col h-full ${ui.page}`}>
-        <div className="flex-1 flex flex-col items-center justify-center">
-          <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-app-primary-soft dark:bg-blue-950/40 text-app-primary">
-            <Sparkles size={28} />
-          </div>
-          <p className="text-base font-medium text-app-fg dark:text-slate-100 mb-1">
-            {t("chat.empty")}
-          </p>
-          <p className="text-sm text-app-fg-secondary dark:text-slate-400 mb-5 max-w-sm text-center">
-            {t("chat.emptyHint")}
-          </p>
-          <Button
-            onClick={() => {
-              setPanel("chat");
-              void newSession();
-            }}
-          >
-            {t("chat.new")}
-          </Button>
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-sm text-app-fg-tertiary">{t("chat.opening")}</p>
         </div>
       </div>
     );
@@ -236,9 +242,9 @@ export function ChatView() {
       >
         <MessageBubble
           message={msg}
-          canRegenerate={i === lastAssistantIdx && !isStreaming}
+          canRegenerate={i === lastAssistantIdx && !isStreaming && !readOnly}
           onRegenerate={() => void regenerateLast()}
-          onEditUser={onEditUser}
+          onEditUser={readOnly ? undefined : onEditUser}
           isStreaming={isStreaming}
         />
       </div>
@@ -246,7 +252,8 @@ export function ChatView() {
   };
 
   return (
-    <div className={`flex flex-col h-full ${ui.page}`}>
+    <div className={`flex h-full min-w-0 ${ui.page}`}>
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
       <header className={ui.header}>
         <div className="min-w-0 flex-1 flex items-baseline gap-2">
           <h1 className="text-sm font-semibold text-app-fg dark:text-slate-100 truncate min-w-0">
@@ -256,14 +263,35 @@ export function ChatView() {
             {t("chat.headerSubShort")}
           </span>
         </div>
-        <span className="text-[11px] tabular-nums text-app-fg-tertiary dark:text-slate-500 shrink-0">
-          {(inputTokens > 0 || outputTokens > 0) &&
-            t("chat.usage", {
-              input: inputTokens.toLocaleString(),
-              output: outputTokens.toLocaleString(),
-            })}
-        </span>
+        <button
+          type="button"
+          onClick={() => void toggleDrawer()}
+          className={`shrink-0 inline-flex items-center gap-1.5 pl-2.5 pr-2 py-1 rounded-full text-[12px] border transition-colors ${
+            drawerOpen
+              ? "border-app-fg/20 bg-app-fg text-white dark:bg-slate-100 dark:text-slate-900"
+              : "border-app-border dark:border-slate-700 bg-app-surface dark:bg-slate-800/80 text-app-fg-secondary hover:text-app-fg hover:border-app-fg/20"
+          }`}
+          aria-pressed={drawerOpen}
+        >
+          <ListTodo size={13} strokeWidth={1.75} />
+          <span>{t("zaiban.title")}</span>
+          {owedCount > 0 && (
+            <span
+              className={`min-w-[1.15rem] h-4 px-1 rounded-full text-[10px] font-semibold flex items-center justify-center ${
+                drawerOpen
+                  ? "bg-white/20 text-white dark:bg-slate-900/20 dark:text-slate-900"
+                  : overdueCount > 0
+                    ? "bg-amber-600 text-white"
+                    : "bg-app-primary text-white"
+              }`}
+            >
+              {owedCount > 99 ? "99+" : owedCount}
+            </span>
+          )}
+        </button>
       </header>
+
+      <ZaibanCue />
 
       {/* key forces light re-enter when switching / new chat — not a blocking loader */}
       <div
@@ -349,6 +377,18 @@ export function ChatView() {
                 {t("chat.microReview")}
               </button>
             )}
+          {(lastReflection.memoryCount > 0 || lastReflection.skillCount > 0) && (
+            <button
+              type="button"
+              onClick={() => {
+                useNavStore.getState().openKnow("you");
+                clearReflection();
+              }}
+              className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-app-primary text-white"
+            >
+              {t("chat.goConfirm")}
+            </button>
+          )}
           <button
             type="button"
             onClick={clearReflection}
@@ -366,7 +406,7 @@ export function ChatView() {
       <MicroReviewModal />
 
       {editDraft && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className={`${ui.overlay} z-50 p-4`}>
           <div
             role="dialog"
             aria-labelledby="edit-msg-title"
@@ -403,6 +443,8 @@ export function ChatView() {
           </div>
         </div>
       )}
+      </div>
+      {drawerOpen && <WorkDrawer />}
     </div>
   );
 }

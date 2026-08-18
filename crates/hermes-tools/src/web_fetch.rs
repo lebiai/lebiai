@@ -18,7 +18,7 @@ use std::path::Path;
 use hermes_core::{CompletionRequest, Message, Result, ToolCallOutcome, ToolSpec};
 use serde::Deserialize;
 
-use crate::http_defaults::HTTP_CLIENT;
+use crate::http_defaults::FETCH_CLIENT;
 use crate::web::{ttl_or_default, WebToolsContext};
 use crate::web_cache;
 
@@ -79,6 +79,13 @@ pub async fn run(
     let a: Args = serde_json::from_value(args)
         .map_err(|e| hermes_core::Error::ToolHost(format!("web_fetch: bad args: {e}")))?;
 
+    if let Err(reason) = crate::url_safety::validate_public_http_url(&a.url) {
+        return Ok(ToolCallOutcome {
+            content: format!("web_fetch blocked: {reason}"),
+            is_error: true,
+        });
+    }
+
     let ttl = ttl_or_default(ctx);
     let cache_key = web_cache::fetch_key(&a.url);
 
@@ -86,7 +93,7 @@ pub async fn run(
     let (markdown, from_cache) = match web_cache::get(&cache_key, ttl) {
         Some(md) => (md, true),
         None => {
-            let resp = HTTP_CLIENT
+            let resp = FETCH_CLIENT
                 .get(&a.url)
                 .send()
                 .await

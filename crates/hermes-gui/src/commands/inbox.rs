@@ -130,6 +130,24 @@ pub async fn accept_pending_review(state: State<'_, AppState>, id: String) -> Re
         InboxPayload::Memory(c) => {
             let mut fm = MemoryFrontmatter::new(Source::Reflection, c.confidence, c.tags, c.zone);
             fm.supersedes = c.supersedes;
+            if let Some(id) = item.distill_id.clone() {
+                fm.extra.insert(
+                    serde_yaml::Value::String("distill_id".into()),
+                    serde_yaml::Value::String(id),
+                );
+            }
+            if let Some(sid) = item.session_id.clone() {
+                fm.extra.insert(
+                    serde_yaml::Value::String("source_session".into()),
+                    serde_yaml::Value::String(sid),
+                );
+            }
+            if let Some(t) = item.through_at.clone() {
+                fm.extra.insert(
+                    serde_yaml::Value::String("through_at".into()),
+                    serde_yaml::Value::String(t),
+                );
+            }
             put_memory_with_fallback(state.memory_store.as_ref(), c.scope, fm, &c.fact)?;
         }
         InboxPayload::Skill(c) => {

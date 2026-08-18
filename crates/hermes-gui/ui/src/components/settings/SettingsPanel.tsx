@@ -1,19 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Save,
-  Plus,
-  X,
   ChevronDown,
   CheckCircle2,
   FolderOpen,
-  User,
-  Cpu,
+  LayoutDashboard,
+  MessageSquare,
   Palette,
-  SlidersHorizontal,
+  Link2,
+  MoreHorizontal,
+  ChevronRight,
 } from "lucide-react";
-import { useUiStore } from "../../store/uiStore";
-import { refreshProviderLabel } from "../../store/uiStore";
+import { useUiStore, refreshProviderLabel } from "../../store/uiStore";
 import type { Language, TranslationKey } from "../../i18n";
 import type { ThemeMode } from "../../utils/theme";
 import { Button, ui } from "../common/ui";
@@ -23,6 +22,16 @@ import { resetOnboarding } from "../../utils/onboarding";
 import { timeGreetingPart } from "../../utils/greeting";
 import { WechatConnectCard } from "./WechatConnectCard";
 import { ApiKeyHelp } from "./ApiKeyHelp";
+import { LicenseSettingsCard } from "../license/LicenseSettingsCard";
+import {
+  useLicenseStore,
+  formatExpiresAt,
+  formatRemaining,
+} from "../../store/licenseStore";
+import {
+  useSettingsNavStore,
+  type SettingsTab,
+} from "../../store/settingsNavStore";
 
 interface ConfigView {
   defaultProvider: string;
@@ -68,13 +77,16 @@ interface Form {
   persistThinking: boolean;
 }
 
-type SettingsTab = "account" | "model" | "experience" | "advanced";
-
-const TABS: { id: SettingsTab; icon: typeof User; labelKey: TranslationKey }[] = [
-  { id: "account", icon: User, labelKey: "settings.tabAccount" },
-  { id: "model", icon: Cpu, labelKey: "settings.tabModel" },
-  { id: "experience", icon: Palette, labelKey: "settings.tabExperience" },
-  { id: "advanced", icon: SlidersHorizontal, labelKey: "settings.tabAdvanced" },
+const TABS: {
+  id: SettingsTab;
+  icon: typeof LayoutDashboard;
+  labelKey: TranslationKey;
+}[] = [
+  { id: "overview", icon: LayoutDashboard, labelKey: "settings.tabOverview" },
+  { id: "dialogue", icon: MessageSquare, labelKey: "settings.tabDialogue" },
+  { id: "appearance", icon: Palette, labelKey: "settings.tabAppearance" },
+  { id: "connections", icon: Link2, labelKey: "settings.tabConnections" },
+  { id: "more", icon: MoreHorizontal, labelKey: "settings.tabMore" },
 ];
 
 function toForm(c: ConfigView): Form {
@@ -104,20 +116,31 @@ export function SettingsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
-  const [tab, setTab] = useState<SettingsTab>("account");
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  // Account: display name
+  const [modelAdvancedOpen, setModelAdvancedOpen] = useState(false);
   const [displayNameDraft, setDisplayNameDraft] = useState("");
   const [seedScenarios, setSeedScenarios] = useState<string[]>([]);
-  const [nameSaving, setNameSaving] = useState(false);
-  // Account: data location
   const [migrating, setMigrating] = useState(false);
   const [migratedHint, setMigratedHint] = useState(false);
-  // Model: key editing state
   const [editingKey, setEditingKey] = useState(false);
   const [clearingKey, setClearingKey] = useState(false);
+  const [wechatState, setWechatState] = useState<string>("stopped");
+  /** Accordion open keys on「更多」 */
+  const [moreOpen, setMoreOpen] = useState<Record<string, boolean>>({
+    license: true,
+    data: false,
+    evolve: false,
+    tools: false,
+    workspace: false,
+    ritual: false,
+    dev: true,
+  });
+  const [devTools, setDevTools] = useState(false);
+  const [devHasBackup, setDevHasBackup] = useState(false);
+  const [devBusy, setDevBusy] = useState(false);
+  const refreshLicense = useLicenseStore((s) => s.refresh);
 
   const t = useUiStore((s) => s.t);
+  const language = useUiStore((s) => s.language);
   const setLanguage = useUiStore((s) => s.setLanguage);
   const setTheme = useUiStore((s) => s.setTheme);
   const setHasApiKey = useUiStore((s) => s.setHasApiKey);
@@ -125,6 +148,26 @@ export function SettingsPanel() {
   const displayName = useUiStore((s) => s.displayName);
   const providerLabel = useUiStore((s) => s.providerLabel);
   const requestOnboarding = useUiStore((s) => s.requestOnboarding);
+
+  const tab = useSettingsNavStore((s) => s.tab);
+  const setTab = useSettingsNavStore((s) => s.setTab);
+  const navRequestId = useSettingsNavStore((s) => s.navRequestId);
+  const focus = useSettingsNavStore((s) => s.focus);
+  const openTo = useSettingsNavStore((s) => s.openTo);
+
+  const licenseStatus = useLicenseStore((s) => s.status);
+
+  /**
+   * Deep-link: openTo("more","license") once → expand accordion only.
+   * Do NOT call requestLicenseFocus here (that re-bumps ids and loops with openTo).
+   * LicenseSettingsCard watches settingsNav focus for paste expand + scroll.
+   */
+  useEffect(() => {
+    if (navRequestId <= 0) return;
+    if (focus === "license") {
+      setMoreOpen((m) => ({ ...m, license: true }));
+    }
+  }, [navRequestId, focus]);
 
   const load = async () => {
     try {
@@ -149,10 +192,53 @@ export function SettingsPanel() {
     } catch {
       /* non-fatal */
     }
+    try {
+      const w = await invoke<{ state: string }>("wechat_status");
+      setWechatState(w.state ?? "stopped");
+    } catch {
+      setWechatState("stopped");
+    }
+    try {
+      const on = await invoke<boolean>("license_dev_tools_enabled");
+      setDevTools(!!on);
+      if (on) {
+        setDevHasBackup(await invoke<boolean>("license_dev_has_backup"));
+      }
+    } catch {
+      setDevTools(false);
+    }
+  };
+
+  const devSimulateExpired = async () => {
+    setDevBusy(true);
+    try {
+      await invoke("license_dev_simulate_expired");
+      setDevHasBackup(true);
+      await refreshLicense();
+      toast.success(t("settings.devSimulated"));
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setDevBusy(false);
+    }
+  };
+
+  const devRestore = async () => {
+    setDevBusy(true);
+    try {
+      await invoke("license_dev_restore_backup");
+      setDevHasBackup(await invoke<boolean>("license_dev_has_backup"));
+      await refreshLicense();
+      toast.success(t("settings.devRestored"));
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setDevBusy(false);
+    }
   };
 
   useEffect(() => {
-    load();
+    void load();
   }, []);
 
   const update = <K extends keyof Form>(k: K, v: Form[K]) => {
@@ -162,8 +248,6 @@ export function SettingsPanel() {
     }
   };
 
-  /** Selecting a provider pre-fills its preset values; the user only types
-   *  the API key. Per-provider on-disk values (custom model, key) are kept. */
   const switchProvider = (key: string) => {
     const opt = config?.providers.find((p) => p.key === key);
     if (!opt) return;
@@ -183,7 +267,9 @@ export function SettingsPanel() {
   };
 
   const selectedProvider =
-    config?.providers.find((p) => p.key === form?.provider) ?? config?.providers[0] ?? null;
+    config?.providers.find((p) => p.key === form?.provider) ??
+    config?.providers[0] ??
+    null;
 
   const reloadAfterWrite = async () => {
     const reloaded = await invoke<ConfigView>("get_config");
@@ -192,17 +278,28 @@ export function SettingsPanel() {
     setHasApiKey(!!reloaded.hasApiKey);
   };
 
-  /** Experience settings save the instant they change — no save button. */
-  const saveExperienceField = async (patch: Record<string, unknown>) => {
+  const saveInstant = async (patch: Record<string, unknown>) => {
     try {
       await invoke("update_config", { update: patch });
       setConfig((c) => (c ? { ...c, ...patch } : c));
       setSavedAt(Date.now());
-      toast.success(t("toast.settingsSaved"));
     } catch (e) {
       const msg = String(e instanceof Error ? e.message : e);
       setError(msg);
       toast.error(msg);
+    }
+  };
+
+  const saveDisplayNameInstant = async (name: string) => {
+    try {
+      await invoke("onboarding_seed_set", {
+        displayName: name.trim(),
+        scenarios: seedScenarios,
+      });
+      setDisplayName(name.trim() || null);
+      setSavedAt(Date.now());
+    } catch (e) {
+      toast.error(String(e instanceof Error ? e.message : e));
     }
   };
 
@@ -269,22 +366,6 @@ export function SettingsPanel() {
       toast.error(msg);
     } finally {
       setSaving(false);
-    }
-  };
-
-  const saveDisplayName = async () => {
-    setNameSaving(true);
-    try {
-      await invoke("onboarding_seed_set", {
-        displayName: displayNameDraft.trim(),
-        scenarios: seedScenarios,
-      });
-      setDisplayName(displayNameDraft.trim() || null);
-      toast.success(t("toast.displayNameSaved"));
-    } catch (e) {
-      toast.error(String(e instanceof Error ? e.message : e));
-    } finally {
-      setNameSaving(false);
     }
   };
 
@@ -371,38 +452,59 @@ export function SettingsPanel() {
             : "settings.greetLate";
   const greetName = displayName?.trim() || t("settings.guestName");
 
+  const wechatLabel =
+    wechatState === "listening"
+      ? t("settings.wechatListening")
+      : wechatState === "token_expired"
+        ? t("settings.wechatTokenExpired")
+        : wechatState === "error"
+          ? t("settings.wechatError")
+          : t("settings.wechatNotConnected");
+
+  const licenseLine = (() => {
+    if (!licenseStatus) return "—";
+    if (licenseStatus.phase === "locked") return t("settings.licenseLineExpired");
+    if (licenseStatus.onTrial) {
+      return t("settings.licenseLineTrial", {
+        remaining: formatRemaining(licenseStatus.remainingSecs, t as never),
+      });
+    }
+    return t("settings.licenseLineOk", {
+      date: formatExpiresAt(licenseStatus.expiresAt, language),
+    });
+  })();
+
+  const needKey = !config.hasApiKey;
+  const licenseNeedsAttention =
+    !!licenseStatus &&
+    (licenseStatus.phase === "locked" ||
+      licenseStatus.urgency === "expiring" ||
+      licenseStatus.onTrial);
+
+  const pageTitle =
+    tab === "dialogue"
+      ? t("settings.pageDialogue")
+      : tab === "appearance"
+        ? t("settings.pageAppearance")
+        : tab === "connections"
+          ? t("settings.pageConnections")
+          : tab === "more"
+            ? t("settings.pageMore")
+            : null;
+
   return (
     <div className={`flex-1 overflow-y-auto ${ui.page}`}>
       <div className="max-w-2xl mx-auto p-6 space-y-5">
-        {/* ── 问候条 ────────────────────────────────────────────── */}
-        <div className={`${ui.card} p-4 flex items-center gap-3`}>
-          <div className="h-10 w-10 shrink-0 rounded-full bg-app-primary-soft dark:bg-blue-950/50 text-app-primary dark:text-blue-300 flex items-center justify-center font-semibold">
-            {greetName.slice(0, 1).toUpperCase()}
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold text-app-fg dark:text-slate-100 truncate">
-              {t("settings.greetTitle", { name: greetName })}
-            </p>
-            <p className="text-xs text-app-fg-secondary dark:text-slate-400">{t(greetKey)}</p>
-          </div>
-          <div className="shrink-0 text-right">
-            <p className="text-[11px] text-app-fg-tertiary">{t("settings.currentModel")}</p>
-            <p className="text-xs font-medium text-app-fg dark:text-slate-200 truncate max-w-40">
-              {providerLabel ?? "—"}
-            </p>
-          </div>
-        </div>
-
-        {/* ── 分组 tab ──────────────────────────────────────────── */}
-        <div className="flex gap-1.5 flex-wrap">
+        {/* Tabs */}
+        <div className="flex gap-1 flex-wrap border-b border-app-border dark:border-slate-800 pb-2">
           {TABS.map(({ id, icon: Icon, labelKey }) => (
             <button
               key={id}
               type="button"
               onClick={() => setTab(id)}
-              className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-sm font-medium transition-colors duration-[var(--motion-fast)] ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                 tab === id
-                  ? "bg-app-primary text-white shadow-sm"
+                  ? "bg-app-primary-soft dark:bg-blue-950/50 text-app-primary dark:text-blue-300"
                   : "text-app-fg-secondary hover:bg-app-muted dark:hover:bg-slate-800"
               }`}
             >
@@ -411,6 +513,12 @@ export function SettingsPanel() {
             </button>
           ))}
         </div>
+
+        {pageTitle && (
+          <h2 className="text-base font-semibold text-app-fg dark:text-slate-100">
+            {pageTitle}
+          </h2>
+        )}
 
         {error && (
           <p className="text-sm text-red-600 dark:text-red-300 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl px-3 py-2">
@@ -423,98 +531,110 @@ export function SettingsPanel() {
           </p>
         )}
 
-        {/* ── 账户 ──────────────────────────────────────────────── */}
-        {tab === "account" && (
+        {/* ── 概览 ─────────────────────────────────────────────── */}
+        {tab === "overview" && (
           <div className="space-y-4 fade-up-in">
             <section className={`${ui.card} p-4 space-y-4`}>
-              <div className="flex items-center gap-2">
-                <User size={15} className="text-app-fg-tertiary" />
-                <h3 className="text-sm font-semibold text-app-fg dark:text-slate-100">
-                  {t("settings.account")}
-                </h3>
-              </div>
-
-              <div>
-                <label className="block text-xs text-app-fg-secondary mb-1">
-                  {t("settings.displayName")}
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    value={displayNameDraft}
-                    onChange={(e) => setDisplayNameDraft(e.target.value)}
-                    placeholder={
-                      displayNameDraft
-                        ? undefined
-                        : t("settings.displayNamePlaceholder")
-                    }
-                    className={`${ui.input} font-normal`}
-                  />
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={saveDisplayName}
-                    disabled={nameSaving}
-                  >
-                    {nameSaving ? t("settings.saving") : t("settings.save")}
-                  </Button>
+              <div className="flex items-start gap-3">
+                <div className="h-10 w-10 shrink-0 rounded-full bg-app-primary-soft dark:bg-blue-950/50 text-app-primary dark:text-blue-300 flex items-center justify-center font-semibold">
+                  {greetName.slice(0, 1).toUpperCase()}
                 </div>
-                <p className="text-xs text-app-fg-tertiary mt-1.5">
-                  {t("settings.displayNameHint")}
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="block text-xs text-app-fg-secondary">
-                  {t("settings.dataLocation")}
-                </label>
-                <div className="px-3 py-2 text-sm rounded-xl border border-app-border dark:border-slate-700 bg-app-muted/50 dark:bg-slate-800/60 font-mono break-all text-app-fg dark:text-slate-200">
-                  {config.dataDir}
-                </div>
-                <p className="text-xs text-app-fg-tertiary leading-relaxed">
-                  {t("settings.dataDirHint")}
-                </p>
-                <div className="flex items-center gap-2 pt-1">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={pickDataDir}
-                    disabled={migrating}
-                  >
-                    <FolderOpen size={13} />
-                    {t("settings.dataDirChoose")}
-                  </Button>
-                </div>
-                {migrating && (
-                  <p className="text-xs text-app-fg-secondary">{t("settings.dataDirMigrating")}</p>
-                )}
-                {migratedHint && (
-                  <p className="text-xs text-emerald-700 dark:text-emerald-300">
-                    {t("settings.dataDirRestartHint")}
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-app-fg dark:text-slate-100 truncate">
+                    {t("settings.greetTitle", { name: greetName })}
                   </p>
-                )}
-                <button
-                  type="button"
-                  onClick={resetDataDir}
-                  className="text-xs text-app-fg-tertiary hover:text-app-fg-secondary underline underline-offset-2"
-                >
-                  {t("settings.dataDirReset")}
-                </button>
+                  <p className="text-xs text-app-fg-secondary">{t(greetKey)}</p>
+                  <p className="text-[11px] text-app-fg-tertiary mt-1">
+                    {t("settings.currentModel")}: {providerLabel ?? "—"}
+                  </p>
+                </div>
               </div>
+
+              <StatusRow
+                tone={needKey ? "warn" : "ok"}
+                title={needKey ? t("settings.dialogueNeedKey") : t("settings.dialogueReady")}
+                subtitle={needKey ? t("settings.dialogueNeedKeyHint") : providerLabel ?? undefined}
+                action={
+                  needKey ? (
+                    <Button size="sm" onClick={() => setTab("dialogue")}>
+                      {t("settings.ctaConfigureModel")}
+                    </Button>
+                  ) : undefined
+                }
+              />
+
+              <StatusRow
+                tone={
+                  licenseStatus?.phase === "locked"
+                    ? "danger"
+                    : licenseNeedsAttention
+                      ? "warn"
+                      : "ok"
+                }
+                title={licenseLine}
+                action={
+                  licenseStatus?.phase === "locked" ||
+                  licenseStatus?.urgency === "expiring" ? (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => openTo("more", "license")}
+                    >
+                      {t("settings.ctaRenew")}
+                    </Button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="text-xs text-app-primary hover:underline"
+                      onClick={() => openTo("more", "license")}
+                    >
+                      {t("settings.tabMore")}
+                    </button>
+                  )
+                }
+              />
+
+              <StatusRow
+                tone={wechatState === "listening" ? "ok" : "neutral"}
+                title={t("settings.wechatLine", { state: wechatLabel })}
+                action={
+                  <button
+                    type="button"
+                    className="text-xs text-app-primary hover:underline"
+                    onClick={() => setTab("connections")}
+                  >
+                    {t("settings.ctaConnections")}
+                  </button>
+                }
+              />
             </section>
 
-            <WechatConnectCard />
+            <section className={`${ui.card} divide-y divide-app-border dark:divide-slate-800`}>
+              <QuickLink
+                label={t("settings.ctaAppearance")}
+                onClick={() => setTab("appearance")}
+              />
+              {!needKey && (
+                <QuickLink
+                  label={t("settings.tabDialogue")}
+                  onClick={() => setTab("dialogue")}
+                />
+              )}
+              <QuickLink
+                label={t("settings.tabConnections")}
+                onClick={() => setTab("connections")}
+              />
+            </section>
           </div>
         )}
 
-        {/* ── 模型服务 ──────────────────────────────────────────── */}
-        {tab === "model" && selectedProvider && (
+        {/* ── 对话 ─────────────────────────────────────────────── */}
+        {tab === "dialogue" && selectedProvider && (
           <section className={`${ui.card} p-4 space-y-4 fade-up-in`}>
-            <div className="flex items-center gap-2">
-              <Cpu size={15} className="text-app-fg-tertiary" />
-              <h3 className="text-sm font-semibold text-app-fg dark:text-slate-100">
-                {t("settings.provider")}
-              </h3>
-            </div>
+            <p className="text-xs text-app-fg-tertiary leading-relaxed">
+              {t("settings.providerHint")}
+            </p>
+            <p className="text-[11px] text-app-fg-tertiary">{t("settings.savePolicyHint")}</p>
 
             <SelectField
               label={t("settings.providerSelect")}
@@ -525,7 +645,6 @@ export function SettingsPanel() {
                 label: t(`provider.${p.key}` as TranslationKey),
               }))}
             />
-            <p className="text-xs text-app-fg-tertiary">{t("settings.providerHint")}</p>
 
             {selectedProvider.hasApiKey && !editingKey ? (
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-emerald-200 dark:border-emerald-800/70 bg-emerald-50/60 dark:bg-emerald-950/30 px-3 py-2.5">
@@ -546,7 +665,7 @@ export function SettingsPanel() {
                   </button>
                   <button
                     type="button"
-                    onClick={clearKey}
+                    onClick={() => void clearKey()}
                     disabled={clearingKey}
                     className="text-xs text-app-danger hover:underline disabled:opacity-50"
                   >
@@ -579,31 +698,31 @@ export function SettingsPanel() {
                 {!selectedProvider.hasApiKey && (
                   <ApiKeyHelp provider={selectedProvider.key} />
                 )}
-                {selectedProvider.hasApiKey && editingKey && (
-                  <p className="text-xs text-app-fg-tertiary">
-                    {t("settings.apiKeyHelpStep3")}
-                  </p>
-                )}
               </>
             )}
 
             <div>
               <button
                 type="button"
-                onClick={() => setAdvancedOpen((v) => !v)}
+                onClick={() => setModelAdvancedOpen((v) => !v)}
                 className="flex items-center gap-1.5 text-xs text-app-fg-secondary hover:text-app-fg"
               >
                 <ChevronDown
                   size={13}
-                  className={`transition-transform duration-[var(--motion-fast)] ${
-                    advancedOpen ? "rotate-180" : ""
-                  }`}
+                  className={`transition-transform ${modelAdvancedOpen ? "rotate-180" : ""}`}
                 />
                 {t("settings.advanced")}
               </button>
-              {advancedOpen && (
+              <p className="text-[11px] text-app-fg-tertiary mt-1">
+                {t("settings.modelAdvancedHint")}
+              </p>
+              {modelAdvancedOpen && (
                 <div className="grid grid-cols-2 gap-4 pt-2">
-                  <TextField label={t("settings.model")} value={form.model} onChange={(v) => update("model", v)} />
+                  <TextField
+                    label={t("settings.model")}
+                    value={form.model}
+                    onChange={(v) => update("model", v)}
+                  />
                   <TextField
                     label={t("settings.maxTokens")}
                     value={form.maxTokens}
@@ -621,7 +740,7 @@ export function SettingsPanel() {
             </div>
 
             <div className="flex justify-end pt-1">
-              <Button onClick={saveModel} disabled={saving}>
+              <Button onClick={() => void saveModel()} disabled={saving}>
                 <Save size={12} />
                 {saving ? t("settings.saving") : t("settings.save")}
               </Button>
@@ -629,15 +748,27 @@ export function SettingsPanel() {
           </section>
         )}
 
-        {/* ── 体验 ──────────────────────────────────────────────── */}
-        {tab === "experience" && (
-          <section className={`${ui.card} p-4 space-y-4 fade-up-in`}>
-            <div className="flex items-center gap-2">
-              <Palette size={15} className="text-app-fg-tertiary" />
-              <h3 className="text-sm font-semibold text-app-fg dark:text-slate-100">
-                {t("settings.interface")}
-              </h3>
-            </div>
+        {/* ── 外观 ─────────────────────────────────────────────── */}
+        {tab === "appearance" && (
+          <section className={`${ui.card} p-4 space-y-5 fade-up-in`}>
+            <SettingsRow
+              label={t("settings.displayName")}
+              hint={t("settings.displayNameHint")}
+            >
+              <input
+                value={displayNameDraft}
+                onChange={(e) => setDisplayNameDraft(e.target.value)}
+                onBlur={() => void saveDisplayNameInstant(displayNameDraft)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+                placeholder={t("settings.displayNamePlaceholder")}
+                className={`${ui.input} font-normal`}
+              />
+            </SettingsRow>
 
             <div className="grid grid-cols-2 gap-4">
               <SelectField
@@ -646,7 +777,7 @@ export function SettingsPanel() {
                 onChange={(v) => {
                   update("uiLanguage", v as Language);
                   setLanguage(v);
-                  void saveExperienceField({ uiLanguage: v });
+                  void saveInstant({ uiLanguage: v });
                 }}
                 options={[
                   { value: "en-US", label: "English" },
@@ -659,7 +790,7 @@ export function SettingsPanel() {
                 onChange={(v) => {
                   update("uiTheme", v as ThemeMode);
                   setTheme(v);
-                  void saveExperienceField({ uiTheme: v });
+                  void saveInstant({ uiTheme: v });
                 }}
                 options={[
                   { value: "system", label: t("settings.themeSystem") },
@@ -668,9 +799,9 @@ export function SettingsPanel() {
                 ]}
               />
             </div>
-            <p className="text-xs text-app-fg-tertiary">{t("settings.languageHint")}</p>
             <p className="text-xs text-app-fg-tertiary">{t("settings.themeHint")}</p>
-            <label className="flex items-start gap-2 text-sm text-app-fg dark:text-slate-200 pt-1 cursor-pointer">
+
+            <label className="flex items-start gap-2 text-sm text-app-fg dark:text-slate-200 cursor-pointer">
               <input
                 type="checkbox"
                 className="mt-0.5 rounded border-app-border"
@@ -678,7 +809,7 @@ export function SettingsPanel() {
                 onChange={(e) => {
                   const v = e.target.checked;
                   update("persistThinking", v);
-                  void saveExperienceField({ persistThinking: v });
+                  void saveInstant({ persistThinking: v });
                 }}
               />
               <span>
@@ -691,113 +822,334 @@ export function SettingsPanel() {
           </section>
         )}
 
-        {/* ── 高级 ──────────────────────────────────────────────── */}
-        {tab === "advanced" && (
-          <section className={`${ui.card} p-4 space-y-5 fade-up-in`}>
-            <div className="flex items-center gap-2">
-              <SlidersHorizontal size={15} className="text-app-fg-tertiary" />
-              <h3 className="text-sm font-semibold text-app-fg dark:text-slate-100">
-                {t("settings.advancedTitle")}
-              </h3>
-            </div>
+        {/* ── 连接 ─────────────────────────────────────────────── */}
+        {tab === "connections" && (
+          <div className="space-y-4 fade-up-in">
+            <p className="text-sm text-app-fg-secondary leading-relaxed">
+              {t("settings.connectionsIntro")}
+            </p>
+            <WechatConnectCard />
+          </div>
+        )}
 
-            <div className="space-y-3">
-              <h4 className="text-xs font-medium text-app-fg-secondary">
-                {t("settings.ritual")}
-              </h4>
-              <p className="text-xs text-app-fg-tertiary leading-relaxed">
-                {t("settings.replayOnboardingHint")}
-              </p>
-              <Button
-                size="sm"
-                variant="accent"
-                onClick={() => {
-                  resetOnboarding();
-                  requestOnboarding();
-                  toast.success(t("toast.replayOnboarding"));
-                }}
-              >
-                {t("settings.replayOnboardingNow")}
-              </Button>
-            </div>
+        {/* ── 更多 ─────────────────────────────────────────────── */}
+        {tab === "more" && (
+          <div className="space-y-3 fade-up-in">
+            <p className="text-[11px] text-app-fg-tertiary">{t("settings.savePolicyHint")}</p>
 
-            <div className="grid grid-cols-2 gap-4">
-              <TextField
-                label={t("settings.minTurns")}
-                value={form.reflectMinTurns}
-                onChange={(v) => update("reflectMinTurns", v)}
-                type="number"
-              />
-              <div className="flex items-end pb-1">
-                <label className="flex items-center gap-2 text-sm text-app-fg dark:text-slate-200 cursor-pointer">
+            <Accordion
+              title={t("settings.sectionLicense")}
+              open={moreOpen.license}
+              onToggle={() => setMoreOpen((m) => ({ ...m, license: !m.license }))}
+            >
+              <LicenseSettingsCard />
+            </Accordion>
+
+            <Accordion
+              title={t("settings.sectionData")}
+              open={moreOpen.data}
+              onToggle={() => setMoreOpen((m) => ({ ...m, data: !m.data }))}
+            >
+              <div className="space-y-2 p-1">
+                <div className="px-3 py-2 text-sm rounded-xl border border-app-border dark:border-slate-700 bg-app-muted/50 dark:bg-slate-800/60 font-mono break-all">
+                  {config.dataDir}
+                </div>
+                <p className="text-xs text-app-fg-tertiary">{t("settings.dataDirHint")}</p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => void pickDataDir()}
+                    disabled={migrating}
+                  >
+                    <FolderOpen size={13} />
+                    {t("settings.dataDirChoose")}
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => void resetDataDir()}
+                    className="text-xs text-app-fg-tertiary hover:text-app-fg-secondary underline"
+                  >
+                    {t("settings.dataDirReset")}
+                  </button>
+                </div>
+                {migrating && (
+                  <p className="text-xs text-app-fg-secondary">
+                    {t("settings.dataDirMigrating")}
+                  </p>
+                )}
+                {migratedHint && (
+                  <p className="text-xs text-emerald-700 dark:text-emerald-300">
+                    {t("settings.dataDirRestartHint")}
+                  </p>
+                )}
+              </div>
+            </Accordion>
+
+            <Accordion
+              title={t("settings.sectionEvolve")}
+              open={moreOpen.evolve}
+              onToggle={() => setMoreOpen((m) => ({ ...m, evolve: !m.evolve }))}
+            >
+              <div className="space-y-3 p-1">
+                <p className="text-xs text-app-fg-secondary leading-relaxed">
+                  {t("settings.evolveQuietHint")}
+                </p>
+                <TextField
+                  label={t("settings.minTurns")}
+                  value={form.reflectMinTurns}
+                  onChange={(v) => update("reflectMinTurns", v)}
+                  type="number"
+                />
+                <label className="flex items-start gap-2 text-sm text-app-fg cursor-pointer">
                   <input
                     type="checkbox"
+                    className="mt-0.5 rounded border-app-border"
                     checked={form.reflectAutoAcceptMemories}
                     onChange={(e) =>
                       update("reflectAutoAcceptMemories", e.target.checked)
                     }
-                    className="rounded border-app-border"
                   />
-                  {t("settings.autoAcceptMemories")}
+                  <span>
+                    <span className="font-medium">{t("settings.autoAcceptMemories")}</span>
+                    <span className="block text-xs text-app-fg-tertiary mt-0.5">
+                      {t("settings.autoAcceptHint")}
+                    </span>
+                  </span>
                 </label>
               </div>
-            </div>
+            </Accordion>
 
-            <TextField
-              label={t("settings.modelLimit")}
-              value={form.contextModelLimit}
-              onChange={(v) => update("contextModelLimit", v)}
-              type="number"
-            />
+            <Accordion
+              title={t("settings.sectionTools")}
+              open={moreOpen.tools}
+              onToggle={() => setMoreOpen((m) => ({ ...m, tools: !m.tools }))}
+            >
+              <div className="space-y-3 p-1">
+                <TextField
+                  label={t("settings.modelLimit")}
+                  value={form.contextModelLimit}
+                  onChange={(v) => update("contextModelLimit", v)}
+                  type="number"
+                />
+                <p className="text-[11px] text-app-fg-tertiary">
+                  {t("settings.permissionHelp")}
+                </p>
+                <PermList
+                  label={t("settings.allow")}
+                  items={form.permissionsAllow}
+                  onChange={(items) => update("permissionsAllow", items)}
+                  addLabel={t("settings.add")}
+                />
+                <PermList
+                  label={t("settings.deny")}
+                  items={form.permissionsDeny}
+                  onChange={(items) => update("permissionsDeny", items)}
+                  addLabel={t("settings.add")}
+                />
+              </div>
+            </Accordion>
 
-            <div className="space-y-2">
-              <p className="text-xs text-app-fg-secondary">
-                {t("settings.toolPermissions")}
-              </p>
-              <p className="text-xs text-app-fg-tertiary">{t("settings.permissionHelp")}</p>
-              <RuleList
-                label={t("settings.allow")}
-                tone="green"
-                rules={form.permissionsAllow}
-                onChange={(rules) => update("permissionsAllow", rules)}
-              />
-              <RuleList
-                label={t("settings.deny")}
-                tone="red"
-                rules={form.permissionsDeny}
-                onChange={(rules) => update("permissionsDeny", rules)}
-              />
-            </div>
+            <Accordion
+              title={t("settings.sectionWorkspace")}
+              open={moreOpen.workspace}
+              onToggle={() =>
+                setMoreOpen((m) => ({ ...m, workspace: !m.workspace }))
+              }
+            >
+              <div className="space-y-2 p-1">
+                <ReadOnlyField label={t("settings.root")} value={config.workspaceRoot} />
+                <p className="text-[11px] text-app-fg-tertiary">
+                  {t("settings.workspaceHelp")}
+                </p>
+              </div>
+            </Accordion>
 
-            <div className="space-y-2">
-              <p className="text-xs text-app-fg-secondary">{t("settings.workspace")}</p>
-              <ReadOnlyField label={t("settings.root")} value={config.workspaceRoot} />
-              <p className="text-[11px] text-app-fg-tertiary">{t("settings.workspaceHelp")}</p>
-            </div>
+            <Accordion
+              title={t("settings.sectionRitual")}
+              open={moreOpen.ritual}
+              onToggle={() => setMoreOpen((m) => ({ ...m, ritual: !m.ritual }))}
+            >
+              <div className="space-y-2 p-1">
+                <p className="text-xs text-app-fg-tertiary leading-relaxed">
+                  {t("settings.replayOnboardingHint")}
+                </p>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    resetOnboarding();
+                    requestOnboarding();
+                    toast.success(t("toast.replayOnboarding"));
+                  }}
+                >
+                  {t("settings.replayOnboardingNow")}
+                </Button>
+              </div>
+            </Accordion>
 
-            <div className="flex justify-end pt-1">
-              <Button onClick={saveAdvanced} disabled={saving}>
+            {/* Owner-only: debug builds / LEBI_DEV_TOOLS — release packages hide this */}
+            {devTools && (
+              <Accordion
+                title={t("settings.sectionDev")}
+                open={moreOpen.dev}
+                onToggle={() => setMoreOpen((m) => ({ ...m, dev: !m.dev }))}
+              >
+                <div className="space-y-3 p-1">
+                  <p className="text-xs text-amber-800 dark:text-amber-200/90 leading-relaxed rounded-lg border border-amber-300/60 dark:border-amber-700/50 bg-amber-50/80 dark:bg-amber-950/30 px-2.5 py-2">
+                    {t("settings.devHint")}
+                  </p>
+                  <p className="text-xs text-app-fg-tertiary leading-relaxed">
+                    {t("settings.devSimulateHint")}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      disabled={devBusy}
+                      onClick={() => void devSimulateExpired()}
+                    >
+                      {t("settings.devSimulateExpired")}
+                    </Button>
+                    {devHasBackup && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={devBusy}
+                        onClick={() => void devRestore()}
+                      >
+                        {t("settings.devRestore")}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </Accordion>
+            )}
+
+            <div className="flex justify-end pt-2">
+              <Button onClick={() => void saveAdvanced()} disabled={saving}>
                 <Save size={12} />
                 {saving ? t("settings.saving") : t("settings.save")}
               </Button>
             </div>
-          </section>
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-interface TextFieldProps {
+/* ── shared bits ───────────────────────────────────────────────── */
+
+function StatusRow({
+  tone,
+  title,
+  subtitle,
+  action,
+}: {
+  tone: "ok" | "warn" | "danger" | "neutral";
+  title: string;
+  subtitle?: string;
+  action?: ReactNode;
+}) {
+  const bar =
+    tone === "ok"
+      ? "border-l-emerald-500"
+      : tone === "warn"
+        ? "border-l-amber-500"
+        : tone === "danger"
+          ? "border-l-red-500"
+          : "border-l-app-border dark:border-l-slate-600";
+  return (
+    <div
+      className={`flex items-center gap-3 pl-3 border-l-2 ${bar} py-1 min-w-0`}
+    >
+      <div className="min-w-0 flex-1">
+        <p className="text-sm text-app-fg dark:text-slate-100 truncate">{title}</p>
+        {subtitle && (
+          <p className="text-[11px] text-app-fg-tertiary truncate">{subtitle}</p>
+        )}
+      </div>
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
+  );
+}
+
+function QuickLink({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full flex items-center justify-between px-4 py-3 text-sm text-app-fg hover:bg-app-muted/60 dark:hover:bg-slate-800/50 transition-colors"
+    >
+      <span>{label}</span>
+      <ChevronRight size={16} className="text-app-fg-tertiary" />
+    </button>
+  );
+}
+
+function Accordion({
+  title,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`${ui.card} overflow-hidden`}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-4 py-3 text-left text-sm font-medium text-app-fg dark:text-slate-100 hover:bg-app-muted/40 dark:hover:bg-slate-800/40"
+      >
+        <span>{title}</span>
+        <ChevronDown
+          size={16}
+          className={`text-app-fg-tertiary transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && <div className="px-3 pb-3">{children}</div>}
+    </div>
+  );
+}
+
+function SettingsRow({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label className="block text-xs text-app-fg-secondary">{label}</label>
+      {children}
+      {hint && <p className="text-[11px] text-app-fg-tertiary">{hint}</p>}
+    </div>
+  );
+}
+
+function TextField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+  className = "",
+}: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   type?: "text" | "number" | "password";
   className?: string;
-}
-
-function TextField({ label, value, onChange, placeholder, type = "text", className = "" }: TextFieldProps) {
+}) {
   return (
     <div className={className}>
       <label className="block text-xs text-app-fg-secondary mb-1">{label}</label>
@@ -812,58 +1164,61 @@ function TextField({ label, value, onChange, placeholder, type = "text", classNa
   );
 }
 
-interface SelectFieldProps {
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+}: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   options: { value: string; label: string }[];
-}
-
-function SelectField({ label, value, onChange, options }: SelectFieldProps) {
+}) {
   return <Select label={label} value={value} onChange={onChange} options={options} />;
 }
 
-function ReadOnlyField({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <label className="block text-xs text-app-fg-secondary mb-1">{label}</label>
-      <div className="px-3 py-2 text-sm rounded-xl border border-app-border dark:border-slate-700 bg-app-muted/50 dark:bg-slate-800/60 font-mono break-all text-app-fg dark:text-slate-200">
-        {value}
-      </div>
-    </div>
-  );
-}
-
-interface RuleListProps {
+function PermList({
+  label,
+  items,
+  onChange,
+  addLabel,
+}: {
   label: string;
-  tone: "green" | "red";
-  rules: string[];
-  onChange: (rules: string[]) => void;
-}
-
-function RuleList({ label, tone, rules, onChange }: RuleListProps) {
+  items: string[];
+  onChange: (next: string[]) => void;
+  addLabel: string;
+}) {
   const [draft, setDraft] = useState("");
-  const colors =
-    tone === "green"
-      ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300"
-      : "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300";
-
   const add = () => {
     const v = draft.trim();
-    if (!v) return;
-    if (rules.includes(v)) {
-      setDraft("");
-      return;
-    }
-    onChange([...rules, v]);
+    if (!v || items.includes(v)) return;
+    onChange([...items, v]);
     setDraft("");
   };
-
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <span className={`text-xs px-2 py-0.5 rounded-full ${colors}`}>{label}</span>
-        <div className="flex-1" />
+    <div className="space-y-1.5">
+      <p className="text-xs text-app-fg-secondary">{label}</p>
+      {items.length > 0 && (
+        <ul className="space-y-1">
+          {items.map((item) => (
+            <li
+              key={item}
+              className="flex items-center gap-2 text-[12px] font-mono text-app-fg"
+            >
+              <span className="flex-1 min-w-0 truncate">{item}</span>
+              <button
+                type="button"
+                className="text-app-fg-tertiary hover:text-app-danger"
+                onClick={() => onChange(items.filter((x) => x !== item))}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex gap-2">
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -873,27 +1228,25 @@ function RuleList({ label, tone, rules, onChange }: RuleListProps) {
               add();
             }
           }}
-          className={`${ui.input} h-8 text-xs`}
+          className={`${ui.input} py-1.5 text-xs font-mono`}
         />
         <Button size="sm" variant="secondary" onClick={add}>
-          <Plus size={12} />
+          {addLabel}
         </Button>
       </div>
-      {rules.map((rule) => (
-        <div
-          key={rule}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-app-muted/50 dark:bg-slate-800/60 text-xs font-mono"
-        >
-          <span className="flex-1 truncate">{rule}</span>
-          <button
-            type="button"
-            onClick={() => onChange(rules.filter((r) => r !== rule))}
-            className="text-app-fg-tertiary hover:text-app-danger"
-          >
-            <X size={13} />
-          </button>
-        </div>
-      ))}
     </div>
   );
 }
+
+function ReadOnlyField({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <label className="block text-xs text-app-fg-secondary mb-1">{label}</label>
+      <div className="px-3 py-2 text-sm rounded-xl border border-app-border dark:border-slate-700 bg-app-muted/50 dark:bg-slate-800/60 font-mono break-all">
+        {value}
+      </div>
+    </div>
+  );
+}
+
+

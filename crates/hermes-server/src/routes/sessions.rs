@@ -6,7 +6,6 @@
 //! `GET    /api/v1/sessions/load?path=` → load (replay + re-attach writer)
 //! `DELETE /api/v1/sessions?path=`      → delete
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
@@ -132,9 +131,8 @@ pub async fn list_sessions() -> Result<Json<Vec<SessionSummary>>, ApiError> {
     }
     let _ = hermes_store::purge_empty_sessions(&sessions_dir);
 
-    let mut paths =
+    let paths =
         hermes_store::list_sessions(&sessions_dir).map_err(|e| ApiError::Session(e.to_string()))?;
-    paths.truncate(50);
 
     let mut entries = Vec::new();
     for path in paths {
@@ -150,6 +148,7 @@ pub async fn list_sessions() -> Result<Json<Vec<SessionSummary>>, ApiError> {
             });
         }
     }
+    entries.truncate(50);
     Ok(Json(entries))
 }
 
@@ -208,7 +207,8 @@ pub async fn load_session(
     State(state): State<Arc<AppState>>,
     Query(q): Query<PathQuery>,
 ) -> Result<Json<LoadedSessionData>, ApiError> {
-    let path = PathBuf::from(&q.path);
+    let path = hermes_store::ensure_session_path(&q.path)
+        .map_err(|e| ApiError::Session(e.to_string()))?;
     let session =
         hermes_store::read_session(&path).map_err(|e| ApiError::Session(e.to_string()))?;
     let id = session.meta.id.clone();
@@ -246,7 +246,8 @@ pub async fn load_session(
 }
 
 pub async fn delete_session(Query(q): Query<PathQuery>) -> Result<Json<()>, ApiError> {
-    let path = PathBuf::from(&q.path);
+    let path = hermes_store::ensure_session_path(&q.path)
+        .map_err(|e| ApiError::Session(e.to_string()))?;
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| ApiError::Session(e.to_string()))?;
     }

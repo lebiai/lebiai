@@ -302,6 +302,7 @@ impl MemoryStore for FsMemoryStore {
         Ok(all
             .into_iter()
             .filter(|m| !superseded_owned.contains(m.id()))
+            .filter(|m| !crate::slot::is_worthless_for_living(&m.body))
             .collect())
     }
 

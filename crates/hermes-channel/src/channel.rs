@@ -32,24 +32,19 @@ use hermes_turn::{TurnConfig, TurnEvent};
 use crate::context::ContextSources;
 use crate::system_prompt::inject_time_header;
 
-/// Tools a chat channel may invoke. The whitelist IS the safety boundary:
-/// every entry is hand-vetted for a surface with no confirmation UI.
-/// `serve_inbound` passes `confirm_tx: None` (no modal on IM), so destructive
-/// or code-installing tools (`skill_install`, `skill_delete`,
-/// `memory_delete`, `subagent`) are deliberately **not** whitelisted — they
-/// stay exclusive to surfaces with a confirmation modal (GUI/CLI).
-pub const CHAT_TOOL_WHITELIST: &[&str] = &[
+/// Tools for **IM surfaces** (WeChat / Feishu / Telegram): no confirmation UI.
+/// Durable writes (`memory_save` / `skill_create`) are excluded so untrusted
+/// senders cannot poison long-term state even if allowlisted to chat.
+pub const IM_TOOL_WHITELIST: &[&str] = &[
     "web_search",
     "web_fetch",
     "memory_search",
-    "memory_save",
     "palace_zones",
     "palace_read_zone",
     "palace_recall",
     "skill_list",
     "skill_read",
     "skill_read_file",
-    "skill_create",
     "think",
 ];
 
@@ -231,8 +226,22 @@ pub async fn serve_inbound<C>(
 where
     C: Channel + Clone + Send + Sync + 'static,
 {
+    // Sender allowlist (fail-closed). Config: ~/.lebi-ai/channel-allowlist.toml
+    if !crate::access::is_sender_allowed(channel.name(), user_id) {
+        tracing::warn!(
+            channel = channel.name(),
+            user_id,
+            "IM sender not in channel-allowlist; denied"
+        );
+        let msg = crate::access::deny_message(channel.name());
+        if let Err(e) = channel.send(&reply, &msg).await {
+            tracing::warn!(error = %e, "sending allowlist denial failed");
+        }
+        return Ok(());
+    }
+
     // Append the user message to history + writer.
-    let user_msg = Message::user_text(text.to_string());
+    let user_msg = Message::user_sent(text.to_string());
     state.history.push(user_msg.clone());
     if let Err(e) = state.writer.append(&SessionEvent::Message(user_msg)) {
         tracing::warn!(error = %e, "persisting user message failed");
@@ -245,7 +254,9 @@ where
 
     // Prepend a current-time header to the last user message (model-only;
     // not persisted to the session log).
-    let history_for_turn = inject_time_header(state.history.clone());
+    let history_for_turn = inject_time_header(hermes_core::sanitize_history_for_provider(
+        &state.history,
+    ));
 
     // Channel for streaming tool-call summaries back to the user.
     let (tool_tx, mut tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -300,10 +311,15 @@ where
     drop(tool_tx);
     let _ = echo_task.await;
 
-    // Append all turn messages to history + writer.
+    // Append turn messages. Care / time-header nudges stay off disk and
+    // out of the next turn's history (same contract as GUI).
     for m in &output.new_messages {
-        state.history.push(m.clone());
-        if let Err(e) = state.writer.append(&SessionEvent::Message(m.clone())) {
+        let to_disk = m.for_persist(false);
+        if to_disk.content.is_empty() {
+            continue;
+        }
+        state.history.push(to_disk.clone());
+        if let Err(e) = state.writer.append(&SessionEvent::Message(to_disk)) {
             tracing::warn!(error = %e, "persisting assistant message failed");
         }
     }
@@ -337,4 +353,21 @@ where
         .await
         .context("sending reply")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod whitelist_tests {
+    use super::IM_TOOL_WHITELIST;
+
+    #[test]
+    fn im_cannot_open_or_write() {
+        for denied in ["open", "write", "edit", "bash", "memory_save", "skill_create"] {
+            assert!(
+                !IM_TOOL_WHITELIST.contains(&denied),
+                "IM must not expose {denied}"
+            );
+        }
+        assert!(IM_TOOL_WHITELIST.contains(&"web_search"));
+        assert!(IM_TOOL_WHITELIST.contains(&"think"));
+    }
 }

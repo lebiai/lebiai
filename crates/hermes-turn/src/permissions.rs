@@ -96,19 +96,24 @@ fn parse_rule(s: &str) -> PermissionRule {
 }
 
 /// Extract the key argument from a tool call's JSON input, matching the same
-/// logic as `tool_call_summary()`.
+/// logic as `tool_call_summary()` (and real tool schemas).
+///
+/// write/edit accept both `path` (built-in tools) and `file_path` (legacy /
+/// MCP-style) so permission rules like `deny: edit:*.env` actually match.
 fn extract_key_arg(tool_name: &str, input: &serde_json::Value) -> Option<String> {
-    let key_field = match tool_name {
-        "bash" => "command",
-        "write" => "file_path",
-        "edit" => "file_path",
-        "web_fetch" => "url",
-        "web_search" => "query",
-        _ => "",
+    let key_fields: &[&str] = match tool_name {
+        "bash" => &["command"],
+        "write" | "edit" => &["path", "file_path"],
+        "web_fetch" => &["url"],
+        "web_search" => &["query"],
+        "read" | "glob" | "grep" => &["path", "file_path", "pattern"],
+        "commitment_save" => &["title"],
+        "commitment_close" | "commitment_drop" => &["id"],
+        _ => &[],
     };
 
-    if !key_field.is_empty() {
-        if let Some(val) = input.get(key_field).and_then(|v| v.as_str()) {
+    for key_field in key_fields {
+        if let Some(val) = input.get(*key_field).and_then(|v| v.as_str()) {
             return Some(val.to_string());
         }
     }
@@ -221,6 +226,20 @@ mod tests {
         assert_eq!(
             checker.check("edit", &serde_json::json!({"file_path": "/foo/bar.toml"})),
             Permission::Prompt
+        );
+        // Built-in tools use `path`, not only `file_path`.
+        assert_eq!(
+            checker.check("edit", &serde_json::json!({"path": "/foo/main.rs"})),
+            Permission::Allow
+        );
+        assert_eq!(
+            checker.check("write", &serde_json::json!({"path": "notes.toml"})),
+            Permission::Prompt
+        );
+        let deny_env = PermissionChecker::new(&[], &["write:*.env".to_string()]);
+        assert_eq!(
+            deny_env.check("write", &serde_json::json!({"path": "secrets.env"})),
+            Permission::Deny
         );
     }
 

@@ -6,6 +6,9 @@
 #           `cargo install tauri-cli --version "^2" --locked`
 #
 # Notes:
+# - Never bundle scripts/license-issuer.html or scripts/issue-license.py
+#   (developer-only signing tools; they are not under frontendDist or
+#   bundle.resources and must stay out of the EXE/NSIS installer).
 # - The resulting installer is unsigned. Windows SmartScreen will warn on
 #   first run — see docs/install.md for the "More info → Run anyway" path.
 # - The markitdown document-converter sidecar is bundled on both macOS and

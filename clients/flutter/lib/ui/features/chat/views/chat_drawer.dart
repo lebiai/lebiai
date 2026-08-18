@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hermes_app/ui/features/chat/view_models/chat_providers.dart';
 import 'package:hermes_app/ui/features/chat/view_models/sessions_providers.dart';
 import 'package:hermes_app/ui/features/connection/view_models/connection_providers.dart';
+import 'package:hermes_app/ui/features/evolve/views/evolve_screen.dart';
 import 'package:hermes_app/ui/features/settings/views/settings_screen.dart';
 import 'package:hermes_app/ui/theme/app_dimensions.dart';
 import 'package:hermes_app/ui/widgets/brand_mark.dart';
@@ -141,6 +142,19 @@ class ChatDrawer extends ConsumerWidget {
             ),
             const Divider(),
             // ---- Footer ------------------------------------------------
+            ListTile(
+              leading: const Icon(Icons.auto_awesome_outlined),
+              title: const Text('进化收件箱'),
+              subtitle: const Text('审阅记忆 / 技能候选'),
+              trailing: const Icon(Icons.chevron_right, size: 20),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const EvolveScreen()),
+                );
+              },
+            ),
             ListTile(
               leading: const Icon(Icons.settings_outlined),
               title: const Text('管理 / 配置'),

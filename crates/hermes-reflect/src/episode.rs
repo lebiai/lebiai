@@ -158,7 +158,16 @@ fn summary_worth_episode(summary: &str) -> bool {
 }
 
 /// Build a **self-contained** episode body from a real summary (no session pointers).
+/// Disabled for low-signal summaries — seeding hollow episodes flooded the inbox.
 pub fn seed_episode_from_summary(summary: &str) -> Option<MemoryCandidate> {
+    // Product decision 2026-08-11: do not auto-seed episodes from summary text.
+    // Prefer LLM-produced candidates that pass quality gates, or explicit preferences.
+    let _ = summary;
+    None
+}
+
+#[allow(dead_code)]
+fn seed_episode_from_summary_legacy(summary: &str) -> Option<MemoryCandidate> {
     if !summary_worth_episode(summary) {
         return None;
     }
@@ -194,14 +203,33 @@ pub fn seed_episode_from_summary(summary: &str) -> Option<MemoryCandidate> {
 }
 
 /// Run after every full/quick reflection parse.
-pub fn finalize_reflection_output(mut out: ReflectionOutput) -> ReflectionOutput {
+pub fn finalize_reflection_output(out: ReflectionOutput) -> ReflectionOutput {
+    finalize_reflection_output_with(out, &[])
+}
+
+/// Same as [`finalize_reflection_output`], then attach `supersedes` for same-slot actives.
+pub fn finalize_reflection_output_with(
+    mut out: ReflectionOutput,
+    active: &[hermes_memory::LoadedMemory],
+) -> ReflectionOutput {
     for c in &mut out.memory_candidates {
         normalize_candidate(c);
     }
 
-    // Drop hollow / polluted episodes (e.g. Care nudge text, 见会话记录).
-    out.memory_candidates
-        .retain(|c| !is_work_episode(c) || episode_is_self_contained(&c.fact));
+    out.memory_candidates.retain(|c| {
+        if hermes_memory::is_worthless_for_living(&c.fact) {
+            return false;
+        }
+        !is_work_episode(c) || episode_is_self_contained(&c.fact)
+    });
+
+    for c in &mut out.memory_candidates {
+        if !c.supersedes.is_empty() {
+            continue;
+        }
+        let ids = hermes_memory::same_slot_ids(active, &c.zone, &c.tags, &c.fact);
+        c.supersedes = ids;
+    }
 
     if !has_quality_work_episode(&out) {
         if let Some(seed) = seed_episode_from_summary(&out.summary) {
@@ -248,7 +276,8 @@ mod tests {
     }
 
     #[test]
-    fn finalize_seeds_self_contained_when_summary_good() {
+    fn finalize_does_not_auto_seed_from_summary() {
+        // Quality: do not invent hollow episodes from summary prose alone.
         let out = ReflectionOutput {
             summary: "Drafted a project retro with three sections and tightened the opening".into(),
             skill_candidates: vec![],
@@ -256,11 +285,7 @@ mod tests {
             conflicts: vec![],
         };
         let out = finalize_reflection_output(out);
-        assert_eq!(out.memory_candidates.len(), 1);
-        let fact = &out.memory_candidates[0].fact;
-        assert!(is_work_episode(&out.memory_candidates[0]));
-        assert!(episode_is_self_contained(fact));
-        assert!(!fact.contains("见会话记录"));
+        assert!(out.memory_candidates.is_empty());
     }
 
     #[test]
@@ -294,6 +319,46 @@ mod tests {
             out.memory_candidates.is_empty(),
             "hollow Care-nudge episodes must be dropped"
         );
+    }
+
+    #[test]
+    fn finalize_attaches_supersedes_for_same_slot() {
+        let existing = hermes_memory::LoadedMemory {
+            frontmatter: hermes_memory::MemoryFrontmatter {
+                id: "mem_short".into(),
+                created: chrono::Utc::now(),
+                source: hermes_memory::Source::Reflection,
+                confidence: hermes_memory::Confidence::High,
+                pinned: false,
+                tags: vec!["preference".into()],
+                zone: "general".into(),
+                supersedes: vec![],
+                extra: Default::default(),
+            },
+            body: "用户偏好写文档时使用短句、先结论后细节的写作结构。".into(),
+            source_path: std::path::PathBuf::from("x.md"),
+            scope: hermes_memory::Scope::User,
+        };
+        let cand = MemoryCandidate {
+            fact: "写成品：短句、先结论；科技稿用犀利观点风。".into(),
+            tags: vec!["standard".into()],
+            zone: "standards".into(),
+            scope: Scope::User,
+            confidence: Confidence::High,
+            rationale: "修订同一格".into(),
+            supersedes: vec![],
+        };
+        let out = ReflectionOutput {
+            summary: "revised writing standard".into(),
+            memory_candidates: vec![cand],
+            ..Default::default()
+        };
+        let out = finalize_reflection_output_with(out, &[existing]);
+        assert_eq!(out.memory_candidates.len(), 1);
+        assert!(out.memory_candidates[0]
+            .supersedes
+            .iter()
+            .any(|id| id == "mem_short"));
     }
 
     #[test]

@@ -16,6 +16,24 @@ pub struct ConfirmAssessment {
     pub reason: Option<String>,
 }
 
+/// Absolute high-risk: even an explicit `permissions.allow` rule cannot skip
+/// the confirmation modal for these (rm -rf, sudo, remote skill install, …).
+pub fn is_absolute_risk(tool_name: &str, input: &serde_json::Value) -> bool {
+    if tool_name == "skill_install" {
+        return true;
+    }
+    if tool_name == "bash" {
+        if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
+            return bash_high_risk_reason(cmd).is_some();
+        }
+    }
+    // Unknown MCP-style tools from external servers: never silent via allow.
+    if tool_name.contains("__") {
+        return true;
+    }
+    false
+}
+
 /// Decide if this call needs user confirmation (when config did not allow/deny).
 pub fn assess_confirmation(
     tool_name: &str,
@@ -50,6 +68,37 @@ pub fn assess_confirmation(
         };
     }
 
+    // write/edit outside the agent workspace (Desktop/Documents/…) — ask once.
+    if tool_name == "write" || tool_name == "edit" {
+        if let Some(path) = input
+            .get("path")
+            .or_else(|| input.get("file_path"))
+            .and_then(|v| v.as_str())
+        {
+            let p = path.trim();
+            let export = p.starts_with("~/")
+                || p == "~"
+                || p.starts_with('～')
+                || p.starts_with("$HOME")
+                || p.starts_with("Desktop/")
+                || p.starts_with("Documents/")
+                || p.starts_with("Downloads/")
+                || p.starts_with("桌面/")
+                || p.starts_with("文稿/")
+                || p.starts_with("下载/")
+                || std::path::Path::new(p).is_absolute();
+            if export {
+                return ConfirmAssessment {
+                    needs_confirm: true,
+                    reason: Some(format!(
+                        "Writes outside the app workspace to `{path}`. \
+                         Confirm the path (Desktop / Documents / Downloads are allowed)."
+                    )),
+                };
+            }
+        }
+    }
+
     let flagged = tools
         .iter()
         .find(|t| t.name == tool_name)
@@ -80,6 +129,8 @@ fn default_reason_for_tool(name: &str) -> String {
         "propose_skill" => "Proposes a new skill candidate for your review.".into(),
         "skill_create" => "Writes a new skill into your skill store.".into(),
         "memory_save" => "Writes a lasting memory that future chats may load.".into(),
+        "commitment_drop" => "Drops a piece of open work you decided not to do.".into(),
+        "commitment_save" => "Records a debt you still owe after this conversation.".into(),
         "write" | "edit" => "Modifies files in the workspace.".into(),
         "bash" => "Runs a shell command in the workspace.".into(),
         _ if name.contains("__") => {
@@ -165,6 +216,51 @@ pub fn bash_high_risk_reason(command: &str) -> Option<String> {
     {
         return Some(
             "This command changes ownership/permissions on sensitive system paths.".into(),
+        );
+    }
+
+    // Download-then-execute (two-step), process substitution, and common RCE interpreters.
+    if (compact.contains("curl") || compact.contains("wget"))
+        && compact.contains("&&")
+        && (compact.contains("bash")
+            || compact.contains("|sh")
+            || compact.contains(";sh")
+            || compact.contains("./")
+            || compact.contains("chmod+x")
+            || compact.contains("chmodx"))
+    {
+        return Some(
+            "This command downloads then executes remote content (curl/wget + shell).".into(),
+        );
+    }
+    if c.contains("bash <(")
+        || c.contains("sh <(")
+        || c.contains("source <(")
+        || c.contains(". <(")
+    {
+        return Some(
+            "This command uses process substitution to run a downloaded script.".into(),
+        );
+    }
+    // Inline interpreter RCE often used to bypass simple blacklists.
+    if c.contains("python -c")
+        || c.contains("python3 -c")
+        || c.contains("perl -e")
+        || c.contains("ruby -e")
+        || c.contains("node -e")
+        || c.contains("php -r")
+    {
+        return Some(
+            "This command runs inline code via an interpreter (-c/-e), which can be full RCE."
+                .into(),
+        );
+    }
+    // base64|decode|shell pattern
+    if (c.contains("base64") && (c.contains("|") || c.contains("decode")))
+        && (c.contains("sh") || c.contains("bash") || c.contains("eval"))
+    {
+        return Some(
+            "This command looks like encoded payload decoded into a shell.".into(),
         );
     }
 

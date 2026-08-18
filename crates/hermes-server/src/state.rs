@@ -1,8 +1,7 @@
 //! Shared application state for the lebi-AI server.
 //!
-//! 1:1 with `hermes-gui/src/state.rs` — same `AppState`, type aliases,
-//! `init()`, and `load_tool_host()`. The only difference is no Tauri
-//! dependency; this state lives behind axum extractors instead.
+//! Parallel to `hermes-gui/src/state.rs` (same stores / tool host / sessions),
+//! without Tauri. Not a claim of 1:1 command coverage — see project-map matrix.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -52,6 +51,8 @@ pub struct AppState {
     pub propose_messages: ProposeMessages,
     pub propose_queue: ProposeQueue,
     pub micro_turns_since: Arc<Mutex<HashMap<String, usize>>>,
+    /// Short-lived WS tickets (see `tickets` module / POST /api/v1/ws-ticket).
+    pub ws_tickets: Arc<crate::tickets::TicketStore>,
 }
 
 pub struct ActiveSession {
@@ -128,6 +129,7 @@ impl AppState {
             search_backend: SearchBackend::parse(&config.web.search_backend),
             tavily_api_key: config.web.tavily_api_key.clone(),
             brave_api_key: config.web.brave_api_key.clone(),
+            searxng_url: config.web.searxng_url.clone(),
             cache_ttl_secs: config.web.cache_ttl_secs,
         });
 
@@ -166,6 +168,7 @@ impl AppState {
             propose_messages,
             propose_queue,
             micro_turns_since: Arc::new(Mutex::new(HashMap::new())),
+            ws_tickets: Arc::new(crate::tickets::TicketStore::default()),
         })
     }
 
@@ -214,6 +217,9 @@ async fn load_tool_host(
     if let Some(store) = memory_store {
         builtin = builtin.with_memory_store(store);
     }
+    builtin = builtin.with_commitment_store(Arc::new(
+        hermes_commitments::CommitmentStore::standard(),
+    ));
     if let Some(store) = skill_store {
         builtin = builtin.with_skill_store(store);
     }

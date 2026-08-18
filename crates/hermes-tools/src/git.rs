@@ -75,12 +75,22 @@ pub async fn run(workspace: &Path, args: serde_json::Value) -> Result<ToolCallOu
     }
 
     if let Some(extra) = &a.args {
-        cmd_args.extend(shell_words(extra));
+        let words = shell_words(extra);
+        if let Some(bad) = words.iter().find(|w| is_dangerous_git_arg(w)) {
+            return Ok(ToolCallOutcome {
+                content: format!(
+                    "git: rejected argument {bad:?} (disallowed: -c, --git-dir, \
+                     --work-tree, --exec-path, --upload-pack, --receive-pack, and similar)"
+                ),
+                is_error: true,
+            });
+        }
+        cmd_args.extend(words);
     }
     if let Some(path) = &a.path {
-        if path.contains("..") {
+        if path.contains("..") || path.starts_with('-') {
             return Ok(ToolCallOutcome {
-                content: "path must not contain '..'".into(),
+                content: "path must not contain '..' or start with '-'".into(),
                 is_error: true,
             });
         }
@@ -133,4 +143,45 @@ pub async fn run(workspace: &Path, args: serde_json::Value) -> Result<ToolCallOu
 
 fn shell_words(s: &str) -> Vec<String> {
     s.split_whitespace().map(String::from).collect()
+}
+
+/// Block git options that can redirect the repository root or run helpers.
+fn is_dangerous_git_arg(arg: &str) -> bool {
+    let a = arg.trim();
+    if a == "-c" || a.starts_with("-c") && a.contains('=') {
+        return true;
+    }
+    const BLOCKED_PREFIXES: &[&str] = &[
+        "--git-dir",
+        "--work-tree",
+        "--namespace",
+        "--exec-path",
+        "--upload-pack",
+        "--receive-pack",
+        "--config-env",
+        "--super-prefix",
+        "--literal-pathspecs",
+    ];
+    for p in BLOCKED_PREFIXES {
+        if a == *p || a.starts_with(&format!("{p}=")) {
+            return true;
+        }
+    }
+    // Bare `--` is fine as path separator when we add it ourselves; user args
+    // containing `../` in pathspec are still constrained by path field checks.
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_git_dir() {
+        assert!(is_dangerous_git_arg("--git-dir=/tmp/evil"));
+        assert!(is_dangerous_git_arg("-c"));
+        assert!(is_dangerous_git_arg("-ccore.sshCommand=evil"));
+        assert!(!is_dangerous_git_arg("--oneline"));
+        assert!(!is_dangerous_git_arg("HEAD~3"));
+    }
 }

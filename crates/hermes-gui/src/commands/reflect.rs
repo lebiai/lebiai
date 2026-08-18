@@ -1,7 +1,10 @@
-use hermes_core::{ContentBlock, Role, Session};
+use std::path::Path;
+use std::time::Duration;
+
+use hermes_core::{last_human_send, LlmProvider, Session};
 use hermes_memory::{Confidence, FsMemoryStore, MemoryFrontmatter, MemoryStore, Scope, Source};
 use hermes_reflect::{log_append, ActionTaken, CandidateKind, ReflectLogEntry, ReflectionOutput};
-use hermes_skills::{SkillFrontmatter, SkillStore};
+use hermes_skills::{FsSkillStore, SkillFrontmatter, SkillStore};
 use serde::Serialize;
 use tauri::State;
 
@@ -53,7 +56,7 @@ pub struct ConflictView {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase", tag = "status")]
 pub enum SessionEndReflectionOutcome {
-    /// Below `reflect.min_turns`, empty session, or otherwise not run.
+    /// Below `reflect.min_turns`, empty session, unchanged since last distill.
     Skipped {
         reason: String,
         user_turns: usize,
@@ -71,16 +74,7 @@ pub enum SessionEndReflectionOutcome {
 }
 
 fn count_user_text_turns(session: &Session) -> usize {
-    session
-        .messages
-        .iter()
-        .filter(|m| {
-            m.role == Role::User
-                && m.content
-                    .iter()
-                    .any(|b| matches!(b, ContentBlock::Text { .. }))
-        })
-        .count()
+    session.messages.iter().filter(|m| m.is_human_send()).count()
 }
 
 fn reflection_result_from_output(output: ReflectionOutput) -> ReflectionResult {
@@ -165,10 +159,35 @@ pub async fn run_reflection(
     Ok(reflection_result_from_output(output))
 }
 
+/// Cheap check before showing the "tidying…" banner.
+#[tauri::command]
+pub async fn session_needs_distill(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<bool, GuiError> {
+    let min_turns = state.config.read().unwrap().reflect.min_turns;
+    let sessions = state.sessions.lock().await;
+    let Some(active) = sessions.get(&session_id) else {
+        return Ok(false);
+    };
+    if active.session.messages.is_empty() {
+        return Ok(false);
+    }
+    if count_user_text_turns(&active.session) < min_turns {
+        return Ok(false);
+    }
+    if hermes_store::channel_of_session_path(&active.path).is_some() {
+        // Idle scan owns channel logs — leaving the viewer is not a leave-work.
+        return Ok(false);
+    }
+    Ok(hermes_reflect::needs_distill(&active.session))
+}
+
 /// Leave-session path: quiet by default — reflect in background, enqueue to inbox.
 /// Set `reflect.pop_inbox_on_leave = true` for legacy modal review.
 #[tauri::command]
 pub async fn run_session_end_reflection(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<SessionEndReflectionOutcome, GuiError> {
@@ -184,6 +203,13 @@ pub async fn run_session_end_reflection(
             return Ok(SessionEndReflectionOutcome::Skipped {
                 reason: "empty_session".into(),
                 user_turns: 0,
+                min_turns,
+            });
+        }
+        if hermes_store::channel_of_session_path(&active.path).is_some() {
+            return Ok(SessionEndReflectionOutcome::Skipped {
+                reason: "channel_idle_owns".into(),
+                user_turns: count_user_text_turns(&active.session),
                 min_turns,
             });
         }
@@ -204,9 +230,32 @@ pub async fn run_session_end_reflection(
         });
     }
 
+    // Independent of distill: leftover debts, quiet suggested rows.
+    crate::commands::commitment::spawn_residue_scan(app, &state, session_snapshot.clone());
+
+    if !hermes_reflect::needs_distill(&session_snapshot) {
+        tracing::info!(
+            session_id = %session_id,
+            "GUI session-end reflection skipped (unchanged since last distill)"
+        );
+        return Ok(SessionEndReflectionOutcome::Skipped {
+            reason: "unchanged".into(),
+            user_turns,
+            min_turns,
+        });
+    }
+
+    let Some(_distill_lock) = hermes_reflect::DistillSessionGuard::try_acquire(&session_id) else {
+        return Ok(SessionEndReflectionOutcome::Skipped {
+            reason: "in_progress".into(),
+            user_turns,
+            min_turns,
+        });
+    };
+
     const SESSION_END_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(75);
 
-    let mut output = match tokio::time::timeout(
+    let output = match tokio::time::timeout(
         SESSION_END_TIMEOUT,
         reflect_session_output(&state, &session_id, true),
     )
@@ -214,26 +263,40 @@ pub async fn run_session_end_reflection(
     {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => {
-            tracing::warn!(error = %e, "session-end reflection failed; try local seed");
-            fallback_reflection_output(&session_snapshot)
+            tracing::warn!(error = %e, "session-end reflection failed; no invented memories");
+            return Ok(SessionEndReflectionOutcome::Skipped {
+                reason: "failed".into(),
+                user_turns,
+                min_turns,
+            });
         }
         Err(_) => {
-            tracing::warn!("session-end reflection timed out; try local seed");
-            fallback_reflection_output(&session_snapshot)
+            tracing::warn!("session-end reflection timed out; no invented memories");
+            return Ok(SessionEndReflectionOutcome::Skipped {
+                reason: "timeout".into(),
+                user_turns,
+                min_turns,
+            });
         }
     };
 
-    // If LLM returned nothing durable, try self-contained local seed once.
-    if output.memory_candidates.is_empty() && output.skill_candidates.is_empty() {
-        let local = fallback_reflection_output(&session_snapshot);
-        if !local.memory_candidates.is_empty() {
-            output = local;
-        }
-    }
+    let distill_id = hermes_reflect::new_distill_id();
+    let (_seq, through_at) = hermes_core::last_human_send(&session_snapshot.messages);
+    let through_at_s = through_at.map(|t| t.to_rfc3339());
+    let mark = hermes_reflect::EnqueueMark {
+        session_id: Some(session_snapshot.meta.id.clone()),
+        distill_id: Some(distill_id.clone()),
+        through_at: through_at_s,
+    };
 
-    let added =
-        hermes_reflect::enqueue_from_reflection(&output, hermes_reflect::InboxSource::SessionEnd)
-            .map_err(|e| GuiError::Internal(e.to_string()))?;
+    let added = hermes_reflect::enqueue_from_reflection_marked(
+        &output,
+        hermes_reflect::InboxSource::SessionEnd,
+        mark,
+    )
+    .map_err(|e| GuiError::Internal(e.to_string()))?;
+    let outcome = if added > 0 { "enqueued" } else { "empty" };
+    hermes_reflect::record_success(&session_snapshot, &distill_id, outcome);
     let total = hermes_reflect::inbox_count().unwrap_or(0);
 
     if pop_on_leave {
@@ -250,91 +313,119 @@ fn reflection_view_has_candidates(r: &ReflectionResult) -> bool {
     !r.skill_candidates.is_empty() || !r.memory_candidates.is_empty() || !r.conflicts.is_empty()
 }
 
-/// Offline fallback when LLM times out / fails — self-contained or empty.
-fn fallback_reflection_output(session: &Session) -> hermes_reflect::ReflectionOutput {
-    use hermes_memory::{Confidence, Scope};
-    use hermes_reflect::MemoryCandidate;
-
-    let mut human_bits: Vec<String> = Vec::new();
-    for m in session.messages.iter() {
-        if m.role != Role::User {
-            continue;
+/// Scan WeChat logs that have been quiet long enough and distill them.
+/// Sidebar `list_sessions` may fire often — one scan at a time, 60s cooldown.
+pub fn spawn_idle_wechat_distill(state: &AppState) {
+    const COOLDOWN: Duration = Duration::from_secs(60);
+    if !state.idle_wechat_distill.try_begin(COOLDOWN) {
+        return;
+    }
+    let provider = state.provider.read().unwrap().clone();
+    let memory = state.memory_store.clone();
+    let skills = state.skill_store.clone();
+    let min_turns = state.config.read().unwrap().reflect.min_turns;
+    let gate = state.idle_wechat_distill.clone();
+    tokio::spawn(async move {
+        let _guard = IdleDistillFinish(gate);
+        let root = hermes_core::data_path("sessions").join("wechat");
+        if !root.exists() {
+            return;
         }
-        let only_tools = m
-            .content
-            .iter()
-            .all(|b| matches!(b, ContentBlock::ToolResult { .. }));
-        if only_tools {
-            continue;
-        }
-        for b in &m.content {
-            if let ContentBlock::Text { text } = b {
-                let t = text.trim();
-                if t.is_empty() || hermes_reflect::is_internal_noise_text(t) {
-                    continue;
-                }
-                if t.starts_with('[') && t.contains("Context:") {
-                    continue;
-                }
-                let clipped: String = t.chars().take(160).collect();
-                if !human_bits.iter().any(|x| x == &clipped) {
-                    human_bits.push(clipped);
-                }
+        let Ok(paths) = hermes_store::list_sessions(&root) else {
+            return;
+        };
+        for path in paths {
+            if let Err(e) = distill_wechat_file_if_idle(
+                &path,
+                provider.as_ref(),
+                memory.as_ref(),
+                skills.as_ref(),
+                min_turns,
+            )
+            .await
+            {
+                tracing::debug!(error = %e, path = %path.display(), "idle wechat distill skipped");
             }
         }
+    });
+}
+
+struct IdleDistillFinish(std::sync::Arc<crate::state::IdleDistillGate>);
+
+impl Drop for IdleDistillFinish {
+    fn drop(&mut self) {
+        self.0.finish();
     }
+}
 
-    let substance: String = human_bits
-        .iter()
-        .rev()
-        .take(2)
-        .cloned()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join("；");
-
-    if substance.chars().count() < 12 {
-        return hermes_reflect::ReflectionOutput::default();
+async fn distill_wechat_file_if_idle(
+    path: &Path,
+    provider: &dyn LlmProvider,
+    memory: &FsMemoryStore,
+    skills: &FsSkillStore,
+    min_turns: usize,
+) -> anyhow::Result<()> {
+    let session = hermes_store::read_session(path)?;
+    if count_user_text_turns(&session) < min_turns {
+        return Ok(());
     }
-
-    let title: String = substance.chars().take(80).collect();
-    let fact = format!(
-        "【工作情节】{title}\n\
-         - 情境：用户在本轮表达的工作意图：{substance}\n\
-         - 做法：以当时对话中的实际操作为准（要点已写入本条，不依赖会话文件）\n\
-         - 产出：若有文件路径以对话中写明的为准；否则以本条意图为可检索摘要\n\
-         - 用户反馈/修正：无\n\
-         - 可复用点：{title}"
+    if !hermes_reflect::needs_distill(&session) {
+        return Ok(());
+    }
+    if !wechat_session_is_idle(&session, path) {
+        return Ok(());
+    }
+    let Some(_lock) = hermes_reflect::DistillSessionGuard::try_acquire(&session.meta.id) else {
+        return Ok(());
+    };
+    let skill_list = skills.list().unwrap_or_default();
+    let mem_list = memory.list_active().unwrap_or_default();
+    let output = tokio::time::timeout(
+        Duration::from_secs(75),
+        hermes_reflect::reflect_quick(provider, &session, &skill_list, &mem_list),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("timeout"))??;
+    let distill_id = hermes_reflect::new_distill_id();
+    let (_seq, through_at) = last_human_send(&session.messages);
+    let mark = hermes_reflect::EnqueueMark {
+        session_id: Some(session.meta.id.clone()),
+        distill_id: Some(distill_id.clone()),
+        through_at: through_at.map(|t| t.to_rfc3339()),
+    };
+    let added = hermes_reflect::enqueue_from_reflection_marked(
+        &output,
+        hermes_reflect::InboxSource::SessionEnd,
+        mark,
+    )?;
+    hermes_reflect::record_success(
+        &session,
+        &distill_id,
+        if added > 0 { "enqueued" } else { "empty" },
     );
+    Ok(())
+}
 
-    if !hermes_reflect::episode_is_self_contained(&fact) {
-        return hermes_reflect::ReflectionOutput {
-            summary: title,
-            ..Default::default()
-        };
+fn wechat_session_is_idle(session: &Session, path: &Path) -> bool {
+    let (_seq, at) = last_human_send(&session.messages);
+    if let Some(at) = at {
+        return chrono::Utc::now()
+            .signed_duration_since(at)
+            .num_seconds()
+            >= 15 * 60;
     }
-
-    hermes_reflect::ReflectionOutput {
-        summary: title.clone(),
-        memory_candidates: vec![MemoryCandidate {
-            fact,
-            tags: vec!["work-episode".into()],
-            zone: "work".into(),
-            scope: Scope::User,
-            confidence: Confidence::Medium,
-            rationale: "本地兜底：自包含意图，可进待审".into(),
-            supersedes: Vec::new(),
-        }],
-        ..Default::default()
-    }
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|e| e.as_secs() >= 15 * 60)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hermes_core::{Message, SessionMeta};
+    use hermes_core::{ContentBlock, Message, Role, SessionMeta};
 
     #[test]
     fn count_user_text_turns_ignores_non_text_user() {
@@ -345,6 +436,7 @@ mod tests {
             content: vec![ContentBlock::Text {
                 text: "hello".into(),
             }],
+            at: None,
         });
         session.messages.push(Message {
             role: Role::User,
@@ -353,6 +445,7 @@ mod tests {
                 content: "ok".into(),
                 is_error: false,
             }],
+            at: None,
         });
         session.messages.push(Message::user_text("again"));
         assert_eq!(count_user_text_turns(&session), 2);

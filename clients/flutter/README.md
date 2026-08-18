@@ -1,16 +1,4 @@
-# hermes_app
+# Flutter 客户端
 
-A new Flutter project.
-
-## Getting Started
-
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+乐彼AI 的手机 / macOS 表面。产品法见仓库根 [`PRODUCT_PRINCIPLES.md`](../../PRODUCT_PRINCIPLES.md)。  
+**非默认交付。** 开发说明见 [`docs/dev/mobile-extras.md`](../../docs/dev/mobile-extras.md)，进度快照见 [`docs/snapshot/flutter-progress.md`](../../docs/snapshot/flutter-progress.md)。

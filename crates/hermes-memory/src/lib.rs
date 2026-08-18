@@ -11,6 +11,7 @@ pub mod memory;
 pub mod palace;
 pub mod profile;
 pub mod relevance;
+pub mod slot;
 pub mod stats;
 pub mod store;
 
@@ -29,6 +30,9 @@ pub use relevance::{
 pub use stats::{
     load_effectiveness, record as record_memory_stat, MemoryEffectiveness, MemoryEvent,
     MemoryStatEntry,
+};
+pub use slot::{
+    infer_slot, is_worthless_for_living, living_rules, same_slot_ids, WorkSlot,
 };
 pub use store::{
     standard_project_root, standard_user_root, FsMemoryStore, MemoryStore, MemoryStoreError,

@@ -60,6 +60,7 @@ pub fn build_web_ctx(cfg: &Config, provider: Arc<dyn LlmProvider>) -> Arc<WebToo
         search_backend: SearchBackend::parse(&cfg.web.search_backend),
         tavily_api_key: cfg.web.tavily_api_key.clone(),
         brave_api_key: cfg.web.brave_api_key.clone(),
+        searxng_url: cfg.web.searxng_url.clone(),
         cache_ttl_secs: cfg.web.cache_ttl_secs,
     })
 }
@@ -101,6 +102,9 @@ pub async fn load_tool_host(
     if let Some(store) = memory_store {
         builtin = builtin.with_memory_store(store);
     }
+    builtin = builtin.with_commitment_store(Arc::new(
+        hermes_commitments::CommitmentStore::standard(),
+    ));
     if let Some(store) = skill_store {
         builtin = builtin.with_skill_store(store);
     }

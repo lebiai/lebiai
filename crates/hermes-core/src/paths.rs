@@ -54,9 +54,15 @@ pub fn data_dir_pointer_path() -> PathBuf {
     base.join("lebi-ai").join("data-dir.txt")
 }
 
+/// Whether the current data root was chosen by the user via Settings migration
+/// (pointer file present and valid).
+pub fn is_user_chosen_data_root() -> bool {
+    read_data_dir_pointer().is_some()
+}
+
 /// Read the pointer file; returns `Some` only when it names an existing
 /// absolute directory (a stale pointer silently falls back to defaults).
-fn read_data_dir_pointer() -> Option<PathBuf> {
+pub fn read_data_dir_pointer() -> Option<PathBuf> {
     let raw = std::fs::read_to_string(data_dir_pointer_path()).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -91,17 +97,17 @@ pub fn clear_data_dir_pointer() -> std::io::Result<()> {
 
 /// Resolve the product data root (never fails).
 ///
-/// 1. User-chosen data root (pointer file, set via Settings migration)
-/// 2. `LEBI_DATA_DIR` if non-empty
-/// 3. legacy `HERMES_DATA_DIR` if non-empty
+/// 1. `LEBI_DATA_DIR` if non-empty (this process said so — tests / CI)
+/// 2. legacy `HERMES_DATA_DIR` if non-empty
+/// 3. User-chosen data root (pointer file, set via Settings migration)
 /// 4. `$HOME/{DEFAULT_DATA_DIRNAME}`
 /// 5. `./{DEFAULT_DATA_DIRNAME}` if `$HOME` is missing
 pub fn data_root() -> PathBuf {
-    if let Some(chosen) = read_data_dir_pointer() {
-        return chosen;
-    }
     if let Some(root) = env_root(ENV_DATA_DIR).or_else(|| env_root(LEGACY_ENV_DATA_DIR)) {
         return root;
+    }
+    if let Some(chosen) = read_data_dir_pointer() {
+        return chosen;
     }
     dirs::home_dir()
         .map(|h| h.join(DEFAULT_DATA_DIRNAME))
@@ -196,9 +202,13 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn env_override_wins() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         std::env::set_var(ENV_DATA_DIR, "/tmp/lebi-test-data-root");
         let root = data_root();
         std::env::remove_var(ENV_DATA_DIR);
@@ -207,7 +217,7 @@ mod tests {
 
     #[test]
     fn legacy_env_override_fallback() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         std::env::remove_var(ENV_DATA_DIR);
         std::env::set_var(LEGACY_ENV_DATA_DIR, "/tmp/lebi-legacy-root");
         let root = data_root();
@@ -217,20 +227,24 @@ mod tests {
 
     #[test]
     fn default_uses_product_dirname() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         std::env::remove_var(ENV_DATA_DIR);
         std::env::remove_var(LEGACY_ENV_DATA_DIR);
         let root = data_root();
-        assert!(
-            root.ends_with(DEFAULT_DATA_DIRNAME),
-            "expected …/{DEFAULT_DATA_DIRNAME}, got {}",
-            root.display()
-        );
+        if let Some(ptr) = read_data_dir_pointer() {
+            assert_eq!(root, ptr, "user-chosen pointer wins over ~/.lebi-ai");
+        } else {
+            assert!(
+                root.ends_with(DEFAULT_DATA_DIRNAME),
+                "expected …/{DEFAULT_DATA_DIRNAME}, got {}",
+                root.display()
+            );
+        }
     }
 
     #[test]
     fn migrate_renames_legacy_dir() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         std::env::remove_var(ENV_DATA_DIR);
         std::env::remove_var(LEGACY_ENV_DATA_DIR);
 
@@ -254,7 +268,7 @@ mod tests {
 
     #[test]
     fn migrate_merges_missing_entries_into_existing_target() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         std::env::remove_var(ENV_DATA_DIR);
         std::env::remove_var(LEGACY_ENV_DATA_DIR);
 
@@ -283,7 +297,7 @@ mod tests {
 
     #[test]
     fn migrate_keeps_conflicting_copy_in_legacy() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         std::env::remove_var(ENV_DATA_DIR);
         std::env::remove_var(LEGACY_ENV_DATA_DIR);
 
@@ -321,7 +335,7 @@ mod tests {
 
     #[test]
     fn migrate_never_touches_lawyer_dir() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         std::env::remove_var(ENV_DATA_DIR);
         std::env::remove_var(LEGACY_ENV_DATA_DIR);
 

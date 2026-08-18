@@ -13,6 +13,16 @@ export type ChatStreamEvent =
     }
   | { event: "usageUpdate"; data: { inputTokens: number; outputTokens: number } }
   | { event: "skillCandidateProposed"; data: { name: string; description: string; body: string; triggers: string[] } }
+  | {
+      event: "zaibanUpdated";
+      data: {
+        action: string;
+        id?: string;
+        title?: string;
+        existingId?: string;
+        existingTitle?: string;
+      };
+    }
   | { event: "error"; data: { message: string } }
   | { event: "cancelled" }
   | { event: "done" };
@@ -31,7 +41,11 @@ export interface SessionSummary {
   id: string;
   title: string;
   createdAt: string;
+  /** Last activity (file mtime); used for day grouping. */
+  updatedAt?: string;
   path: string;
+  channel?: string | null;
+  readOnly?: boolean;
 }
 
 export type ContentBlock =
@@ -63,6 +77,8 @@ export interface LoadedSessionData {
   messages: MessageData[];
   inputTokens: number;
   outputTokens: number;
+  channel?: string | null;
+  readOnly?: boolean;
 }
 
 export interface SkillCandidateView {

@@ -126,14 +126,14 @@ export function WechatQrModal({
 
   return (
     <div
-      className="fixed inset-0 z-[9000] flex items-center justify-center bg-black/45 backdrop-blur-[2px]"
-      onClick={onClose}
+      className="fixed inset-0 z-[9000] flex items-center justify-center pointer-events-none"
       role="dialog"
       aria-modal="true"
       aria-label={t("settings.wechat")}
     >
+      {/* No full-screen dark mask — floating card only (user request). */}
       <div
-        className="w-full max-w-sm mx-4 rounded-2xl border border-app-border dark:border-slate-700 bg-app-surface dark:bg-slate-900 shadow-2xl"
+        className="pointer-events-auto w-full max-w-sm mx-4 rounded-2xl border border-app-border dark:border-slate-700 bg-app-surface dark:bg-slate-900 shadow-2xl ring-1 ring-black/5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 pt-5 pb-3">

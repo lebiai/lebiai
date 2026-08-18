@@ -3,6 +3,7 @@ import { useChatStore } from "../../store/chatStore";
 import { useUiStore } from "../../store/uiStore";
 import { reflectionHasCandidates } from "../../types";
 import { ReflectionReview } from "./ReflectionReview";
+import { ui } from "../common/ui";
 
 /** Non-blocking mid-chat review for micro-reflection candidates. */
 export function MicroReviewModal() {
@@ -15,7 +16,7 @@ export function MicroReviewModal() {
   if (!open || !result || !reflectionHasCandidates(result)) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">
+    <div className={`${ui.overlay} z-50 p-4`}>
       <div
         className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl bg-app-surface dark:bg-slate-900 shadow-2xl border border-app-border dark:border-slate-700"
         role="dialog"

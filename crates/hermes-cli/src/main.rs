@@ -29,13 +29,19 @@ enum Command {
     /// Check configuration & environment health (makes no changes).
     Doctor,
 
-    /// One-shot prompt: send a single user message, print assistant reply.
+    /// One-shot prompt (engine mode, not the companion). No tools unless `--tools`.
     Ask {
         prompt: String,
         #[arg(long)]
         system: Option<String>,
+        /// Enable built-in tools. Dangerous calls still need `--auto-allow`.
+        #[arg(long)]
+        tools: bool,
+        /// Auto-approve tool confirms (including high-risk). Off by default.
+        #[arg(long)]
+        auto_allow: bool,
     },
-    /// Autonomous agent: receive a goal, iterate until complete.
+    /// Engine batch: iterate a goal until done (not the companion product).
     Run {
         goal: String,
         #[arg(long)]
@@ -264,7 +270,12 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Init => commands::init::run().await,
         Command::Doctor => commands::doctor::run().await,
-        Command::Ask { prompt, system } => commands::ask::run(prompt, system).await,
+        Command::Ask {
+            prompt,
+            system,
+            tools,
+            auto_allow,
+        } => commands::ask::run(prompt, system, tools, auto_allow).await,
         Command::Run {
             goal,
             system,

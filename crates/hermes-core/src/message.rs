@@ -13,6 +13,10 @@ pub enum Role {
 pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
+    /// Wall-clock when a **human** sent this. Absent on tool results, Care
+    /// nudges, and messages written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Message {
@@ -20,6 +24,16 @@ impl Message {
         Self {
             role: Role::User,
             content: vec![ContentBlock::Text { text: text.into() }],
+            at: None,
+        }
+    }
+
+    /// Human tapped send — stamps `at` for the distill ledger.
+    pub fn user_sent(text: impl Into<String>) -> Self {
+        Self {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: text.into() }],
+            at: Some(chrono::Utc::now()),
         }
     }
 
@@ -27,6 +41,7 @@ impl Message {
         Self {
             role: Role::Assistant,
             content: vec![ContentBlock::Text { text: text.into() }],
+            at: None,
         }
     }
 
@@ -40,16 +55,56 @@ impl Message {
                 .filter(|b| !matches!(b, ContentBlock::Thinking { .. }))
                 .cloned()
                 .collect(),
+            at: self.at,
         }
     }
 
     /// Prepare a message for JSONL append.
     pub fn for_persist(&self, persist_thinking: bool) -> Self {
+        if self.is_internal_instruction_only() {
+            return Self {
+                role: self.role,
+                content: Vec::new(),
+                at: None,
+            };
+        }
         if persist_thinking {
             self.clone()
         } else {
             self.without_thinking()
         }
+    }
+
+    /// Synthetic engine nudge (Care / time header / tool-budget), not a person.
+    pub fn is_internal_instruction_only(&self) -> bool {
+        if self.role != Role::User {
+            return false;
+        }
+        let mut saw = false;
+        for b in &self.content {
+            match b {
+                ContentBlock::Text { text } if text.trim().is_empty() => {}
+                ContentBlock::Text { text }
+                    if crate::companion::is_internal_instruction_text(text) =>
+                {
+                    saw = true;
+                }
+                _ => return false,
+            }
+        }
+        saw
+    }
+
+    /// A real send from the person (not tool results, not engine nudges).
+    pub fn is_human_send(&self) -> bool {
+        if self.role != Role::User || self.is_tool_result_only() || self.is_internal_instruction_only()
+        {
+            return false;
+        }
+        self.content.iter().any(|b| {
+            matches!(b, ContentBlock::Text { text } if !text.trim().is_empty())
+                || matches!(b, ContentBlock::Image { .. })
+        })
     }
 
     /// User message with no human text (only tool results / empty) — hide in chat UI.
@@ -68,6 +123,181 @@ impl Message {
             }
         }
         has_tool_result
+    }
+}
+
+/// Repair transcript so providers (esp. OpenAI-compatible) accept it.
+///
+/// A common failure mode after crash / cancel / old bugs: an assistant message
+/// contains `tool_use` blocks whose matching `tool_result` never landed. APIs
+/// then reject the next turn with HTTP 400 ("tool_calls must be followed by
+/// tool messages…").
+///
+/// Strategy:
+/// 1. For each assistant tool_use id without a following user tool_result,
+///    append synthetic error results on a new user message.
+/// 2. Drop orphan tool_result blocks whose tool_use_id was never opened.
+/// 3. Drop empty messages after cleanup.
+pub fn sanitize_history_for_provider(messages: &[Message]) -> Vec<Message> {
+    let mut out: Vec<Message> = Vec::with_capacity(messages.len() + 2);
+    let mut open_tool_ids: Vec<String> = Vec::new();
+
+    for msg in messages {
+        match msg.role {
+            Role::Assistant => {
+                // Close any still-open tools before a new assistant turn.
+                if !open_tool_ids.is_empty() {
+                    out.push(synthetic_tool_results(&open_tool_ids));
+                    open_tool_ids.clear();
+                }
+                let mut tool_ids = Vec::new();
+                for b in &msg.content {
+                    if let ContentBlock::ToolUse { id, .. } = b {
+                        tool_ids.push(id.clone());
+                    }
+                }
+                out.push(msg.clone());
+                open_tool_ids = tool_ids;
+            }
+            Role::User => {
+                let mut kept: Vec<ContentBlock> = Vec::new();
+                let mut answered: Vec<String> = Vec::new();
+                for b in &msg.content {
+                    match b {
+                        ContentBlock::ToolResult { tool_use_id, .. } => {
+                            if open_tool_ids.iter().any(|id| id == tool_use_id) {
+                                answered.push(tool_use_id.clone());
+                                kept.push(b.clone());
+                            }
+                            // else: orphan result — drop
+                        }
+                        ContentBlock::Text { text }
+                            if crate::companion::is_internal_instruction_text(text) => {}
+                        other => kept.push(other.clone()),
+                    }
+                }
+                open_tool_ids.retain(|id| !answered.iter().any(|a| a == id));
+                // If some tool_uses still open after this user message, and this
+                // user message had tool results or is purely tool-related, keep
+                // going — results may arrive later. If user message is a new
+                // human turn (has text) while tools are still open, close them.
+                let has_human_text = kept.iter().any(|b| {
+                    matches!(b, ContentBlock::Text { text } if !text.trim().is_empty())
+                        || matches!(b, ContentBlock::Image { .. })
+                });
+                if has_human_text && !open_tool_ids.is_empty() {
+                    out.push(synthetic_tool_results(&open_tool_ids));
+                    open_tool_ids.clear();
+                }
+                if !kept.is_empty() {
+                    out.push(Message {
+                        role: Role::User,
+                        content: kept,
+                        at: msg.at,
+                    });
+                }
+            }
+        }
+    }
+    if !open_tool_ids.is_empty() {
+        out.push(synthetic_tool_results(&open_tool_ids));
+    }
+    out
+}
+
+fn synthetic_tool_results(ids: &[String]) -> Message {
+    Message {
+        role: Role::User,
+        at: None,
+        content: ids
+            .iter()
+            .map(|id| ContentBlock::ToolResult {
+                tool_use_id: id.clone(),
+                content: "Tool call was interrupted or never completed (history repair)."
+                    .into(),
+                is_error: true,
+            })
+            .collect(),
+    }
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::*;
+
+    #[test]
+    fn fills_missing_tool_results() {
+        let history = vec![
+            Message::user_text("hi"),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "ls"}),
+                }],
+                at: None,
+            },
+            // missing tool result — user speaks again
+            Message::user_text("continue"),
+        ];
+        let fixed = sanitize_history_for_provider(&history);
+        // expect: user, assistant, synthetic tool results, user continue
+        assert!(fixed.len() >= 4);
+        let synth = &fixed[2];
+        assert_eq!(synth.role, Role::User);
+        assert!(matches!(
+            &synth.content[0],
+            ContentBlock::ToolResult { tool_use_id, is_error: true, .. }
+                if tool_use_id == "t1"
+        ));
+        assert_eq!(fixed.last().unwrap().content[0].as_text(), Some("continue"));
+    }
+
+    #[test]
+    fn keeps_complete_pairs() {
+        let history = vec![
+            Message::user_text("hi"),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({}),
+                }],
+                at: None,
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                }],
+                at: None,
+            },
+            Message::assistant_text("done"),
+        ];
+        let fixed = sanitize_history_for_provider(&history);
+        assert_eq!(fixed.len(), 4);
+    }
+
+    #[test]
+    fn persist_and_sanitize_drop_care_nudge() {
+        let care = Message::user_text(crate::companion::care_after_tools_nudge());
+        assert!(care.is_internal_instruction_only());
+        assert!(care.for_persist(false).content.is_empty());
+        let history = vec![
+            Message::user_text("写成 word"),
+            Message::assistant_text("wrote"),
+            care,
+        ];
+        let fixed = sanitize_history_for_provider(&history);
+        assert_eq!(fixed.len(), 2);
+        assert!(!fixed.iter().any(|m| m
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("[lebi-AI Care]")))));
     }
 }
 

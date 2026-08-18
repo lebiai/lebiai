@@ -65,7 +65,14 @@ export function isTrivialUserText(text: string): boolean {
 /** Short title derived from a user message (skip pure greetings at caller). */
 export function deriveSessionTitle(content: string, maxChars = 60): string {
   const trimmed = content.trim();
-  if (!trimmed || isTrivialUserText(trimmed)) return "New Chat";
+  if (
+    trimmed.startsWith("[lebi-AI Care]") ||
+    trimmed.startsWith("[Hermes Care]") ||
+    trimmed.startsWith("[Context:")
+  ) {
+    return "New dialogue";
+  }
+  if (!trimmed || isTrivialUserText(trimmed)) return "New dialogue";
   const chars = Array.from(trimmed);
   if (chars.length <= maxChars) return chars.join("");
   return chars.slice(0, maxChars - 3).join("") + "...";

@@ -10,69 +10,88 @@
 
 use hermes_core::companion;
 
-/// Build the session system prompt: companion identity + workspace + tool strategy.
+/// Which surface this session prompt is for. Identity and tool story must match
+/// what the surface can actually do (P0 §0 / §3).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PromptKind {
+    /// Desktop / CLI dialogue — work companion, generic Do.
+    Dialogue,
+    /// IM — companion, but no durable writes and no shell.
+    Im,
+    /// Engine batch (`hermes run`) — not the companion product.
+    Batch,
+}
+
+/// Build the session system prompt.
 ///
 /// **Cache-stable**: this prompt MUST NOT contain time-varying data
-/// (timestamps, session counters, etc.) — Anthropic prompt caching needs
-/// the prefix to be byte-identical across turns. Per-turn dynamic context
-/// (current time, palace index, matched skills) is injected separately.
+/// (timestamps, session counters, etc.).
 pub fn compose_system_prompt(
     user_system: Option<String>,
     workspace_root: &std::path::Path,
+    kind: PromptKind,
 ) -> Option<String> {
-    let clause = format!(
-        "{protocol}\n\
-         ## Workspace\n\
-         Your working directory is `{ws}`. All file reads, writes, and \
-         commands MUST stay inside this directory. If a task seems to \
-         require touching anything outside, stop and ask the user before \
-         proceeding.\n\n\
-         ## Tool Strategy (how you Do engineering work)\n\
-         Explore before acting: grep/glob to locate, read to understand, \
-         then edit/write to change. Verify with bash (tests, build).\n\
-         - Use grep to find symbols, glob to find files by pattern.\n\
-         - Use read to inspect specific lines before editing.\n\
-         - Use edit for surgical changes; write only for new files.\n\
-         - Use bash for builds, tests, and shell commands.\n\
-         - Use git for read-only repo inspection (status, diff, log, blame).\n\
-         - Use think to reason through complex multi-step plans.\n\
-         - For multi-step tasks (~3+ steps): call todo_write first to lay out the plan, \
-         keep exactly one task in_progress, and mark tasks completed as you finish.\n\
-         Minimize tool calls: batch related reads, avoid re-reading unchanged files.\n\n\
-         ## Code Analysis Workflow\n\
-         1. grep/glob → locate relevant files and symbols\n\
-         2. read → understand context around the target code\n\
-         3. Trace callers/callees if the change has side effects\n\
-         4. edit → make the minimal change\n\
-         5. bash → run tests or build to verify\n\n\
-         ## Memory Palace\n\
-         You have a Memory Palace with zone-organized memories. The palace \
-         index (zone map) is in your system prompt when available.\n\
-         - Use palace_zones to list zones\n\
-         - Use palace_read_zone to load a zone's content\n\
-         - Use palace_recall / memory_search to find past work, standards, preferences\n\
-         - Prefer zones: `work` (episodes), `preferences`, `standards` / `core`, `general`\n\
-         - Use memory_save (with zone + tags) to persist new learnings\n\
-         - Use memory_delete to remove outdated memories\n\
-         When the user starts work similar to a past episode, **search first**, then use Continuity.\n\
-         Don't guess about preferences or conventions — load the relevant zone first.\n\n\
-         ## Output Style\n\
-         Be concise. Show file paths with line numbers when referencing code. \
-         End task responses with: Changed / Verified / Not verified / Risks when useful.\n\
-         After a complete deliverable (any work domain), optional Care: at most 1–3 concrete \
-         improvements fit to the user — skip on final-only / 定稿.\n\n\
-         ## Web\n\
-         When answering time-sensitive questions, use web_search first.\n\
-         - Prefer snippets from search results — only web_fetch if you need the full page.\n\
-         - Only fetch URLs that appeared in search results or that the user gave you. \
-         Never guess or construct URLs.\n\
-         - If web_fetch returns 403/404 or very little text, switch to a different source. \
-         Do not retry the same site.\n\
-         - For weather, news, or real-time data: search first, use the snippet, \
-         move on.",
-        protocol = companion::companion_protocol(),
-        ws = workspace_root.display()
-    );
+    let ws = workspace_root.display();
+    let clause = match kind {
+        PromptKind::Batch => format!(
+            "You are a **batch worker** for the lebi-AI local engine. \
+             You are NOT the work companion product (搭子). Do not claim to remember \
+             the user or to speak as lebi-AI the companion.\n\n\
+             ## Workspace\n\
+             Working directory: `{ws}`. Stay inside it.\n\n\
+             Complete the stated goal. If the goal is ambiguous or conflicts with \
+             an explicit constraint, stop and state the tension instead of inventing \
+             a plan. Prefer the smallest correct action. Report real paths.\n\
+             Code is only relevant if the goal is about code.\n"
+        ),
+        PromptKind::Im => format!(
+            "{protocol}\n\
+             ## Workspace\n\
+             Notes may mention `{ws}`. On this channel you cannot write files, \
+             run a shell, or save lasting memories/skills. Do not claim you did.\n\n\
+             ## What you can do here\n\
+             - think, web_search, web_fetch (only URLs from search or the user)\n\
+             - memory_search / palace_zones / palace_read_zone / palace_recall — \
+               use these before pretending you remember\n\
+             - skill_list / skill_read / skill_read_file — load a skill body before acting on it\n\n\
+             If the user needs a file written, a command run, or something remembered \
+             for next time, say that belongs on the desktop app — do not invent a save.\n\n\
+             ## Output\n\
+             Be concise. After a complete deliverable, optional Care: at most 1–3 \
+             concrete improvements; skip on 定稿 / final-only.\n",
+            protocol = companion::companion_protocol(),
+        ),
+        PromptKind::Dialogue => format!(
+            "{protocol}\n\
+             ## Workspace\n\
+             Your working directory is `{ws}`. File reads, writes, and commands \
+             stay inside it unless the user names an explicit path. New deliverables \
+             the user did not path: write under `outputs/`.\n\n\
+             ## How you Do work (any domain)\n\
+             1. Understand the ask. If notes or the palace may apply, search first \
+                (`memory_search` / palace tools). Do not pretend you remember.\n\
+             2. Act with the smallest correct tools: read existing material, write \
+                or edit a deliverable, search the web when facts must be current.\n\
+             3. Verify before declaring done. Report real paths and results.\n\
+             4. Code, git, and bash are available when the *task* is engineering — \
+                they are not your default stance. Do not start with grep/glob unless \
+                the user is asking about files or code.\n\
+             5. Multi-step (~3+): todo_write, one task in_progress, mark completed.\n\
+             6. Named Desktop/Documents/Downloads: one write to that path. No probing.\n\
+             7. Open a file, folder, video, or page with the `open` tool — never bash `open` / osascript / guessing Word, Pages, or WPS.\n\
+             8. Speak results, not lab notes (no sandbox / Finder / path-test narration).\n\n\
+             ## Memory\n\
+             Prefer zones `preferences` / `standards` / `work` (work-episode). \
+             Use memory_save only for durable preferences, standards, or episodes \
+             the user wants kept. Do not spam writes.\n\n\
+             ## Output\n\
+             Be concise. After a complete deliverable, optional Care: at most 1–3 \
+             concrete improvements fit to them — skip on 定稿 / final-only.\n\
+             Time-sensitive facts: web_search first; fetch only URLs from results \
+             or the user.\n",
+            protocol = companion::companion_protocol(),
+        ),
+    };
     Some(match user_system {
         Some(extra) if !extra.is_empty() => format!("{clause}\n\n{extra}"),
         _ => clause,
@@ -104,4 +123,36 @@ pub fn inject_time_header(mut history: Vec<hermes_core::Message>) -> Vec<hermes_
         }
     }
     history
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn dialogue_is_not_a_coding_playbook() {
+        let p = compose_system_prompt(None, Path::new("/tmp/ws"), PromptKind::Dialogue).unwrap();
+        assert!(p.contains("work companion") || p.contains("搭子"));
+        assert!(!p.contains("Code Analysis Workflow"));
+        assert!(!p.contains("how you Do engineering work"));
+        assert!(p.contains("No probing"));
+        assert!(p.contains("lab notes") || p.contains("Never narrate"));
+        assert!(p.contains("`open` tool"));
+    }
+
+    #[test]
+    fn im_does_not_promise_durable_writes() {
+        let p = compose_system_prompt(None, Path::new("/tmp/ws"), PromptKind::Im).unwrap();
+        assert!(p.contains("cannot write files"));
+        assert!(!p.contains("Use memory_save"));
+        assert!(!p.contains("`open` tool"));
+    }
+
+    #[test]
+    fn batch_is_not_the_companion() {
+        let p = compose_system_prompt(None, Path::new("/tmp/ws"), PromptKind::Batch).unwrap();
+        assert!(p.contains("batch worker"));
+        assert!(!p.contains("You are lebi-AI"));
+    }
 }

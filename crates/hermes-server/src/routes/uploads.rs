@@ -1,4 +1,4 @@
-//! Document upload REST — 1:1 with `hermes-gui` upload commands.
+//! Document upload REST — 与 GUI upload 对齐的 server 子集。
 //!
 //! - `GET  /api/v1/uploads/converter` → `check_document_converter`
 //! - `POST /api/v1/uploads` → `import_document`

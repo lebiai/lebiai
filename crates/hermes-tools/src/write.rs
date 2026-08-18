@@ -22,23 +22,26 @@ pub fn spec() -> ToolSpec {
             For large content (>150 lines), write a skeleton first, then use `edit` \
             to fill in sections incrementally.\n\
             **Generated artifacts (product default):** When the user asks you to *generate* \
-            a new deliverable (report, minutes, summary, export, draft doc) and does **not** \
-            name a path, write under `outputs/` (e.g. `outputs/meeting-notes.md`). \
-            Do **not** move edits of *existing* files into `outputs/`. \
-            If the user specifies a path, use that path."
+            a new deliverable and does **not** name a path, write under `outputs/` \
+            (e.g. `outputs/meeting-notes.md`). \
+            If the user asks for Desktop / Documents / Downloads (or gives `~/Desktop/...`), \
+            write there — those home export folders are allowed. \
+            Paths ending in .docx/.xlsx/.doc/.xls are packaged as real Office files \
+            (plain text is not a Word/Excel document). \
+            Do **not** move edits of *existing* workspace files into `outputs/`."
             .into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path relative to workspace. For new generated deliverables without a user-specified path, prefer outputs/<name>.ext"
+                    "description": "Workspace-relative path, or absolute/~/ path under Desktop/Documents/Downloads (e.g. ~/Desktop/report.docx). Prefer outputs/<name> for new deliverables when user does not specify a location."
                 },
                 "content": {"type": "string", "description": "Content to write"}
             },
             "required": ["path", "content"]
         }),
-        // Workspace-scoped writes are normal; path escape is hard-blocked in safety.
+        // Outside-workspace export paths are gated in hermes_turn::danger.
         requires_confirmation: false,
     }
 }
@@ -47,45 +50,104 @@ pub async fn run(workspace: &Path, args: serde_json::Value) -> Result<ToolCallOu
     let a: Args = serde_json::from_value(args)
         .map_err(|e| hermes_core::Error::ToolHost(format!("write: bad args: {e}")))?;
 
-    // For new files, resolve checks the parent chain.
-    let path = safety::resolve(workspace, &a.path).or_else(|_| {
-        // Path doesn't exist yet — construct it and verify parent is inside ws.
-        let candidate = if Path::new(&a.path).is_absolute() {
-            std::path::PathBuf::from(&a.path)
-        } else {
-            workspace.join(&a.path)
-        };
-        safety::resolve(workspace, &candidate.to_string_lossy()).or_else(|_| {
-            // Last resort: just join and check prefix manually.
-            let ws_canon = std::fs::canonicalize(workspace)
-                .map_err(|e| hermes_core::Error::ToolHost(e.to_string()))?;
-            let norm = crate::safety::normalize_join(workspace, &a.path);
-            if !norm.starts_with(&ws_canon) && !norm.starts_with(workspace) {
-                let hint = if a.path.contains("memories") || a.path.contains("memory") {
-                    " To save a durable fact/preference, use the memory_save tool — not write."
-                } else {
-                    ""
-                };
-                return Err(hermes_core::Error::ToolHost(format!(
-                    "write: path escapes workspace: {}{hint}",
-                    a.path
-                )));
-            }
-            Ok(norm)
-        })
-    })?;
+    let (resolved, _export) = safety::resolve_for_write(workspace, &a.path)?;
+    let (path, bytes) = match crate::office_export::maybe_package(&resolved, &a.content) {
+        Some((p, b)) => (p, b),
+        None => (resolved, a.content.into_bytes()),
+    };
 
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|e| hermes_core::Error::ToolHost(format!("write mkdir: {e}")))?;
     }
-    tokio::fs::write(&path, &a.content)
+    tokio::fs::write(&path, &bytes)
         .await
         .map_err(|e| hermes_core::Error::ToolHost(format!("write {}: {e}", path.display())))?;
 
     Ok(ToolCallOutcome {
-        content: format!("wrote {} bytes to {}", a.content.len(), path.display()),
+        content: format!("wrote {} bytes to {}", bytes.len(), path.display()),
         is_error: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn writes_text_under_outputs() {
+        let dir = tempdir().unwrap();
+        let out = run(
+            dir.path(),
+            serde_json::json!({"path": "outputs/notes.md", "content": "hello"}),
+        )
+        .await
+        .unwrap();
+        assert!(!out.is_error);
+        let text = std::fs::read_to_string(dir.path().join("outputs/notes.md")).unwrap();
+        assert_eq!(text, "hello");
+    }
+
+    #[tokio::test]
+    async fn writes_real_docx_not_plain_text() {
+        let dir = tempdir().unwrap();
+        let out = run(
+            dir.path(),
+            serde_json::json!({
+                "path": "outputs/brief.docx",
+                "content": "标题\n正文一段"
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(!out.is_error);
+        let bytes = std::fs::read(dir.path().join("outputs/brief.docx")).unwrap();
+        assert_eq!(&bytes[0..2], b"PK");
+        assert!(String::from_utf8_lossy(&bytes).contains("正文一段"));
+    }
+
+    #[tokio::test]
+    async fn writes_real_xlsx() {
+        let dir = tempdir().unwrap();
+        let out = run(
+            dir.path(),
+            serde_json::json!({
+                "path": "outputs/table.xlsx",
+                "content": "项,值\nA,1"
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(!out.is_error);
+        let bytes = std::fs::read(dir.path().join("outputs/table.xlsx")).unwrap();
+        assert_eq!(&bytes[0..2], b"PK");
+    }
+
+    #[tokio::test]
+    async fn tilde_desktop_export_docx() {
+        let dir = tempdir().unwrap();
+        let name = format!(
+            "lebi-write-test-{}.docx",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        );
+        let rel = format!("~/Desktop/{name}");
+        let out = run(
+            dir.path(),
+            serde_json::json!({"path": rel, "content": "桌面出口测试"}),
+        )
+        .await
+        .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!out.content.contains(dir.path().to_string_lossy().as_ref()));
+        let desktop = dirs::home_dir().unwrap().join("Desktop").join(&name);
+        assert!(desktop.exists(), "expected {}", desktop.display());
+        let bytes = std::fs::read(&desktop).unwrap();
+        assert_eq!(&bytes[0..2], b"PK");
+        let _ = std::fs::remove_file(&desktop);
+    }
 }

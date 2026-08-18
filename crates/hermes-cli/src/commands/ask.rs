@@ -1,11 +1,7 @@
-//! `hermes ask` — one-shot prompt: send a single user message, print reply.
+//! `hermes ask` — one-shot engine prompt (not the companion product).
 //!
-//! Deliberately lightweight: no session identity, no memory/skill injection,
-//! no reflection. Tool calls are executed automatically (up to
-//! `cfg.limits.max_tool_rounds` rounds) and **all confirmation prompts are
-//! auto-approved** — including high-risk tools such as `skill_install` and
-//! `bash`. Prefer `hermes chat` for anything involving memory, skills, or
-//! dangerous tools (see README "Usage").
+//! No session identity, no memory/skill injection, no reflection.
+//! Tools are off unless `--tools`. Confirms fail-closed unless `--auto-allow`.
 
 use std::io::Write;
 
@@ -16,7 +12,12 @@ use hermes_turn::{TurnConfig, TurnEvent};
 use super::util::{build_active_provider, build_web_ctx, load_tool_host};
 use super::{style, toolfmt};
 
-pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
+pub async fn run(
+    prompt: String,
+    system: Option<String>,
+    enable_tools: bool,
+    auto_allow: bool,
+) -> Result<()> {
     let cfg = super::util::load_config_or_hint()?;
     let provider_cfg = cfg.active_provider()?.clone();
     let provider = build_active_provider(&cfg)?;
@@ -31,10 +32,13 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
         Some(build_web_ctx(&cfg, provider.clone())),
     )
     .await?;
-    let tools = host
-        .list_tools()
-        .await
-        .map_err(|e| anyhow::anyhow!("listing tools: {e}"))?;
+    let tools = if enable_tools {
+        host.list_tools()
+            .await
+            .map_err(|e| anyhow::anyhow!("listing tools: {e}"))?
+    } else {
+        Vec::new()
+    };
 
     let turn_config = TurnConfig {
         model: provider_cfg.model.clone(),
@@ -49,14 +53,18 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
 
     let history = vec![Message::user_text(prompt)];
     let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-    let (confirm_tx, mut confirm_rx) = tokio::sync::mpsc::channel::<hermes_turn::ConfirmRequest>(8);
-
-    // Spawn a task that auto-approves tool calls in one-shot mode.
-    let confirm_task = tokio::spawn(async move {
-        while let Some(req) = confirm_rx.recv().await {
-            let _ = req.reply.send(hermes_turn::ConfirmAction::Allow);
-        }
-    });
+    let confirm_tx = if auto_allow {
+        let (tx, mut confirm_rx) =
+            tokio::sync::mpsc::channel::<hermes_turn::ConfirmRequest>(8);
+        tokio::spawn(async move {
+            while let Some(req) = confirm_rx.recv().await {
+                let _ = req.reply.send(hermes_turn::ConfirmAction::Allow);
+            }
+        });
+        Some(tx)
+    } else {
+        None
+    };
 
     let text_started = std::sync::atomic::AtomicBool::new(false);
     let thinking_started = std::sync::atomic::AtomicBool::new(false);
@@ -154,14 +162,12 @@ pub async fn run(prompt: String, system: Option<String>) -> Result<()> {
         &tools,
         &history,
         &turn_config,
-        Some(confirm_tx),
+        confirm_tx,
         on_event,
         cancel_rx,
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    confirm_task.abort();
 
     if !text_started.load(Relaxed) {
         // If no streaming text was printed (e.g. only tool calls), print the

@@ -1,9 +1,7 @@
-//! `hermes run` — autonomous agent: receive a goal, iterate until complete.
+//! `hermes run` — engine batch mode: iterate a goal until done.
 //!
-//! Mirrors the `hermes chat` subsystem wiring: loads skills, memories,
-//! memory-backed tool host, session persistence, workspace system prompt,
-//! and context assembly. (No end-of-session reflection in agent mode —
-//! run `hermes chat` or the GUI for reflection candidates.)
+//! Not the work-companion product path. No companion identity, no
+//! session-end reflection. Use the desktop GUI (or `hermes chat`) for 搭子 dialogue.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -67,7 +65,11 @@ pub async fn run(
         .map_err(|e| anyhow::anyhow!("listing tools: {e}"))?;
 
     // --- workspace clause in system prompt ---
-    let system = super::chat::compose_system_prompt(system, &workspace_root);
+    let system = super::chat::compose_system_prompt(
+        system,
+        &workspace_root,
+        hermes_channel::PromptKind::Batch,
+    );
 
     // --- skills & memories snapshot ---
     let all_skills: Vec<LoadedSkill> = skill_store_arc

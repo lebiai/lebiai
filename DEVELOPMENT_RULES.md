@@ -1,8 +1,10 @@
 # 开发规则（P1 权威）
 
-> **版本：** v0.1
-> **更新日期：** 2026-08-06
-> **前提：** 服从 [`PRODUCT_PRINCIPLES.md`](./PRODUCT_PRINCIPLES.md)。
+> **版本：** v0.6
+> **更新日期：** 2026-08-14
+> **对齐：** [`PRODUCT_PRINCIPLES.md`](./PRODUCT_PRINCIPLES.md) **v0.11**
+> **前提：** 只执行 P0。本文**不得**新增品类、口号、用户主路径或关系模型。冲突以 P0 为准。
+> **文体：** 只陈述现行规则。变更对照只写 `docs/records/`。
 > **入口：** 协作/Agent 先读 [`AGENTS.md`](./AGENTS.md)。
 
 ---
@@ -10,19 +12,21 @@
 ## 一、角色定位
 
 ```
-用户（个人用户 / 开发者）—— 只关心「好不好用、快不快、变不变聪明」
-产品经理视角       —— 路径、价值、成功标准、边界
-架构师视角         —— 根因、默认路径、边界、可演进
+用户（个人用户 / 开发者）—— 只关心「好不好用、好不好看、快不快、变不变聪明」
+产品经理视角       —— 操作、视觉、路径、价值、成功标准、边界
+架构师视角         —— 根因、默认路径、边界、可演进；按操作与视觉规格落地
 开发者（你我）     —— 按正确设计实现 + 可验收交付
 ```
 
-用户只做：拿二进制 → 配置 API Key → 对话 / 使用 → 确认进化候选。其余由我们完成。
+用户只做：拿桌面 GUI → 试用期内配置 API Key → **对话** → 确认进化候选。其余由我们完成。
+CLI 是引擎装配 / 调试入口，不是非技术用户的默认路径。
 
 **铁律：**
 
-1. **一切站在用户角度** — 价值 = 更好用、更高效、更能进化
-2. **修问题必须产品经理 + 架构师双视角** — 禁止修修补补（见 P0 第七条）
-3. **代码高效、无冗余；改完即清旧** — 凡被替换的实现、注释、入口、文案必须同次清理（见 P0 第九条、§六）
+1. **第一性原理** — 拒绝类比，拆到真，从真往上建（P0 第零条）。写不出三步 → 不准开工
+2. **一切站在用户角度** — 价值 = 更好用、更好看、更高效、更能进化
+3. **修问题必须产品经理 + 架构师双视角** — 产品经理对操作与视觉负全责（P0 第七条、第十一条）
+4. **代码高效、无冗余；改完即清旧** — 凡被替换的实现、注释、入口、文案必须同次清理（见 P0 第九条、§六）
 
 ---
 
@@ -32,14 +36,18 @@
 
 | 视角 | 必答 |
 |------|------|
-| **产品经理** | 用户场景、路径变化、成功标准、明确不做什么 |
-| **架构师** | 根因层级、正确默认路径、与引擎/各入口边界、如何防复发 |
+| **第一性原理** | 拒绝了什么类比；拆出的真；做法如何从真推出（P0 第零条） |
+| **产品经理** | 场景；用户怎么走完（主操作、步数、先看见什么）；看起来怎么样（层级、空/载/错态）；是否好看、好走；成功标准；不做什么 |
+| **架构师** | 根因层级、正确默认路径、与引擎/各入口边界、如何按操作与视觉规格落地、如何防复发 |
 
 ### 禁止
 
 - 只改 UI 遮错、只加 sleep/重试、只 if 特判某一环境
 - 依赖「本机碰巧开着 Vite / 碰巧有某目录」
 - 同一问题连续打补丁却不收敛设计
+- 用户可见面只做通、不规定操作与视觉
+
+方案记录中若写不出第零条三步，或写不出「用户先看见什么、点什么、成功/失败长什么样」，**不得进入实施**。
 
 ### 允许
 
@@ -53,9 +61,9 @@
 
 | 环节 | 用户操作 | 我们的责任 |
 |------|---------|-----------|
-| 获取 | clone 或下载二进制 | 构建可复现、单文件可分发（Docker 镜像可选） |
-| 配置 | 写 `~/.lebi-ai/config.toml`（`hermes init` 引导） | 默认配置可运行；密钥 0600 |
-| 对话 | CLI / GUI / 手机 / 微信 / 飞书 / Telegram | 多入口同一体验、同一数据 |
+| 获取 | 下载桌面安装包（或从源码构建） | 构建可复现；GUI 为用户默认 |
+| 配置 | GUI 设置粘贴 API Key（或 `hermes init`） | 默认配置可运行；密钥 0600；试用期内即可对话 |
+| 对话 | **默认 GUI**；CLI / 手机 / IM 为同一引擎的其他表面 | 多入口同一数据；手机/IM 已接线、非默认交付 |
 | 进化 | 确认 / 拒绝 skill、memory、conflict 候选 | 候选可读、可审；落盘为明文 |
 | 检索 | 查看 skills / memories / sessions | 命令清晰、结果可读 |
 
@@ -63,33 +71,35 @@
 
 | 维度 | 达标含义 |
 |------|----------|
-| 好用 | 单一二进制、无数据库；不依赖技术背景也能在 GUI/手机端使用 |
-| 高效 | 高频路径步骤最少；reflection 不阻塞；结果可直接用 |
+| 好用 | 单一二进制、无数据库；不依赖技术背景也能在 GUI 走完；**好看、好走** |
+| 高效 | 高频路径步骤最少；主操作一眼可见；reflection 不阻塞；结果可直接用 |
 
 ### 禁止
 - 让用户装数据库 / 消息队列 / 额外运行时（Rust 工具链只用于从源码构建）
-- 为「技术优雅」牺牲步骤或清晰度
+- 为「技术优雅」牺牲步骤、清晰度或视觉
 - 无用户价值的功能堆砌
+- 功能正确但难看、难找、难完成
 
 ---
 
-## 三、文档位置（强制）
+## 三、文档种类（强制 · 服从 P0 第六条）
 
-### 根目录 Markdown 白名单（仅 4 个）
+先选种类再写。选不出就不写。
 
-```
-PRODUCT_PRINCIPLES.md
-DEVELOPMENT_RULES.md
-AGENTS.md
-README.md
-```
+| 种 | 目录 |
+|----|------|
+| A 权威 | 根目录仅 4 个 md |
+| B 用户说明书 | `docs/guide/` |
+| C 发布说明 | `docs/releases/` |
+| D 操作规格 | `docs/spec/` |
+| E 开发者手册 | `docs/dev/` |
+| F 台账 | `docs/records/`（可分型：产品 / 工程 / 发布） |
+| G 探索 | `docs/explore/` |
+| H 快照 | `docs/snapshot/` |
 
-- **禁止**在仓库根新增其他 `*.md`
-- **所有其他说明文档**必须放在 [`docs/`](./docs/)，并由 [`docs/README.md`](./docs/README.md) 索引
-- 变更台账：[`docs/records/`](./docs/records/)
-- 例外：代码树内运行时资源（如 `crates/hermes-cli/src/skills/**/SKILL.md`）
+索引：[`docs/README.md`](./docs/README.md)。运行时技能、脚本、第三方 Agent 技能**不是**文档。
 
-违规处理：移入 `docs/` 或删除 + 写 `docs/records/` 记录。
+违规：移入对应目录或删除 + 写台账。
 
 ---
 
@@ -105,14 +115,14 @@ README.md
 
 | 阶段 | 必须产出 | 完成标志 |
 |------|----------|----------|
-| **方案** | 用户价值 + **产品经理路径/成功标准** + **架构师根因/默认路径** + 范围与风险 | 自检通过 P0 清单；两视角写全 |
+| **方案** | 第零条三步 + 用户价值 + **产品经理：操作/视觉/成功标准** + **架构师根因/默认路径** + 范围与风险 | 自检通过 P0 清单；三步与两视角写全；用户面含操作与视觉 |
 | **实施** | 代码/配置/技能按**正确设计**落地（非补丁）；**同步删除旧路径与死代码** | 与方案一致或记录偏差；diff 可见「删旧」 |
 | **测试** | 用户语言用例 + 自动化/手工结果 | 关键路径通过 |
 | **验收** | 质量门槛全勾选 | 状态「已验收」；未通过=未完成 |
 
 ### 质量门槛（验收必须全部为是）
 
-1. **用户价值：** 写得出用户因此更好用 / 更高效 / 更能进化
+1. **用户价值：** 写得出用户因此更好用 / 更好看 / 更高效 / 更能进化
 2. **开箱即用：** 未引入数据库 / 常驻中间件 / 额外运行时要求
 3. **本地优先：** 未把用户数据默认送上非 AI 的第三方；密钥仍 0600
 4. **测试通过：** 表中关键用例通过（或明确缩小范围并记录）；`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo test --workspace` 必须全绿
@@ -120,6 +130,8 @@ README.md
 6. **文档位置：** 未在根目录滥放 md
 7. **非补丁：** 产品路径与架构根因已对齐；默认路径正确，不靠环境运气
 8. **代码卫生（P0 第九条）：** 高效、无冗余；旧实现/死代码/注释尸块/过时入口已清理；默认路径单一
+9. **操作与视觉（P0 第十一条）：** 用户可见面已做操作走查与视觉走查；主操作清楚；空/载/错态完整；不依赖事后校准
+10. **第一性原理（P0 第零条）：** 方案写清拒绝的类比、拆出的真、如何推出；不是靠竞品或惯例开工
 
 **未达门槛 = 不得视为完成。**
 
@@ -142,11 +154,11 @@ lebi-AI（乐彼AI）= 共享引擎（crates/*）+ 多入口（CLI / GUI / Flutt
 | 核心抽象 | `crates/hermes-core` | Session / LlmProvider / ToolHost / 上下文压缩；不依赖 UI 与传输 |
 | 引擎能力 | `crates/hermes-llm`、`hermes-turn`、`hermes-tools`、`hermes-mcp` | 多 provider、工具循环与权限、内置工具、MCP 客户端 |
 | 记忆与进化 | `crates/hermes-store`、`hermes-skills`、`hermes-memory`、`hermes-reflect` | 明文存储、技能域、记忆宫殿、reflection 管线与 distill |
-| CLI | `crates/hermes-cli` | 主入口与全部子命令；内置 `skill-creator` / `find-skills` 元技能 |
-| 桌面 GUI | `crates/hermes-gui`（Tauri 2） | **主交付面**；与 CLI 同引擎同数据；确认弹窗 / 记忆侧栏 / 技能 CRUD / 设置 / session-end reflection |
-| GUI 启动脚本 | `scripts/run-gui.sh` | **打开 GUI 默认路径**：build `ui/dist` 后 `cargo run`；禁止默认依赖 :5173 |
-| 移动客户端 | `clients/flutter` | 三端（iOS/Android/macOS）；后端 = `hermes-server` |
-| HTTP/WS 服务 | `crates/hermes-server` | Flutter 后端；bearer token 鉴权；路由与 GUI commands 1:1 |
+| CLI | `crates/hermes-cli` | **引擎装配 / 调试入口**与全量子命令；不是用户默认路径 |
+| 桌面 GUI | `crates/hermes-gui`（Tauri 2） | **用户默认路径**；与 CLI 同引擎同数据；确认弹窗 / 记忆侧栏 / 技能 CRUD / 设置 / session-end reflection |
+| GUI 启动脚本 | `scripts/run-gui.sh` | **打开 GUI 默认命令**：build `ui/dist` 后 `cargo run`；禁止默认依赖 :5173 |
+| 移动客户端 | `clients/flutter` | 三端（iOS/Android/macOS）；已接线、**非默认交付**；后端 = `hermes-server` |
+| HTTP/WS 服务 | `crates/hermes-server` | Flutter 后端；bearer token 鉴权；**GUI 命令子集 + WS 对话帧**（能力矩阵，禁止谎称 1:1） |
 | IM 渠道 | `crates/hermes-weixin`、`hermes-feishu`、`hermes-telegram` | 共享渠道驱动层（`channel.rs`），仅协议差异 |
 | 文档 | `docs/` | 非权威说明唯一区 |
 | 台账 | `docs/records/` | 变更与验收 |
@@ -158,14 +170,14 @@ lebi-AI（乐彼AI）= 共享引擎（crates/*）+ 多入口（CLI / GUI / Flutt
 | 你想改的是… | 应落在 | 正确位置（示例） |
 |-------------|--------|------------------|
 | 读写文件、bash、git、web 搜索、确认策略、workspace 边界 | ① 引擎能力（不是 skill） | `hermes-tools` / `hermes-core` / 权限配置 |
-| 记忆宫殿协议、造 skill、找 skill | ② 内置技能（bundled） | `crates/hermes-cli`（`memory-palace` 生成、`skill-creator` / `find-skills` 嵌入） |
+| 记忆宫殿协议、造 skill、找 skill | ② 内置技能（bundled） | `crates/hermes-skills/bundled/`（`memory-palace` 生成、`skill-creator` / `find-skills` 嵌入；启动自动安装） |
 | 用户自己的工作流 / 领域知识 | ③ 用户技能（User scope） | `~/.lebi-ai/skills/` |
 | 项目内约定 / 团队共享 | ④ 项目技能（Project scope） | `./.lebi-ai/skills/` |
 
 **禁止（执行）：**
 
 - 把 ① 引擎能力写成可卸载 SKILL.md 冒充「内置技能」
-- 用「系统 skill vs 用户 skill」二分糊掉 bundled / user / project 的所有权
+- 用「系统 skill vs 用户 skill」二分糊掉 ①引擎 / ②bundled / ③user / ④project 的所有权
 - 删除 / 覆盖内置技能名（`memory-palace` / `skill-creator` / `find-skills`）——启动即重装
 - 远程技能默认 `always_active=true`（安装时强制关闭）
 
@@ -182,12 +194,12 @@ lebi-AI（乐彼AI）= 共享引擎（crates/*）+ 多入口（CLI / GUI / Flutt
 
 1. **单一二进制**：无数据库、无消息队列；构建自包含（Docker 镜像可选）
 2. **明文本地存储**：会话 JSONL；技能 / 记忆 Markdown + YAML frontmatter；密钥文件 0600
-3. **多入口同契约**：`hermes-server` 路由与 `hermes-gui` commands 1:1；DTO 不得各自漂移
-4. **server 安全**：默认 `127.0.0.1` + bearer token 必填；公网必须反代 TLS（见 `docs/REMOTE_ACCESS.md`）
-5. **默认 UI 语言 en-US**（`config.toml` 的 `ui.language`，支持 `zh-CN`）
+3. **多入口同契约**：server 是 GUI 的 **Flutter 子集**（能力矩阵见 `docs/snapshot/project-map.md`，种类 H）；共享 DTO/门禁不得漂移；新增 GUI 能力时决定是否进 server。禁止问「是否 1:1」，应问「是否落在能力矩阵」
+4. **server 安全**：默认 `127.0.0.1` + bearer token 必填；公网必须反代 TLS（见 `docs/dev/REMOTE_ACCESS.md`）
+5. **默认 UI 语言 zh-CN**（`config.toml` 的 `ui.language`，可选 `en-US`）
 6. **特别危险才确认**：工作区内常态读写 / 普通 shell / memory_save 默认放行；破坏性 shell、远程 skill_install、删记忆/技能、subagent、未知 MCP 等须 confirm 并说明原因；会话级 "Always Allow" 仅存于进程内；workspace 硬边界始终生效
 7. **上下文纪律**：skill 正文不注入系统提示（发现 → 激活 → 执行）；pinned 记忆才常载
-8. **reflection 纪律**：候选默认**不自动写入**；用户确认才落盘；distill 先 dry-run 后 `--apply`；**配置默认值必须与 P0 一致**（`auto_accept_memories` 默认 `false`，仅当用户显式开启才自动写入，且入口间批准语义一致）
+8. **reflection 纪律**：候选默认**不自动写入**；用户确认才落盘；只抽「一类事一条生效规则」；同格修订必须 `supersedes`；禁止把用户原话/空情节/环境探测灌进待审；distill 先 dry-run 后 `--apply`；**配置默认值必须与 P0 一致**（`auto_accept_memories` 默认 `false`）
 9. **知识库收敛**：distill 聚类近似记忆；supersedes 链取代旧记忆；effectiveness 可追踪
 10. **代码卫生**（服从 P0 第九条）——见下节
 
@@ -224,28 +236,25 @@ lebi-AI（乐彼AI）= 共享引擎（crates/*）+ 多入口（CLI / GUI / Flutt
 
 #### 实施自检（收工前）
 
-1. 本次默认路径是否只有一条？
+1. 默认路径是否只有一条？
 2. `rg` / 全局搜旧名是否还有业务引用？
 3. 是否留下注释掉的旧代码？有则删。
 4. diff 是否同时包含删除？只有新增没有删除 → 怀疑堆叠。
 
 ---
 
-### 六·附 B、规则一致性（开发前锁定 · 2026-08-03）
-
-> 来自开发前全面审查（`docs/records/20260803-pre-dev-review-rules.md`）。三条基线规则：
+### 六·附 B、规则一致性（强制）
 
 1. **配置默认值与权威行为一致** — 任何「自动写」「默认开」的配置项，其默认值必须符合 P0
    （进化候选默认不自动写入；危险操作默认需确认）。发现默认值偏离 → 改默认值，不改 P0。
 2. **文档诚实** — README / P3 与 `docs/` 不得声称未实现的路径与入口；未接线的功能要么
-   接线，要么明确标「计划中 / roadmap」，验收时逐条核对。禁止「文档先吹、代码后补」。
+   接线，要么明确标「计划中」，验收时逐条核对。
 3. **lint / test 硬门槛** — 验收前 `cargo clippy --workspace --all-targets -- -D warnings`
-   与 `cargo test --workspace` 必须全绿；CI（`.github/workflows`）补上后由 CI 兜底，
-   本地命令与 CI 行为一致。
+   与 `cargo test --workspace` 必须全绿；CI 与本地命令行为一致。
 
-### 六·附 C、桌面 GUI 默认加载路径（防白屏 · 强制）
+### 六·附 C、桌面 GUI 默认加载路径（强制）
 
-> 对齐律师版实践与 P0「禁止环境运气依赖」。冲突时以本节 + P0 为准。
+> 服从 P0「禁止环境运气依赖」。冲突时以本节 + P0 为准。
 
 | 必须 | 禁止 |
 |------|------|
@@ -255,23 +264,26 @@ lebi-AI（乐彼AI）= 共享引擎（crates/*）+ 多入口（CLI / GUI / Flutt
 | 改 `ui/src` 后重建 dist 再验收 | 改了前端却只重启 Rust 二进制当「已生效」 |
 
 **根因备忘：** Tauri 若配置了 `devUrl`，**debug** 的 `cargo run -p hermes-gui` 会去连 Vite；5173 未开 → **整页白屏**。  
-正确设计：默认不设 `devUrl`，始终 `frontendDist`；热更新仅可选、临时、写在 `docs/gui-run.md`。
+正确设计：默认不设 `devUrl`，始终 `frontendDist`；热更新仅可选、临时，见 `docs/dev/gui-run.md`。
 
 
 ## 七、共识防漂移
 
-- 禁止平行「第二产品愿景」
-- 禁止 Docker / 远程优先叙事冲本地单二进制主路径
+- 禁止平行「第二产品愿景」（含把探索方案写成现行目标）
+- 禁止 Docker / 远程优先叙事冲本地单二进制 + GUI 默认路径
 - 禁止根目录堆文档
-- 改共识：升 P0 版本 → 同步 P1/AGENTS → 检查 README → **写 docs/records**
+- 用户默认路径 = GUI；CLI = 引擎装配入口
+- 禁止用户可见主词用「聊天」；禁止关系主词用「搭档 / 工作伴侣」
+- `docs/` 必须先选 B–H 再写入对应目录；G 必须标未立项
+- 改共识：升 P0 版本 → **同一次变更内**同步 P1/AGENTS → 检查 README → **写 docs/records**。未同步 = 未完成
 
 ---
 
 ## 八、工作方式
 
-1. 用户视角 → 2. 产品视角 → 3. 方案 → 4. 实施 → 5. 测试 → 6. 验收落盘
+1. 第一性原理（拒绝类比 / 拆到真 / 往上建）→ 2. 用户视角 → 3. 产品视角 → 4. 方案 → 5. 实施 → 6. 测试 → 7. 验收落盘
 
-分歧：用户体验 > 技术优雅；本地数据 > 云端默认；进化可审 > 静默累积。
+分歧：用户体验（含好看、好走）> 技术优雅；本地数据 > 云端默认；进化可审 > 静默累积。
 
 ---
 
@@ -281,17 +293,22 @@ lebi-AI（乐彼AI）= 共享引擎（crates/*）+ 多入口（CLI / GUI / Flutt
 |---|------|------|
 | 1 | 让用户装数据库 / 消息队列 | 单一二进制，明文文件即可 |
 | 2 | 原则放深层目录 | 放仓库根（仅权威） |
-| 3 | 把开发者当唯一用户 | 用户是个人用户 + 开发者，GUI/手机入口要可用 |
-| 4 | 各入口复制引擎逻辑 | 共享 `hermes-core`；server 与 GUI commands 1:1 |
-| 5 | README 旧叙事 | 只认 P0/P1 |
+| 3 | 把开发者当唯一用户 | 用户默认路径是 GUI；CLI 是引擎入口 |
+| 4 | 各入口复制引擎逻辑 | 共享 `hermes-core`；server = GUI 子集 + 能力矩阵诚实 |
+| 5 | README 旧叙事 | 只认 P0；P3 是 P0 用户语言子集 |
 | 6 | 改完不测不验收 | 无 docs/records = 未完成 |
 | 7 | 根目录堆 md | 一律进 docs/ |
 | 8 | server 裸奔（无 token / 明文公网） | 默认本机 + token；公网必须反代 TLS |
-| 9 | 「系统 skill / 用户 skill」二分 | 用 bundled / user / project 三分类；引擎能力不是 skill |
+| 9 | 「系统 skill / 用户 skill」二分 | 用 ①引擎 / ②bundled / ③user / ④project；引擎能力不是 skill |
 | 10 | 远程技能默认注入系统提示 | 安装强制 `always_active=false` |
 | 11 | 新旧实现双轨 + 注释尸块 | 改完即清旧（P0 第九条）；禁止堆叠 |
 | 12 | reflection 静默自动写入 | 候选必须用户确认后才落盘 |
 | 13 | GUI 白屏：debug 连 5173 / 未 build dist | 默认 `ui/dist`；`scripts/run-gui.sh`；禁止默认 devUrl |
+| 14 | 权威层版本对不齐 | P1/AGENTS 文首必须写 P0 版本；对不齐 = 升版未完成 |
+| 15 | docs 另立产品目标 | 先选 B–H；G 标未立项；H 标日期；D 不得扩大定义卡 |
+| 16 | 授权只写在规格、P0 不立法 | 试用 / 过期锁主能力写在 P0 |
+| 17 | 功能能跑但难看、难走 | 产品经理未履行操作与视觉职责；未完成 |
+| 18 | 靠类比开工 | 先拆到真再往上建；唯一理由是竞品/惯例 → 停 |
 
 ---
 
@@ -303,9 +320,15 @@ lebi-AI（乐彼AI）= 共享引擎（crates/*）+ 多入口（CLI / GUI / Flutt
 ├── DEVELOPMENT_RULES.md
 ├── AGENTS.md
 ├── README.md
-├── docs/                     ← 其他所有说明文档
-│   ├── README.md
-│   └── records/              ← 变更台账
+├── docs/                     ← 非权威；目录即种类
+│   ├── README.md             ← 索引
+│   ├── guide/                ← B 用户说明书
+│   ├── releases/             ← C 发布说明
+│   ├── spec/                 ← D 操作规格
+│   ├── dev/                  ← E 开发者手册
+│   ├── records/              ← F 台账
+│   ├── explore/              ← G 探索
+│   └── snapshot/             ← H 快照
 ├── crates/                   ← 共享引擎 + 各入口
 ├── clients/flutter/          ← 移动客户端
 └── scripts/

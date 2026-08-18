@@ -1,9 +1,11 @@
-//! Built-in tools for the self-evolving agent.
+//! Built-in engine tools (files, shell, web, memory, skills).
 //!
 //! These run in-process (no MCP subprocess), are always available, and
 //! enforce workspace-root boundaries for all file operations.
 
 pub mod bash;
+pub mod commitment;
+pub mod bash_sandbox;
 pub mod document_import;
 pub mod edit;
 pub mod git;
@@ -11,6 +13,8 @@ pub mod glob;
 pub mod grep;
 pub mod http_defaults;
 pub mod memory;
+pub mod office_export;
+pub mod open;
 pub mod palace;
 pub mod read;
 pub mod safety;
@@ -19,6 +23,7 @@ pub mod skill_propose;
 pub mod subagent;
 pub mod think;
 pub mod todo;
+pub mod url_safety;
 pub mod web;
 pub mod web_cache;
 pub mod web_fetch;
@@ -34,6 +39,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use hermes_commitments::CommitmentStore;
 use hermes_core::{Error, Result, ToolCallOutcome, ToolHost, ToolSpec};
 use hermes_memory::MemoryStore;
 use hermes_skills::SkillStore;
@@ -42,11 +48,12 @@ pub use skill_propose::{ProposeContext, SessionMessages, SkillProposeQueue};
 pub use subagent::SubagentContext;
 pub use web::{SearchBackend, WebToolsContext};
 
-const BASIC_TOOLS: &[&str] = &["read", "write", "edit", "bash", "glob", "grep", "git"];
+const BASIC_TOOLS: &[&str] = &["read", "write", "edit", "bash", "glob", "grep", "git", "open"];
 
 pub struct BuiltinToolHost {
     workspace: PathBuf,
     memory_store: Option<Arc<dyn MemoryStore>>,
+    commitment_store: Option<Arc<CommitmentStore>>,
     skill_store: Option<Arc<dyn SkillStore>>,
     propose_ctx: Option<Arc<ProposeContext>>,
     subagent_ctx: Option<Arc<SubagentContext>>,
@@ -61,6 +68,7 @@ impl BuiltinToolHost {
         Self {
             workspace,
             memory_store: None,
+            commitment_store: None,
             skill_store: None,
             propose_ctx: None,
             subagent_ctx: None,
@@ -71,6 +79,11 @@ impl BuiltinToolHost {
 
     pub fn with_memory_store(mut self, store: Arc<dyn MemoryStore>) -> Self {
         self.memory_store = Some(store);
+        self
+    }
+
+    pub fn with_commitment_store(mut self, store: Arc<CommitmentStore>) -> Self {
+        self.commitment_store = Some(store);
         self
     }
 
@@ -118,6 +131,7 @@ impl BuiltinToolHost {
                     | "propose_skill"
                     | "subagent"
             )
+            || (self.commitment_store.is_some() && commitment::handles(name))
     }
 }
 
@@ -132,6 +146,7 @@ impl ToolHost for BuiltinToolHost {
             glob::spec(),
             grep::spec(),
             git::spec(),
+            open::spec(),
             web_fetch::spec(),
             web_search::spec(),
             think::spec(),
@@ -154,6 +169,14 @@ impl ToolHost for BuiltinToolHost {
             tools.push(skill::install_spec());
             tools.push(skill::delete_spec());
         }
+        if self.commitment_store.is_some() {
+            tools.push(commitment::list_spec());
+            tools.push(commitment::save_spec());
+            tools.push(commitment::close_spec());
+            tools.push(commitment::drop_spec());
+            tools.push(commitment::split_spec());
+            tools.push(commitment::update_spec());
+        }
         if self.propose_ctx.is_some() {
             tools.push(skill_propose::spec());
         }
@@ -172,6 +195,7 @@ impl ToolHost for BuiltinToolHost {
             "glob" => glob::run(&self.workspace, args).await,
             "grep" => grep::run(&self.workspace, args).await,
             "git" => git::run(&self.workspace, args).await,
+            "open" => open::run(&self.workspace, args).await,
             "web_fetch" => web_fetch::run(&self.workspace, args, self.web_ctx.as_deref()).await,
             "web_search" => web_search::run(&self.workspace, args, self.web_ctx.as_deref()).await,
             "think" => think::run(args).await,
@@ -265,6 +289,12 @@ impl ToolHost for BuiltinToolHost {
                 })?;
                 subagent::run(ctx, args).await
             }
+            n if commitment::handles(n) => {
+                let store = self.commitment_store.as_ref().ok_or_else(|| {
+                    Error::ToolHost(format!("{n}: no commitment store configured"))
+                })?;
+                commitment::run(store.as_ref(), n, args).await
+            }
             n if todo::handles(n) => todo::run(&self.todos, &self.workspace, n, args).await,
             _ => Err(Error::ToolHost(format!("unknown built-in tool: {name}"))),
         }
@@ -319,7 +349,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let store: Arc<dyn MemoryStore> =
             Arc::new(FsMemoryStore::new(dir.path().to_path_buf(), None));
-        let host = BuiltinToolHost::new(dir.path().to_path_buf()).with_memory_store(store);
+        let commitments = Arc::new(hermes_commitments::CommitmentStore::new(
+            dir.path().join("commitments.json"),
+        ));
+        let host = BuiltinToolHost::new(dir.path().to_path_buf())
+            .with_memory_store(store)
+            .with_commitment_store(commitments);
 
         let tools = host.list_tools().await.unwrap();
         assert!(!tools.is_empty(), "memory store wired → tools expected");

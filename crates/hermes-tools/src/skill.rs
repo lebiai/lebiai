@@ -355,8 +355,9 @@ pub fn create_spec() -> ToolSpec {
             },
             "required": ["name", "description", "body"]
         }),
-        // Local skill draft — open; remote skill_install stays gated.
-        requires_confirmation: false,
+        // Skill writes change durable agent behaviour — always confirm on GUI/CLI.
+        // IM surfaces do not whitelist this tool.
+        requires_confirmation: true,
     }
 }
 
@@ -370,6 +371,18 @@ pub async fn create_run(
     if a.name.trim().is_empty() || a.description.trim().is_empty() || a.body.trim().is_empty() {
         return Ok(ToolCallOutcome {
             content: "skill_create: name, description, and body must all be non-empty.".into(),
+            is_error: true,
+        });
+    }
+
+    // Tool path never installs always_active skills (persistent prompt injection).
+    // Users can mark always_active only via the desktop Skills UI after review.
+    if a.always_active {
+        return Ok(ToolCallOutcome {
+            content: "skill_create: always_active=true is not allowed via the tool. \
+                Create the skill first, then enable always-active in the Skills panel \
+                after you review the body."
+                .into(),
             is_error: true,
         });
     }
@@ -438,7 +451,7 @@ pub async fn create_run(
         triggers: a.triggers,
         version: None,
         license: None,
-        always_active: a.always_active,
+        always_active: false,
         extra: Mapping::new(),
     };
 

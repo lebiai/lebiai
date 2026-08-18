@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::message::{ContentBlock, Message, Role};
+use crate::message::{ContentBlock, Message};
 use crate::provider::Usage;
 
 /// Top-level metadata for a session. Written as the first JSONL line.
@@ -117,7 +117,7 @@ pub fn truncate_title(text: &str, max_chars: usize) -> String {
 pub fn derive_title_from_messages(messages: &[Message]) -> String {
     let mut first_any: Option<String> = None;
     for m in messages {
-        if m.role != Role::User {
+        if !m.is_human_send() {
             continue;
         }
         for block in &m.content {
@@ -141,14 +141,9 @@ pub fn derive_title_from_messages(messages: &[Message]) -> String {
         .unwrap_or_else(|| DEFAULT_SESSION_TITLE.to_string())
 }
 
-/// True if the session has at least one non-empty user text block.
+/// True if the session has at least one real human send (not Care / tool results).
 pub fn session_has_user_text(messages: &[Message]) -> bool {
-    messages.iter().any(|m| {
-        m.role == Role::User
-            && m.content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()))
-    })
+    messages.iter().any(|m| m.is_human_send())
 }
 
 /// One line in a session's JSONL transcript.
@@ -183,7 +178,7 @@ impl Session {
     }
 
     pub fn push_user(&mut self, text: impl Into<String>) -> &Message {
-        self.messages.push(Message::user_text(text));
+        self.messages.push(Message::user_sent(text));
         self.messages.last().unwrap()
     }
 
@@ -192,14 +187,36 @@ impl Session {
         self.messages.push(Message {
             role: Role::Assistant,
             content,
+            at: None,
         });
         self.messages.last().unwrap()
+    }
+
+    /// Count of human sends and the timestamp of the last one (`at` may be
+    /// missing on sessions written before send times were recorded).
+    pub fn last_human_send(&self) -> (u32, Option<chrono::DateTime<chrono::Utc>>) {
+        last_human_send(&self.messages)
     }
 
     pub fn record_usage(&mut self, usage: Usage) {
         self.total_input_tokens = self.total_input_tokens.saturating_add(usage.input_tokens);
         self.total_output_tokens = self.total_output_tokens.saturating_add(usage.output_tokens);
     }
+}
+
+/// See [`Session::last_human_send`].
+pub fn last_human_send(messages: &[Message]) -> (u32, Option<chrono::DateTime<chrono::Utc>>) {
+    let mut seq = 0u32;
+    let mut at = None;
+    for m in messages {
+        if m.is_human_send() {
+            seq += 1;
+            if m.at.is_some() {
+                at = m.at;
+            }
+        }
+    }
+    (seq, at)
 }
 
 #[cfg(test)]
@@ -227,5 +244,46 @@ mod title_tests {
         assert!(is_trivial_user_text("hi"));
         assert!(!is_trivial_user_text("推荐二"));
         assert!(!is_trivial_user_text("我其实是一个抖音达人"));
+    }
+
+    #[test]
+    fn last_human_send_skips_tools_and_care() {
+        let sent = Message::user_sent("查一下");
+        let at = sent.at;
+        let msgs = vec![
+            sent,
+            Message::assistant_text("ok"),
+            Message {
+                role: crate::Role::User,
+                content: vec![crate::ContentBlock::ToolResult {
+                    tool_use_id: "t".into(),
+                    content: "x".into(),
+                    is_error: false,
+                }],
+                at: None,
+            },
+            Message::user_text(crate::companion::care_after_tools_nudge()),
+        ];
+        let (seq, got) = last_human_send(&msgs);
+        assert_eq!(seq, 1);
+        assert_eq!(got, at);
+    }
+
+    #[test]
+    fn last_human_send_keeps_earlier_stamp() {
+        let sent = Message::user_sent("先");
+        let at = sent.at;
+        let later = Message::user_text("后");
+        assert!(later.at.is_none());
+        let (seq, got) = last_human_send(&[sent, later]);
+        assert_eq!(seq, 2);
+        assert_eq!(got, at);
+    }
+
+    #[test]
+    fn care_only_session_has_no_user_text() {
+        let msgs = vec![Message::user_text(crate::companion::care_after_tools_nudge())];
+        assert!(!session_has_user_text(&msgs));
+        assert_eq!(derive_title_from_messages(&msgs), DEFAULT_SESSION_TITLE);
     }
 }

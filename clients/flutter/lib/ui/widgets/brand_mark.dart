@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-/// The Hermes glyph — a rounded-surface tile with the brand gradient and a
-/// "messenger" spark. Used in the app bar, the empty state, and the drawer.
+/// lebi-AI mark — rounded tile with the brand gradient. Used in the app bar,
+/// empty state, and drawer.
 class BrandMark extends StatelessWidget {
   const BrandMark({super.key, this.size = 36, this.radius});
 

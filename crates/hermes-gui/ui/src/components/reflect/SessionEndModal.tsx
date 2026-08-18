@@ -2,7 +2,7 @@ import { Sparkles, X } from "lucide-react";
 import { useChatStore } from "../../store/chatStore";
 import { useUiStore } from "../../store/uiStore";
 import { ReflectionReview } from "./ReflectionReview";
-import { Button } from "../common/ui";
+import { Button, ui } from "../common/ui";
 
 /**
  * Leave-session optional review — non-blocking background chip, then quiet modal.
@@ -42,7 +42,7 @@ export function SessionEndModal() {
   if (!sessionEnd || sessionEnd.status !== "review") return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 dark:bg-black/50 backdrop-blur-[2px] p-4 fade-up-in">
+    <div className={`${ui.overlay} z-50 p-4 fade-up-in`}>
       <div
         className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl bg-app-surface dark:bg-slate-900 shadow-2xl border border-app-border dark:border-slate-700 session-enter"
         role="dialog"

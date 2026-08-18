@@ -181,21 +181,30 @@ class ChatNotifier extends Notifier<ChatState> {
   ChatState build() {
     // watch the client so changing the server URL (in the drawer) rebuilds
     // this notifier → drops the old WS, opens a fresh one.
-    try {
-      _connection = ref.watch(hermesClientProvider).connectChat();
-      _connection!.events.listen(
-        _onEvent,
-        onError: (Object e) => state = state.copyWith(
-          isRunning: false,
-          error: '连接错误: $e',
-        ),
-      );
-    } on Object catch (e) {
-      return ChatState.initial().copyWith(error: '无法打开连接: $e');
-    }
+    final client = ref.watch(hermesClientProvider);
     ref.onDispose(() => _connection?.close());
-    // Open a fresh session as soon as we connect.
-    Future(() => newChat());
+    // connectChat is async (mints a short-lived WS ticket first).
+    Future(() async {
+      try {
+        final conn = await client.connectChat();
+        if (!ref.mounted) {
+          await conn.close();
+          return;
+        }
+        _connection = conn;
+        conn.events.listen(
+          _onEvent,
+          onError: (Object e) {
+            if (!ref.mounted) return;
+            state = state.copyWith(isRunning: false, error: '连接错误: $e');
+          },
+        );
+        await newChat();
+      } on Object catch (e) {
+        if (!ref.mounted) return;
+        state = state.copyWith(error: '无法打开连接: $e');
+      }
+    });
     return ChatState.initial();
   }
 

@@ -16,11 +16,13 @@ path = "src/main.rs"
 
 [dependencies]
 hermes-core = { workspace = true }
+hermes-channel = { workspace = true }
 hermes-llm = { workspace = true }
 hermes-mcp = { workspace = true }
 hermes-store = { workspace = true }
 hermes-skills = { workspace = true }
 hermes-memory = { workspace = true }
+hermes-commitments = { workspace = true }
 hermes-reflect = { workspace = true }
 hermes-tools = { workspace = true }
 hermes-turn = { workspace = true }

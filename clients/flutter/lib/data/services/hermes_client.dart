@@ -8,7 +8,8 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:hermes_app/data/models/chat_stream_event.dart';
 import 'package:hermes_app/data/models/health.dart';
 import 'package:hermes_app/data/models/session.dart';
-import 'package:hermes_app/data/models/settings_models.dart';
+import 'package:hermes_app/data/models/settings_models.dart'
+    show ConfigView, InboxItem, MemoryItem, SkillItem;
 
 /// HTTP/WebSocket client for the `hermes-server` backend.
 class HermesClient {
@@ -43,22 +44,38 @@ class HermesClient {
     }
   }
 
-  /// Open the chat WebSocket. Upgrades the base `http(s)://` → `ws(s)://`.
-  ///
-  /// Connection errors surface on [HermesChatConnection.events] (the channel
-  /// connects asynchronously); this returns once the channel is created.
-  HermesChatConnection connectChat() {
+  /// Mint a short-lived WS ticket (preferred over putting the long-lived
+  /// bearer token in the WebSocket URL / proxy access logs).
+  Future<String> issueWsTicket() async {
+    final r = await _dio.post<dynamic>('/api/v1/ws-ticket');
+    final data = r.data as Map<String, dynamic>;
+    final ticket = data['ticket'] as String?;
+    if (ticket == null || ticket.isEmpty) {
+      throw Exception('ws-ticket response missing ticket');
+    }
+    return ticket;
+  }
+
+  /// Open the chat WebSocket. Prefers a short-lived `?ticket=` from
+  /// [issueWsTicket]; falls back to legacy `?token=` if ticket mint fails.
+  Future<HermesChatConnection> connectChat() async {
     final wsBase = _dio.options.baseUrl.replaceFirst(RegExp(r'^http'), 'ws');
-    final token = _token;
-    final auth = (token == null || token.isEmpty)
-        ? ''
-        : '?token=${Uri.encodeComponent(token)}';
+    String auth = '';
+    try {
+      final ticket = await issueWsTicket();
+      auth = '?ticket=${Uri.encodeComponent(ticket)}';
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('hermes: ws-ticket failed ($e); falling back to ?token=');
+      }
+      final token = _token;
+      if (token != null && token.isNotEmpty) {
+        auth = '?token=${Uri.encodeComponent(token)}';
+      }
+    }
     final uri = Uri.parse('$wsBase/api/v1/chat$auth');
     final channel = WebSocketChannel.connect(uri);
     final conn = HermesChatConnection._(channel);
-    // Decode each frame in isolation: one malformed/non-JSON frame (e.g. a
-    // stale server still sending a text placeholder) must not kill the whole
-    // stream — skip it and keep listening for the next valid event.
     channel.stream.listen(
       (raw) {
         if (raw is! String) return;
@@ -79,6 +96,33 @@ class HermesClient {
       onDone: () => conn._controller.close(),
     );
     return conn;
+  }
+
+  // ----- Evolve inbox REST ------------------------------------------------
+
+  Future<List<InboxItem>> listInbox() async {
+    final r = await _dio.get<dynamic>('/api/v1/inbox');
+    return (r.data as List)
+        .cast<Map<String, dynamic>>()
+        .map(InboxItem.fromJson)
+        .toList();
+  }
+
+  Future<int> countInbox() async {
+    final r = await _dio.get<dynamic>('/api/v1/inbox/count');
+    final data = r.data as Map<String, dynamic>;
+    return (data['count'] as num?)?.toInt() ?? 0;
+  }
+
+  Future<void> acceptInbox(String id) async {
+    await _dio.post<dynamic>('/api/v1/inbox/accept', data: {'id': id});
+  }
+
+  Future<void> rejectInbox(String id) async {
+    await _dio.delete<dynamic>(
+      '/api/v1/inbox',
+      queryParameters: {'id': id},
+    );
   }
 
   // ----- session REST -------------------------------------------------------

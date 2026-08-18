@@ -9,6 +9,7 @@ description = "Built-in tools: read, write, edit, bash, glob, grep"
 [dependencies]
 hermes-core = { workspace = true }
 hermes-memory = { workspace = true }
+hermes-commitments = { workspace = true }
 hermes-skills = { workspace = true }
 hermes-reflect = { workspace = true }
 hermes-turn = { workspace = true }
@@ -31,6 +32,7 @@ htmd = "0.5.4"
 uuid = { workspace = true }
 base64 = "0.22"
 encoding_rs = "0.8"
+dirs = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

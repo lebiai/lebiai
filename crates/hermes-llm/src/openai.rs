@@ -270,17 +270,18 @@ fn translate_outbound(m: &Message) -> Vec<ChatMessage> {
                     }
                 }
             }
+            // CRITICAL ordering for OpenAI-compatible APIs (DeepSeek etc.):
+            // after an assistant `tool_calls` message, the next messages MUST be
+            // `role:"tool"` replies — never a `user` message in between.
+            // So emit tool results first, then any accompanying user text.
             if !text_parts.is_empty() {
-                out.insert(
-                    0,
-                    ChatMessage {
-                        role: "user".into(),
-                        content: Some(text_parts.join("\n")),
-                        tool_call_id: None,
-                        tool_calls: None,
-                        name: None,
-                    },
-                );
+                out.push(ChatMessage {
+                    role: "user".into(),
+                    content: Some(text_parts.join("\n")),
+                    tool_call_id: None,
+                    tool_calls: None,
+                    name: None,
+                });
             }
             out
         }
@@ -725,6 +726,7 @@ mod tests {
     fn translate_user_with_tool_results() {
         let m = Message {
             role: Role::User,
+            at: None,
             content: vec![
                 ContentBlock::ToolResult {
                     tool_use_id: "t1".into(),
@@ -752,6 +754,7 @@ mod tests {
     fn translate_assistant_with_tool_use() {
         let m = Message {
             role: Role::Assistant,
+            at: None,
             content: vec![
                 ContentBlock::Text {
                     text: "calling".into(),
@@ -780,6 +783,7 @@ mod tests {
     fn assistant_thinking_blocks_dropped_on_send() {
         let m = Message {
             role: Role::Assistant,
+            at: None,
             content: vec![
                 ContentBlock::Thinking {
                     thinking: "think...".into(),

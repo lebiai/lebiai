@@ -20,3 +20,7 @@ crates/hermes-gui/resources/markitdown-sidecar/VERSION
 crates/hermes-gui/resources/markitdown-sidecar/REQUIREMENTS.txt
 crates/hermes-gui/resources/markitdown-sidecar/python/
 crates/hermes-gui/resources/markitdown-sidecar/markitdown.cmd
+
+# License signing seed lives only on the issuer machine — never publish.
+scripts/issue-license.py
+scripts/license-issuer.html

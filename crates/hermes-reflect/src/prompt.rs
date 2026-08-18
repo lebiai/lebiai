@@ -4,49 +4,42 @@ use hermes_core::{ContentBlock, Role, Session};
 use hermes_memory::LoadedMemory;
 use hermes_skills::LoadedSkill;
 
-const SYSTEM_PROMPT: &str = r###"You are the reflection module for lebi-AI, a local work-and-companion AI.
-After each completed dialogue you receive the full transcript plus current
-skills and memories. Extract only what will make the next similar work
-better — not a transcript dump.
+const SYSTEM_PROMPT: &str = r###"You are the living-rule distiller for lebi-AI (a work companion).
+You do NOT write a diary of what happened. You maintain **one active rule
+per kind of work** so the next similar job can be done their way without
+them repeating themselves.
 
-Identify three things, and only when each truly meets the bar:
+A memory is valuable only if: next time they do this kind of work, following
+the rule still makes the work better — even if they say nothing extra.
 
-1. SKILL CANDIDATES — reusable procedures with clear triggers and a
-   self-contained markdown body. Only if the same procedure should apply
-   next time. Skip one-shot exploration.
+NEVER persist:
+- session recap / 流水账 / "用户说了XXX" restated as an episode
+- today's mood ("不想上班") or in-progress status
+- tool/environment facts (python-docx, sandbox, which binary exists)
+- empty shells, "见会话记录", copying the user utterance into 情境/做法/可复用点
+- one-off topic choices (this article's title, this company's name)
 
-2. MEMORY CANDIDATES — durable knowledge that should persist. Prefer kinds:
-   - preference (stable taste) → zone "preferences", tags include "preference"
-   - standard (what "good" means for a kind of work) → zone "standards", tag "standard"
-   - work-episode (a completed piece of work worth re-recognizing) → zone "work",
-     tag "work-episode", fact body shaped as:
-     【工作情节】<task one-liner>
-     - 情境：…
-     - 做法：…
-     - 产出：…
-     - 用户反馈/修正：…（无则写「无」）
-     - 可复用点：…
-   - other durable fact → zone "general"
-   One claim (or one episode block) per memory. Default scope "user";
-   "project" only for repo-specific facts.
+ALWAYS prefer empty arrays over a weak candidate.
 
-3. CONFLICTS — when a candidate contradicts, duplicates, or subsumes an
-   existing memory. kind "stale" when the old memory is wrong/outdated;
-   always pair stale with a superseding memory_candidate.
+How to extract (all kinds of work — writing, planning, lookup, review):
+1. Look at the **delta**: first deliverable vs what they rejected / insisted /
+   finally accepted. The stable part of that delta is the rule.
+2. Ask: "If they never say this again, should we still do it?" If no → omit.
+3. Map to ONE slot and ONE fact:
+   - write-deliverable (how a finished piece should read/look)
+   - lookup-facts (which sources actually worked — full URLs only if they paid off)
+   - close-out (how they take delivery: in-chat / Word / Desktop)
+   - tone, identity, work-method, prioritize — only if durable
+4. If an **existing memory** is the same slot (same kind of work): do NOT add a
+   second peer. Write ONE replacement fact that merges still-true old points
+   with this turn's correction, and set `supersedes` to the old id(s).
+   If this turn is a one-off exception ("这篇写长一点") → omit (do not store).
+5. CONFLICTS: kind "stale" when replacing; pair with the superseding candidate.
 
-Priority when the session did real work: work-episode and standards first,
-then preferences, then skills. Skip trivia.
+Skills: only a reusable procedure they would want run again the same way.
+Not a recap of this session.
 
-C-SESS (continuity): If any real work was completed, prefer one work-episode
-with zone "work" and tag "work-episode", body shape 【工作情节】…
-**CRITICAL — self-contained:** every field must be readable if the session
-transcript is deleted. NEVER write "见会话记录" / "见该会话" / pointers only.
-Put the actual intent, approach, and reusable point in the fact text itself.
-If you cannot write a self-contained episode, omit it (empty is better than hollow).
-summary must be a concrete one-liner of what was done (not "chatted").
-
-CRITICAL — the user sees every candidate and must decide. Spam erodes trust.
-Default to empty arrays. Prefer false negatives. confidence "high" is rare.
+summary: one sentence of the work done (for logs), not a memory.
 
 Reply with EXACTLY ONE JSON object. No prose. No markdown fences.
 
@@ -119,6 +112,9 @@ pub fn user_prompt(session: &Session, skills: &[LoadedSkill], memories: &[Loaded
         buf.push_str("(empty)\n");
     } else {
         for msg in &session.messages {
+            if msg.is_internal_instruction_only() {
+                continue;
+            }
             let role = match msg.role {
                 Role::User => "User",
                 Role::Assistant => "Assistant",
@@ -170,15 +166,25 @@ pub fn user_prompt(session: &Session, skills: &[LoadedSkill], memories: &[Loaded
         }
     }
 
-    buf.push_str("\n=== Current active memories (id, scope, fact) ===\n");
-    if memories.is_empty() {
+    buf.push_str("\n=== Current living memories (id, slot, fact) ===\n");
+    buf.push_str(
+        "Same slot → you MUST supersede these ids, not add a peer.\n",
+    );
+    let living = hermes_memory::living_rules(memories.to_vec());
+    if living.is_empty() {
         buf.push_str("(none)\n");
     } else {
-        for m in memories {
+        for m in &living {
+            let slot = hermes_memory::infer_slot(
+                &m.frontmatter.zone,
+                &m.frontmatter.tags,
+                &m.body,
+            );
+            let slot_s = slot.map(|s| s.as_str()).unwrap_or("unslotted");
             let body_preview = m.body.lines().next().unwrap_or("").trim();
             buf.push_str(&format!(
-                "- {} [{:?}]: {}\n",
-                m.frontmatter.id, m.scope, body_preview
+                "- {} [slot={slot_s}]: {}\n",
+                m.frontmatter.id, body_preview
             ));
         }
     }

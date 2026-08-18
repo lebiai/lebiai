@@ -4,14 +4,9 @@ import {
   MessageSquare,
   Trash2,
   Brain,
-  Zap,
-  Plug,
   Settings,
-  Sparkles,
   Search,
   X,
-  ChevronDown,
-  ChevronRight,
   RefreshCw,
 } from "lucide-react";
 import brandLogo from "../../assets/logo.png";
@@ -27,23 +22,17 @@ import { ConfirmPopover } from "../common/ConfirmPopover";
 import { toast } from "../../utils/toast";
 import { isDefaultTitle } from "../../utils/sessionTitle";
 import {
-  formatSessionTime,
+  formatSessionActivity,
   groupSessionsByDay,
   type SessionGroupId,
 } from "../../utils/sessionTime";
+import { LicenseSidebarHint } from "../license/LicenseBattery";
 
-/** Primary product path — chat first, then evolution surfaces + settings. */
+/** Dialogue first; Continuity/Evolve in one place; settings last. */
 const primaryNav: { panel: Panel; icon: typeof Brain; labelKey: TranslationKey }[] = [
   { panel: "chat", icon: MessageSquare, labelKey: "nav.chat" },
-  { panel: "memory", icon: Brain, labelKey: "nav.memories" },
-  { panel: "skills", icon: Zap, labelKey: "nav.skills" },
+  { panel: "know", icon: Brain, labelKey: "nav.know" },
   { panel: "settings", icon: Settings, labelKey: "nav.settings" },
-];
-
-/** Power-user surfaces — collapsed by default. */
-const advancedNav: { panel: Panel; icon: typeof Brain; labelKey: TranslationKey }[] = [
-  { panel: "reflect", icon: Sparkles, labelKey: "nav.reflect" },
-  { panel: "mcp", icon: Plug, labelKey: "nav.mcp" },
 ];
 
 const groupLabelKey: Record<SessionGroupId, TranslationKey> = {
@@ -74,7 +63,7 @@ export function Sidebar() {
     isStreaming,
     sessionEnd,
   } = useChatStore();
-  const { activePanel, setPanel } = useNavStore();
+  const { activePanel, setPanel, openPendingReview } = useNavStore();
   const t = useUiStore((s) => s.t);
   const language = useUiStore((s) => s.language);
   const displayName = useUiStore((s) => s.displayName);
@@ -100,16 +89,7 @@ export function Sidebar() {
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(
-    () => activePanel === "mcp" || activePanel === "reflect"
-  );
   const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (activePanel === "mcp" || activePanel === "reflect") {
-      setAdvancedOpen(true);
-    }
-  }, [activePanel]);
 
   useEffect(() => {
     if (searchOpen) {
@@ -175,25 +155,44 @@ export function Sidebar() {
     setQuery("");
   };
 
-  const navButton = (panel: Panel, Icon: typeof Brain, labelKey: TranslationKey) => (
-    <button
-      key={panel}
-      type="button"
-      onClick={() => setPanel(panel)}
-      className={`${ui.navItem} ${
-        activePanel === panel ? ui.navItemActive : ui.navItemIdle
-      }`}
-    >
-      <Icon size={16} className="shrink-0 opacity-90" strokeWidth={1.75} />
-      <span className="flex-1 text-left">{t(labelKey)}</span>
-      {/* Pending review is part of 记忆 — badge on Memories only */}
-      {panel === "memory" && inboxCount > 0 && (
-        <span className="ml-auto text-[10px] font-semibold min-w-[1.15rem] h-4 px-1 rounded-full bg-app-primary text-white flex items-center justify-center">
-          {inboxCount > 99 ? "99+" : inboxCount}
-        </span>
-      )}
-    </button>
-  );
+  const navButton = (panel: Panel, Icon: typeof Brain, labelKey: TranslationKey) => {
+    const active = activePanel === panel;
+    const shell = `${ui.navItem} ${active ? ui.navItemActive : ui.navItemIdle}`;
+    if (panel === "know" && inboxCount > 0) {
+      return (
+        <div key={panel} className={`${shell} !py-0 !pr-1`}>
+          <button
+            type="button"
+            onClick={() => setPanel("know")}
+            className="flex-1 flex items-center gap-2 min-w-0 py-2 text-left"
+          >
+            <Icon size={16} className="shrink-0 opacity-90" strokeWidth={1.75} />
+            <span className="truncate">{t(labelKey)}</span>
+          </button>
+          <button
+            type="button"
+            title={t("memory.pendingZone")}
+            aria-label={t("memory.pendingZone")}
+            onClick={openPendingReview}
+            className="shrink-0 text-[10px] font-semibold min-w-[1.15rem] h-4 px-1 rounded-full bg-app-primary text-white flex items-center justify-center"
+          >
+            {inboxCount > 99 ? "99+" : inboxCount}
+          </button>
+        </div>
+      );
+    }
+    return (
+      <button
+        key={panel}
+        type="button"
+        onClick={() => setPanel(panel)}
+        className={shell}
+      >
+        <Icon size={16} className="shrink-0 opacity-90" strokeWidth={1.75} />
+        <span className="flex-1 text-left">{t(labelKey)}</span>
+      </button>
+    );
+  };
 
   return (
     <aside className={`w-[17rem] h-full flex flex-col shrink-0 ${ui.sidebar}`}>
@@ -251,7 +250,7 @@ export function Sidebar() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={t("chat.searchSessions")}
-              className="w-full pl-8 pr-8 py-1.5 text-xs rounded-lg border border-app-border dark:border-slate-700 bg-app-surface dark:bg-slate-800/80 text-app-fg dark:text-slate-200 placeholder:text-app-fg-tertiary focus:outline-none focus:ring-2 focus:ring-app-primary/30"
+              className="w-full pl-8 pr-8 py-1.5 text-xs rounded-lg border border-app-border dark:border-slate-700 bg-app-surface dark:bg-slate-800/80 text-app-fg dark:text-slate-200 placeholder:text-app-fg-tertiary focus:outline-none focus:ring-2 focus:ring-app-primary/30 select-text"
             />
             <button
               type="button"
@@ -337,7 +336,7 @@ export function Sidebar() {
               const selected =
                 activePanel === "chat" && activeSessionId === session.id;
               const title = sessionTitleOf(session, t);
-              const timeLabel = formatSessionTime(session.createdAt, locale);
+              const timeLabel = formatSessionActivity(session, locale);
               return (
                 <div
                   key={session.id}
@@ -366,7 +365,7 @@ export function Sidebar() {
                     type="button"
                     title={t("chat.deleteSession")}
                     aria-label={t("chat.deleteSession")}
-                    className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-app-fg-tertiary hover:text-app-danger hover:bg-red-50 dark:hover:bg-red-950/40 transition-opacity"
+                    className="p-1 rounded-md text-app-fg-tertiary hover:text-app-danger hover:bg-red-50 dark:hover:bg-red-950/40"
                     onClick={(e) => {
                       e.stopPropagation();
                       if (!busy) setConfirmDeletePath(session.path);
@@ -394,32 +393,23 @@ export function Sidebar() {
 
       <nav className="border-t border-app-border dark:border-slate-800 p-2 space-y-0.5 shrink-0 max-h-[40vh] overflow-y-auto">
         {primaryNav.map(({ panel, icon, labelKey }) => navButton(panel, icon, labelKey))}
-
-        <div className="pt-1">
-          <button
-            type="button"
-            onClick={() => setAdvancedOpen((v) => !v)}
-            className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-app-fg-tertiary hover:text-app-fg-secondary dark:hover:text-slate-300"
-          >
-            {advancedOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            {t("nav.advanced")}
-          </button>
-          {advancedOpen &&
-            advancedNav.map(({ panel, icon, labelKey }) => navButton(panel, icon, labelKey))}
-        </div>
       </nav>
 
       <div className="shrink-0 border-t border-app-border dark:border-slate-800 px-3 py-2.5">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-8 h-8 rounded-full bg-app-primary-soft dark:bg-blue-950/60 text-app-primary dark:text-blue-300 flex items-center justify-center text-sm font-semibold shrink-0">
             {displayName ? displayName[0].toUpperCase() : "乐"}
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="text-xs font-medium text-app-fg dark:text-slate-100 truncate">
               {displayName || t("sidebar.userGuest")}
             </div>
-            <div className="text-[10px] text-app-fg-tertiary dark:text-slate-500 truncate">
-              {providerLabel}
+            {/* Provider when calm; license chip/date when it matters — not a separate battery block */}
+            <div className="flex items-center gap-1.5 min-w-0 mt-0.5">
+              <span className="text-[10px] text-app-fg-tertiary dark:text-slate-500 truncate shrink min-w-0">
+                {providerLabel}
+              </span>
+              <LicenseSidebarHint />
             </div>
           </div>
         </div>

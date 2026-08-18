@@ -20,7 +20,13 @@ import {
   formatDurationMs,
   userPlainText,
 } from "../../utils/displayMessages";
+import {
+  objectFromToolSummary,
+  processHeadline,
+  processKindForTool,
+} from "../../utils/processLabel";
 import { toast } from "../../utils/toast";
+import { useZaibanStore } from "../../store/zaibanStore";
 import { AttachmentCardList } from "./AttachmentCards";
 
 export interface ToolCallView {
@@ -65,8 +71,6 @@ export function MessageBubble({
         text={streaming.text}
         streaming
         durationMs={undefined}
-        inputTokens={undefined}
-        outputTokens={undefined}
         canRegenerate={false}
       />
     );
@@ -116,8 +120,6 @@ export function MessageBubble({
       text={textContent}
       streaming={false}
       durationMs={message.durationMs}
-      inputTokens={message.inputTokens}
-      outputTokens={message.outputTokens}
       canRegenerate={!!canRegenerate && !isStreaming}
       onRegenerate={onRegenerate}
     />
@@ -188,8 +190,6 @@ function AssistantCanvas({
   text,
   streaming,
   durationMs,
-  inputTokens,
-  outputTokens,
   canRegenerate,
   onRegenerate,
 }: {
@@ -198,8 +198,6 @@ function AssistantCanvas({
   text: string;
   streaming: boolean;
   durationMs?: number;
-  inputTokens?: number;
-  outputTokens?: number;
   canRegenerate: boolean;
   onRegenerate?: () => void;
 }) {
@@ -215,6 +213,14 @@ function AssistantCanvas({
             thinking={thinking}
             tools={tools}
             streaming={streaming}
+          />
+        )}
+
+        {hasProcess && !!text.trim() && (
+          <div
+            className="h-px bg-app-border/80 dark:bg-slate-700/70"
+            role="separator"
+            aria-hidden
           />
         )}
 
@@ -243,18 +249,12 @@ function AssistantCanvas({
         {!streaming &&
           (() => {
             const hasText = text.trim().length > 0;
-            const hasMeta =
-              (durationMs !== undefined && durationMs > 0) ||
-              (inputTokens !== undefined && inputTokens > 0) ||
-              (outputTokens !== undefined && outputTokens > 0);
-            const showFooter = hasText || canRegenerate || hasMeta;
+            const showFooter = hasText || canRegenerate;
             if (!showFooter) return null;
             return (
               <MessageFooter
                 copyText={text}
                 durationMs={durationMs}
-                inputTokens={inputTokens}
-                outputTokens={outputTokens}
                 canRegenerate={canRegenerate}
                 onRegenerate={onRegenerate}
               />
@@ -279,22 +279,13 @@ function ProcessGroup({
   const [expanded, setExpanded] = useState(streaming);
   const running = streaming && tools.some((tc) => tc.result === undefined);
   const anyError = tools.some((tc) => tc.isError);
-
-  const parts: string[] = [];
-  if (thinking.trim()) {
-    parts.push(
-      streaming && !tools.length
-        ? t("message.thinking")
-        : t("message.thoughtDone")
-    );
-  }
-  if (tools.length > 0) {
-    parts.push(
-      t("message.toolsSummary", { n: String(tools.length) }) +
-        (running ? ` · ${t("message.toolRunning")}` : "")
-    );
-  }
-  const summary = parts.join(" · ");
+  const summary = processHeadline(
+    tools.map((tc) => tc.name),
+    thinking,
+    streaming,
+    running,
+    (key, params) => t(key as Parameters<typeof t>[0], params)
+  );
 
   return (
     <div className="rounded-lg border border-app-border/80 dark:border-slate-700/60 bg-app-muted/30 dark:bg-slate-800/25 overflow-hidden transition-[border-color,background-color] duration-[var(--motion-fast)]">
@@ -327,22 +318,22 @@ function ProcessGroup({
       <div className="fold-panel" data-open={expanded ? "true" : "false"}>
         <div className="fold-panel-inner">
           <div className="border-t border-app-border/70 dark:border-slate-700/50 px-2.5 py-2 space-y-2">
-            {thinking.trim() && (
-              <div>
-                <div className="text-[10px] uppercase tracking-wide text-app-accent dark:text-violet-400 mb-1 flex items-center gap-1">
-                  <Brain size={11} />
-                  {t("message.thinking")}
-                </div>
-                <pre className="text-xs whitespace-pre-wrap font-mono text-app-fg-secondary dark:text-slate-400 max-h-48 overflow-y-auto">
-                  {streaming && thinking.length > 800
-                    ? "..." + thinking.slice(-800)
-                    : thinking}
-                </pre>
-              </div>
-            )}
             {tools.map((tc) => (
               <ToolRow key={tc.id} tc={tc} streaming={streaming} />
             ))}
+            {thinking.trim() && (
+              <div>
+                <div className="text-[11px] text-app-fg-tertiary mb-1 flex items-center gap-1">
+                  <Brain size={11} />
+                  {t("process.thought")}
+                </div>
+                <p className="text-xs whitespace-pre-wrap text-app-fg-secondary dark:text-slate-400 max-h-36 overflow-y-auto leading-relaxed">
+                  {streaming && thinking.length > 800
+                    ? "…" + thinking.slice(-800)
+                    : thinking}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -359,7 +350,13 @@ function ToolRow({ tc, streaming }: { tc: ToolCallView; streaming: boolean }) {
     <div className="rounded-md border border-app-border/60 dark:border-slate-700/50 overflow-hidden transition-[border-color] duration-[var(--motion-fast)]">
       <button
         type="button"
-        onClick={() => tc.result !== undefined && setOpen((o) => !o)}
+        onClick={() => {
+          if (tc.name.startsWith("commitment_") && tc.result && !tc.isError) {
+            const m = tc.result.match(/\[(cmt_[^\]]+)\]/);
+            useZaibanStore.getState().setHighlight(m?.[1] ?? null);
+          }
+          if (tc.result !== undefined) setOpen((o) => !o);
+        }}
         className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-app-muted/50 dark:hover:bg-slate-800/40 transition-colors duration-[var(--motion-fast)]"
         disabled={tc.result === undefined}
         aria-expanded={open}
@@ -371,14 +368,9 @@ function ToolRow({ tc, streaming }: { tc: ToolCallView; streaming: boolean }) {
         ) : (
           <CheckCircle2 size={12} className="text-app-success shrink-0" />
         )}
-        <span className="font-mono font-medium text-app-fg dark:text-slate-200">
-          {tc.name}
+        <span className="font-medium text-app-fg dark:text-slate-200 truncate">
+          {toolRowLabel(tc, t, streaming)}
         </span>
-        {tc.summary ? (
-          <span className="text-app-fg-tertiary dark:text-slate-500 truncate text-[11px] max-w-[55%]">
-            {tc.summary}
-          </span>
-        ) : null}
         <span
           className={`text-[11px] transition-colors duration-[var(--motion-fast)] ${
             tc.isError
@@ -419,18 +411,33 @@ function ToolRow({ tc, streaming }: { tc: ToolCallView; streaming: boolean }) {
   );
 }
 
+function toolRowLabel(
+  tc: ToolCallView,
+  t: ReturnType<typeof useUiStore.getState>["t"],
+  streaming: boolean
+): string {
+  if (tc.name === "commitment_save" && tc.result && !tc.isError) {
+    const titled = tc.result.split("]: ")[1]?.trim();
+    if (titled) return t("zaiban.noted", { title: titled });
+  }
+  const kind = processKindForTool(tc.name);
+  const done = !streaming || tc.result !== undefined;
+  const verbKey = (
+    done ? `process.${kind}` : `process.${kind}Doing`
+  ) as Parameters<typeof t>[0];
+  const verb = t(verbKey);
+  const object = objectFromToolSummary(tc.summary, tc.name);
+  return object ? `${verb}：${object}` : verb;
+}
+
 function MessageFooter({
   copyText,
   durationMs,
-  inputTokens,
-  outputTokens,
   canRegenerate,
   onRegenerate,
 }: {
   copyText: string;
   durationMs?: number;
-  inputTokens?: number;
-  outputTokens?: number;
   canRegenerate: boolean;
   onRegenerate?: () => void;
 }) {
@@ -449,9 +456,6 @@ function MessageFooter({
     }
   };
 
-  const hasTokens =
-    (inputTokens !== undefined && inputTokens > 0) ||
-    (outputTokens !== undefined && outputTokens > 0);
   const canCopy = copyText.trim().length > 0;
 
   return (
@@ -469,14 +473,6 @@ function MessageFooter({
       {durationMs !== undefined && durationMs > 0 && (
         <span className="text-[11px] tabular-nums px-1.5">
           {t("message.duration", { time: formatDurationMs(durationMs) })}
-        </span>
-      )}
-      {hasTokens && (
-        <span className="text-[11px] tabular-nums px-1">
-          {t("message.turnUsage", {
-            input: (inputTokens ?? 0).toLocaleString(),
-            output: (outputTokens ?? 0).toLocaleString(),
-          })}
         </span>
       )}
     </div>

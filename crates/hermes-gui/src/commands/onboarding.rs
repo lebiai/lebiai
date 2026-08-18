@@ -69,7 +69,7 @@ pub fn onboarding_seed_set(
         format!("用户自称「{name}」。")
     } else {
         format!(
-            "用户自称「{name}」，主要在{}这类事上需要搭档帮忙。",
+            "用户自称「{name}」，主要在{}这类事上需要搭子一起做。",
             labels.join("、")
         )
     };
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn parses_name_with_scenario_clause() {
         assert_eq!(
-            display_name_from_body("用户自称「张强」，主要在写东西这类事上需要搭档帮忙。"),
+            display_name_from_body("用户自称「张强」，主要在写东西这类事上需要搭子一起做。"),
             "张强"
         );
     }

@@ -66,7 +66,7 @@ pub fn fetch_key(url: &str) -> String {
 
 /// Cache key for a `web_search` of `query` limited to `limit` results.
 pub fn search_key(query: &str, limit: usize) -> String {
-    format!("search:{limit}:{query}")
+    format!("search:v3:{limit}:{query}")
 }
 
 #[cfg(test)]

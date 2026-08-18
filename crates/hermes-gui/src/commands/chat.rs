@@ -4,7 +4,9 @@ use hermes_memory::MemoryStore;
 use hermes_store::SessionWriter;
 use hermes_turn::{ConfirmAction, TurnConfig, TurnEvent};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use crate::commands::micro;
 use crate::context::ContextSources;
@@ -15,7 +17,7 @@ use crate::state::{session_path_for, ActiveSession, AppState};
 /// Last non-empty human user text (skips tool-result-only user rows).
 fn last_human_user_text(messages: &[Message]) -> Option<String> {
     for m in messages.iter().rev() {
-        if m.role != Role::User || m.is_tool_result_only() {
+        if m.role != Role::User || m.is_tool_result_only() || m.is_internal_instruction_only() {
             continue;
         }
         let text: String = m
@@ -34,7 +36,7 @@ fn last_human_user_text(messages: &[Message]) -> Option<String> {
 /// Index after the last human user message (exclusive end for truncate-to-user-keep).
 fn end_after_last_human_user(messages: &[Message]) -> Option<usize> {
     for (i, m) in messages.iter().enumerate().rev() {
-        if m.role == Role::User && !m.is_tool_result_only() {
+        if m.role == Role::User && !m.is_tool_result_only() && !m.is_internal_instruction_only() {
             let text: String = m
                 .content
                 .iter()
@@ -79,6 +81,11 @@ async fn begin_turn(
     new_user: Option<String>,
     on_event: Channel<ChatStreamEvent>,
 ) -> Result<(), GuiError> {
+    // License / trial gate (docs/spec/license-ux.md).
+    if !hermes_core::can_use_main() {
+        return Err(GuiError::Config("license_locked".into()));
+    }
+
     // No API key configured → refuse before any request leaves the machine.
     // Frontend already gates on hasApiKey; this is defense for direct invoke.
     let active_key = state
@@ -128,6 +135,13 @@ async fn begin_turn(
     let permissions = hermes_turn::PermissionChecker::new(&allow_rules, &deny_rules);
 
     let mut sessions = state.sessions.lock().await;
+    if let Some(s) = sessions.get(&session_id) {
+        if hermes_store::channel_of_session_path(&s.path).is_some() {
+            return Err(GuiError::Session(
+                "channel records are view-only in the desktop app".into(),
+            ));
+        }
+    }
     let active_session = if let Some(s) = sessions.get_mut(&session_id) {
         s
     } else {
@@ -160,11 +174,19 @@ async fn begin_turn(
         })?
     };
 
+    let open_work = state.commitment_store.list_live().unwrap_or_default();
+    let first_human_today = {
+        let (seq, at) = active_session.session.last_human_send();
+        let today = chrono::Utc::now().date_naive();
+        seq == 0 || at.map(|t| t.date_naive() < today).unwrap_or(true)
+    };
     let sources = ContextSources {
         base: None,
         pinned: &pinned,
         active: &active,
         all_skills: &skills,
+        open_work: &open_work,
+        first_human_today,
         workspace_root: &workspace_root,
         limits,
     };
@@ -204,7 +226,12 @@ async fn begin_turn(
         }
     }
 
-    let history = active_session.session.messages.clone();
+    // Repair incomplete tool_use / tool_result pairs so OpenAI-compatible
+    // providers (DeepSeek etc.) do not 400 on resume.
+    let history =
+        hermes_core::sanitize_history_for_provider(&active_session.session.messages);
+    // Keep in-memory session aligned so subsequent turns stay clean.
+    active_session.session.messages = history.clone();
     drop(sessions);
 
     if let Ok(mut guard) = state.propose_messages.write() {
@@ -236,6 +263,11 @@ async fn begin_turn(
     let persist_thinking = Config::load_default()
         .map(|c| c.ui.persist_thinking)
         .unwrap_or(state.config.read().unwrap().ui.persist_thinking);
+    let ui_lang = state
+        .config
+        .read()
+        .map(|c| c.ui.language.clone())
+        .unwrap_or_else(|_| "zh-CN".into());
 
     tokio::spawn(async move {
         let config = TurnConfig {
@@ -252,6 +284,11 @@ async fn begin_turn(
 
         let evt = on_event.clone();
         let confirm_tokens = confirm_tokens_arc.clone();
+        let ui_lang_ev = ui_lang.clone();
+        let app_ev = app.clone();
+        let tool_names: Arc<Mutex<HashMap<String, String>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let tool_names_ev = tool_names.clone();
         let on_turn_event = move |event: TurnEvent| match event {
             TurnEvent::TextDelta(text) => {
                 let _ = evt.send(ChatStreamEvent::TextDelta { text });
@@ -265,7 +302,14 @@ async fn begin_turn(
             TurnEvent::ToolExecStart {
                 id, name, summary, ..
             } => {
-                let _ = evt.send(ChatStreamEvent::ToolExecStart { id, name, summary });
+                if let Ok(mut m) = tool_names_ev.lock() {
+                    m.insert(id.clone(), name.clone());
+                }
+                let _ = evt.send(ChatStreamEvent::ToolExecStart {
+                    id,
+                    name,
+                    summary,
+                });
             }
             TurnEvent::ToolConfirmPending {
                 id,
@@ -285,11 +329,22 @@ async fn begin_turn(
                 content,
                 is_error,
             } => {
+                let name = tool_names_ev
+                    .lock()
+                    .ok()
+                    .and_then(|m| m.get(&id).cloned())
+                    .unwrap_or_default();
                 let _ = evt.send(ChatStreamEvent::ToolUseResult {
                     id,
-                    content,
+                    content: content.clone(),
                     is_error,
                 });
+                if name.starts_with("commitment_") {
+                    let _ = app_ev.emit("hermes://zaiban-changed", ());
+                    if let Some(z) = parse_zaiban_tool(&name, &content, is_error) {
+                        let _ = evt.send(z);
+                    }
+                }
             }
             TurnEvent::Usage {
                 input_tokens,
@@ -303,7 +358,7 @@ async fn begin_turn(
             }
             TurnEvent::Error(message) => {
                 let _ = evt.send(ChatStreamEvent::Error {
-                    message: hermes_llm::humanize_error(&message),
+                    message: hermes_llm::humanize_error_lang(&message, &ui_lang_ev),
                 });
             }
             TurnEvent::Cancelled => {
@@ -321,11 +376,12 @@ async fn begin_turn(
             }
         });
 
+        let history_for_turn = hermes_channel::inject_time_header(history.clone());
         let result = hermes_turn::run_turn(
             provider.as_ref(),
             host.as_ref(),
             &tools,
-            &history,
+            &history_for_turn,
             &config,
             Some(confirm_tx),
             on_turn_event,
@@ -367,6 +423,10 @@ async fn begin_turn(
             }
             Err(e) => {
                 tracing::warn!(error=%e, "turn failed");
+                let _ = on_event.send(ChatStreamEvent::Error {
+                    message: hermes_llm::humanize_error_lang(&format!("{e:#}"), &ui_lang),
+                });
+                let _ = on_event.send(ChatStreamEvent::Done);
             }
         }
 
@@ -407,6 +467,79 @@ async fn begin_turn(
     });
 
     Ok(())
+}
+
+fn parse_zaiban_tool(name: &str, content: &str, is_error: bool) -> Option<ChatStreamEvent> {
+    if is_error || !name.starts_with("commitment_") {
+        return None;
+    }
+    if content.starts_with("Near existing") {
+        let existing_id = bracket_id(content)?;
+        let existing_title = content
+            .split('「')
+            .nth(1)
+            .and_then(|s| s.split('」').next())
+            .map(|s| s.to_string());
+        return Some(ChatStreamEvent::ZaibanUpdated {
+            action: "near".into(),
+            id: None,
+            title: None,
+            existing_id: Some(existing_id),
+            existing_title,
+        });
+    }
+    if content.starts_with("Recorded open work") || content.starts_with("Folded into") {
+        let id = bracket_id(content);
+        let title = content
+            .split("]: ")
+            .nth(1)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let action = if content.starts_with("Folded") {
+            "folded"
+        } else {
+            "saved"
+        };
+        return Some(ChatStreamEvent::ZaibanUpdated {
+            action: action.into(),
+            id,
+            title,
+            existing_id: None,
+            existing_title: None,
+        });
+    }
+    if content.starts_with("Closed")
+        || content.starts_with("Dropped")
+        || content.starts_with("Updated")
+        || content.starts_with("Split")
+    {
+        return Some(ChatStreamEvent::ZaibanUpdated {
+            action: "changed".into(),
+            id: bracket_id(content),
+            title: None,
+            existing_id: None,
+            existing_title: None,
+        });
+    }
+    Some(ChatStreamEvent::ZaibanUpdated {
+        action: "changed".into(),
+        id: None,
+        title: None,
+        existing_id: None,
+        existing_title: None,
+    })
+}
+
+fn bracket_id(s: &str) -> Option<String> {
+    let start = s.find('[')? + 1;
+    let rest = s.get(start..)?;
+    let end = rest.find(']')?;
+    let id = rest[..end].trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
 }
 
 /// Drop messages after the last human user turn (keeps that user message).

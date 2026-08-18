@@ -25,6 +25,56 @@ class SkillItem {
       );
 }
 
+/// Pending-review inbox item from `GET /api/v1/inbox`.
+@immutable
+class InboxItem {
+  const InboxItem({
+    required this.id,
+    required this.createdAt,
+    required this.source,
+    required this.kind,
+    required this.title,
+    required this.body,
+    this.zone,
+    required this.tags,
+    this.confidence,
+    this.rationale,
+    this.skillName,
+    this.skillDescription,
+    this.skillTriggers,
+  });
+
+  final String id;
+  final String createdAt;
+  final String source;
+  final String kind; // memory | skill
+  final String title;
+  final String body;
+  final String? zone;
+  final List<String> tags;
+  final String? confidence;
+  final String? rationale;
+  final String? skillName;
+  final String? skillDescription;
+  final List<String>? skillTriggers;
+
+  factory InboxItem.fromJson(Map<String, dynamic> j) => InboxItem(
+        id: j['id'] as String,
+        createdAt: j['createdAt'] as String? ?? '',
+        source: j['source'] as String? ?? '',
+        kind: j['kind'] as String? ?? 'memory',
+        title: j['title'] as String? ?? '',
+        body: j['body'] as String? ?? '',
+        zone: j['zone'] as String?,
+        tags: (j['tags'] as List?)?.cast<String>() ?? const [],
+        confidence: j['confidence'] as String?,
+        rationale: j['rationale'] as String?,
+        skillName: j['skillName'] as String?,
+        skillDescription: j['skillDescription'] as String?,
+        skillTriggers: (j['skillTriggers'] as List?)?.cast<String>(),
+      );
+}
+
 /// Mirrors `hermes_server::routes::memory::MemoryItem`.
 @immutable
 class MemoryItem {

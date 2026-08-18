@@ -1,12 +1,15 @@
 pub mod chat;
+pub mod commitment;
 pub mod config;
 pub mod data_dir;
 pub mod inbox;
+pub mod license;
 pub mod mcp;
 pub mod memory;
 pub mod micro;
 pub mod onboarding;
 pub mod reflect;
+pub mod review;
 pub mod session;
 pub mod skills;
 pub mod upload;

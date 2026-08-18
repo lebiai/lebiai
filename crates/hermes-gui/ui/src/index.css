@@ -90,6 +90,29 @@
   font-size: 0.85em;
 }
 
+.work-drawer {
+  animation: work-drawer-in var(--motion-base) var(--ease-out-soft);
+}
+
+input[type="date"] {
+  color-scheme: light;
+}
+
+html.dark input[type="date"] {
+  color-scheme: dark;
+}
+
+@keyframes work-drawer-in {
+  from {
+    transform: translateX(16px);
+    opacity: 0.45;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
 /* ─── Motion utilities (CSS / WAAPI companion classes) ─── */
 
 @media (prefers-reduced-motion: reduce) {
