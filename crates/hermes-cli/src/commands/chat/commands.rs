@@ -22,9 +22,17 @@ pub(super) async fn handle_command(
     path: &std::path::Path,
     tools: &[hermes_core::ToolSpec],
     skills: &[LoadedSkill],
-    active_memories: &[LoadedMemory],
+    persona: Option<&hermes_core::persona::Persona>,
+    // `all_active` = 全量 active，只有 `/compile` 该用它：它再按 `profile_input`
+    // 取出全局可见的一份去编译（`profile.md` 是单个全局文件，只装全局口径）。
+    all_active: &[LoadedMemory],
+    // `active_view` / `pinned_view` = 本会话可见的那一份 = 真正注入模型的那一份
+    // （`visible_to` 的 owned 切片）。「他记得什么」的每个显示面都必须吃这一份，
+    // 否则显示与注入是两份事实。
+    active_view: &[LoadedMemory],
+    pinned_view: &[LoadedMemory],
     base_system: Option<&str>,
-    palace_index: Option<&str>,
+    topic_cards: Option<&str>,
     always_active_skills: &[&LoadedSkill],
     memory_store: &dyn MemoryStore,
     skill_store: &FsSkillStore,
@@ -58,10 +66,10 @@ pub(super) async fn handle_command(
             }
         }
         "memory" | "memories" => {
-            if active_memories.is_empty() {
+            if active_view.is_empty() {
                 eprintln!("(no active memories)");
             } else {
-                for m in active_memories {
+                for m in active_view {
                     let pin = if m.frontmatter.pinned { "★ " } else { "  " };
                     let line = m.body.lines().next().unwrap_or("").trim();
                     eprintln!("{pin}{} [{:?}]: {}", m.frontmatter.id, m.scope, line);
@@ -78,19 +86,17 @@ pub(super) async fn handle_command(
             }
         }
         "context" => {
-            let pinned: Vec<_> = active_memories
-                .iter()
-                .filter(|m| m.frontmatter.pinned)
-                .cloned()
-                .collect();
             let ctx_profile = hermes_memory::load_profile().unwrap_or(None);
+            let roster = hermes_core::persona::open();
             let sources = ContextSources {
                 base: base_system,
-                palace_index,
+                persona,
+                roster: &roster,
+                topic_cards,
                 compiled_profile: ctx_profile.as_deref(),
                 always_active_skills,
-                pinned: &pinned,
-                active: active_memories,
+                pinned: pinned_view,
+                active: active_view,
                 all_skills: skills,
                 effectiveness: None,
                 memory_effectiveness: None,
@@ -140,7 +146,7 @@ pub(super) async fn handle_command(
             if id_prefix.is_empty() {
                 eprintln!("usage: /forget <id-prefix>");
             } else {
-                let matches: Vec<_> = active_memories
+                let matches: Vec<_> = active_view
                     .iter()
                     .filter(|m| m.frontmatter.id.starts_with(id_prefix))
                     .collect();
@@ -191,12 +197,17 @@ pub(super) async fn handle_command(
             }
         }
         "compile" => {
-            if active_memories.is_empty() {
-                eprintln!("(no memories to compile)");
+            // 入参是全量 `all_active`，但**喂给编译器的是全局可见的那一份**：`profile.md`
+            // 是单个全局文件、被每个视图无条件注入系统提示词，所以它只能装全局口径
+            // （1.10e）。人物私有的专业口径不进 profile——不是「保持全量」，而是「只装
+            // 全局可见」；它仍在记忆索引与主题卡里。守卫与编译喂的是同一份。
+            let profile_memories = hermes_reflect::profile_input(all_active);
+            if profile_memories.is_empty() {
+                eprintln!("(no globally-visible memories to compile)");
             } else {
                 eprint!("{}", style::dim("(compiling memory profile...)"));
                 std::io::stderr().flush().ok();
-                match hermes_reflect::compile_profile(provider, active_memories).await {
+                match hermes_reflect::compile_profile(provider, &profile_memories).await {
                     Ok(profile) => match hermes_memory::save_profile(&profile) {
                         Ok(p) => {
                             eprint!("\r\x1b[K");
@@ -239,47 +250,19 @@ pub(super) async fn handle_command(
             }
         }
         "palace" => {
-            let zones = hermes_memory::group_by_zone(active_memories);
+            let zones = hermes_memory::group_by_zone(active_view);
             eprintln!(
                 "Memory Palace: {} memories across {} zones",
-                active_memories.len(),
+                active_view.len(),
                 zones.len()
             );
             for (zone, mems) in &zones {
                 eprintln!("  {zone}: {} memories", mems.len());
             }
-            if palace_index.is_some() {
-                eprintln!("  index: loaded (in system prompt)");
+            if topic_cards.is_some() {
+                eprintln!("  index: topic cards loaded (in system prompt)");
             } else {
-                eprintln!("  index: not loaded");
-            }
-        }
-        "palace compile" => {
-            if active_memories.is_empty() {
-                eprintln!("(no memories to compile)");
-            } else {
-                eprint!("{}", style::dim("(compiling palace index via LLM...)"));
-                std::io::stderr().flush().ok();
-                match hermes_reflect::compile_palace_index(provider, active_memories).await {
-                    Ok(index) => match hermes_memory::save_palace_index(&index) {
-                        Ok(p) => {
-                            eprint!("\r\x1b[K");
-                            eprintln!(
-                                "{}",
-                                style::green(&format!("✓ palace index compiled ({})", p.display()))
-                            );
-                            eprintln!("(restart chat to use the new index)");
-                        }
-                        Err(e) => {
-                            eprint!("\r\x1b[K");
-                            eprintln!("{}", style::red(&format!("✗ save failed: {e}")));
-                        }
-                    },
-                    Err(e) => {
-                        eprint!("\r\x1b[K");
-                        eprintln!("{}", style::red(&format!("✗ compile failed: {e}")));
-                    }
-                }
+                eprintln!("  index: no topic cards yet (`hermes topics --build`)");
             }
         }
         "help" => {
@@ -301,7 +284,6 @@ pub(super) async fn handle_command(
             eprintln!("  /reflect       — trigger on-demand reflection");
             eprintln!("  /compile       — recompile memory profile");
             eprintln!("  /palace        — show Memory Palace zone counts");
-            eprintln!("  /palace compile — LLM-compile the palace index");
             eprintln!("  /help          — this list");
         }
         other => eprintln!("unknown command: /{other}  (try /help)"),

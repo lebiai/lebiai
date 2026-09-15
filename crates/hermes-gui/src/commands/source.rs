@@ -162,7 +162,7 @@ fn map_err(e: SourceStoreError) -> GuiError {
     }
 }
 
-fn open_path(path: &std::path::Path) -> std::result::Result<(), String> {
+pub(crate) fn open_path(path: &std::path::Path) -> std::result::Result<(), String> {
     let r = if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg(path).status()
     } else if cfg!(target_os = "windows") {

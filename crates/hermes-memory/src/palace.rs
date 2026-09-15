@@ -1,9 +1,6 @@
-//! Memory Palace: zone-based organization, index building, and file I/O.
+//! Memory Palace: zone-based organization for retrieval.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-
-use anyhow::{Context, Result};
 
 use hermes_core::companion::zones;
 
@@ -24,66 +21,6 @@ pub fn get_zone<'a>(memories: &'a [LoadedMemory], zone: &str) -> Vec<&'a LoadedM
         .iter()
         .filter(|m| zones::same(&m.frontmatter.zone, zone))
         .collect()
-}
-
-/// Code-generated palace index (no LLM needed). Groups by zone, shows counts
-/// and first-line previews. ~200 tokens.
-pub fn build_palace_index_simple(memories: &[LoadedMemory]) -> String {
-    let zones = group_by_zone(memories);
-    if zones.is_empty() {
-        return "## Memory Palace\nEmpty — no memories yet.".to_string();
-    }
-    let total: usize = zones.values().map(|v| v.len()).sum();
-    let mut buf = format!(
-        "## Memory Palace\n{} memories across {} zones. Use palace_read_zone to load details.\n",
-        total,
-        zones.len()
-    );
-    for (zone, mems) in &zones {
-        buf.push_str(&format!("\n### {} ({})\n", zone, mems.len()));
-        for m in mems.iter().take(5) {
-            let line = m.body.lines().next().unwrap_or("").trim();
-            let preview: String = line.chars().take(80).collect();
-            buf.push_str(&format!("- {preview}\n"));
-        }
-        if mems.len() > 5 {
-            buf.push_str(&format!("- ... ({} more)\n", mems.len() - 5));
-        }
-    }
-    buf
-}
-
-fn base_dir() -> Result<PathBuf> {
-    Ok(hermes_core::data_root())
-}
-
-pub fn palace_index_path() -> Result<PathBuf> {
-    Ok(base_dir()?.join("palace-index.md"))
-}
-
-pub fn load_palace_index() -> Result<Option<String>> {
-    let path = palace_index_path()?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    if content.trim().is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(content))
-}
-
-pub fn save_palace_index(content: &str) -> Result<PathBuf> {
-    let path = palace_index_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_file_name(".palace-index.md.tmp");
-    std::fs::write(&tmp, content).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path)
-        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
-    Ok(path)
 }
 
 #[cfg(test)]
@@ -129,26 +66,5 @@ mod tests {
         assert_eq!(prefs.len(), 1);
         assert_eq!(prefs[0].frontmatter.id, "m1");
         assert_eq!(get_zone(&mems, "core").len(), 1);
-    }
-
-    #[test]
-    fn build_palace_index_simple_output() {
-        let mems = vec![
-            mem("m1", "core", "user prefers vim"),
-            mem("m2", "preferences", "user is architect"),
-            mem("m3", "work", "working on palace"),
-        ];
-        let index = build_palace_index_simple(&mems);
-        assert!(index.contains("Memory Palace"));
-        assert!(index.contains("3 memories across 2 zones"));
-        assert!(index.contains("### preferences (2)"));
-        assert!(index.contains("### work (1)"));
-        assert!(index.contains("user prefers vim"));
-    }
-
-    #[test]
-    fn build_palace_index_empty() {
-        let index = build_palace_index_simple(&[]);
-        assert!(index.contains("Empty"));
     }
 }

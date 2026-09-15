@@ -62,6 +62,24 @@ pub trait SkillStore: Send + Sync {
     fn skill_dir(&self, scope: Scope, name: &str) -> Result<PathBuf>;
 }
 
+/// List the current skills, falling back to `cached` when the store errors.
+///
+/// Any surface that keeps a skill index in memory (GUI / server) must call this
+/// instead of reusing the snapshot it took at startup: skills are created,
+/// edited and installed while the app is running, and one that exists on disk
+/// but not in the index is silently unusable. Re-reading every turn (the rule
+/// memories already follow) is what makes a new skill work without a restart;
+/// the fallback keeps a transient filesystem error from wiping the index.
+pub fn list_or_cached(store: &dyn SkillStore, cached: &[LoadedSkill]) -> Vec<LoadedSkill> {
+    match store.list() {
+        Ok(fresh) => fresh,
+        Err(e) => {
+            tracing::warn!(error=%e, "listing skills failed; keeping last known index");
+            cached.to_vec()
+        }
+    }
+}
+
 /// Filesystem implementation backed by two scope roots.
 pub struct FsSkillStore {
     user_root: PathBuf,
@@ -373,5 +391,53 @@ mod tests {
         let store = FsSkillStore::new(user.path().join("does-not-exist"), None);
         let listed = store.list().unwrap();
         assert!(listed.is_empty());
+    }
+
+    /// The GUI bug of 2026-09-13: a skill created after the startup snapshot
+    /// stayed invisible until the app was restarted.
+    #[test]
+    fn list_or_cached_sees_skills_created_and_edited_after_the_snapshot() {
+        let user = tempfile::tempdir().unwrap();
+        let store = FsSkillStore::new(user.path().to_path_buf(), None);
+        let snapshot = list_or_cached(&store, &[]);
+        assert!(snapshot.is_empty());
+
+        store
+            .put(Scope::User, fm("xiao-wang", "first description"), "body")
+            .unwrap();
+        let next = list_or_cached(&store, &snapshot);
+        assert_eq!(next.len(), 1, "a new skill must be visible next turn");
+        assert_eq!(next[0].name(), "xiao-wang");
+
+        store
+            .put(Scope::User, fm("xiao-wang", "edited description"), "body")
+            .unwrap();
+        let edited = list_or_cached(&store, &next);
+        assert_eq!(edited[0].frontmatter.description, "edited description");
+
+        store.delete(Scope::User, "xiao-wang").unwrap();
+        assert!(list_or_cached(&store, &edited).is_empty());
+    }
+
+    #[test]
+    fn list_or_cached_keeps_last_known_index_when_listing_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_is_a_file = dir.path().join("skills");
+        std::fs::write(&root_is_a_file, b"not a directory").unwrap();
+        let store = FsSkillStore::new(root_is_a_file, None);
+        assert!(
+            store.list().is_err(),
+            "a file at the scope root must not list"
+        );
+
+        let cached = vec![LoadedSkill {
+            frontmatter: fm("kept", "still here"),
+            body: "body".into(),
+            source: PathBuf::from("/nowhere/SKILL.md"),
+            scope: Scope::User,
+        }];
+        let out = list_or_cached(&store, &cached);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name(), "kept");
     }
 }

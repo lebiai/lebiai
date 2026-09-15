@@ -12,10 +12,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use hermes_core::{LlmProvider, Session};
-use hermes_memory::{
-    FsMemoryStore, LoadedMemory, MemoryFrontmatter, MemoryStore, Scope as MemoryScope,
-    Source as MemorySource,
-};
+use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore, Scope as MemoryScope};
 use hermes_reflect::{
     deferred_load, reflect, CandidateKind, ConflictCandidate, DeferredCandidate, MemoryCandidate,
     ReflectionOutput, SkillCandidate,
@@ -93,6 +90,9 @@ pub async fn run_with_min_turns(
         .cloned()
         .map(|m| (m.frontmatter.id.clone(), m))
         .collect();
+
+    // 本会话的工位（没人物 / 自带角色 → `None`）。批准候选时靠它判归属。
+    let session_owner = hermes_core::persona::memory_owner_for(session.meta.persona.as_deref());
 
     // Re-evaluate deferred candidates from previous sessions before running
     // reflection for this one (P0 第一条: candidates must go through human
@@ -190,7 +190,13 @@ pub async fn run_with_min_turns(
                         c.fact.lines().next().unwrap_or(""),
                         map_conflict_action(action),
                     );
-                    match apply_conflict_action(&memory_store, c, old_id, action) {
+                    match apply_conflict_action(
+                        &memory_store,
+                        c,
+                        old_id,
+                        action,
+                        session_owner.as_deref(),
+                    ) {
                         Ok(Some(path)) => {
                             eprintln!("  ✓ wrote {}", path.display());
                             written_memories += 1;
@@ -218,16 +224,21 @@ pub async fn run_with_min_turns(
         // No conflict — classic a/r/d flow.
         let outcome = prompt_memory(c, i + 1, n_mem, &mut reader).await?;
         match outcome {
-            Some(Action::Accept) => match persist_memory(&memory_store, c) {
-                Ok(path) => {
-                    eprintln!("  ✓ wrote {}", path.display());
-                    written_memories += 1;
+            Some(Action::Accept) => {
+                match persist_memory(&memory_store, c, session_owner.as_deref()) {
+                    Ok(path) => {
+                        eprintln!("  ✓ wrote {}", path.display());
+                        written_memories += 1;
+                    }
+                    Err(e) => eprintln!("  ✗ failed to persist: {e:#}"),
                 }
-                Err(e) => eprintln!("  ✗ failed to persist: {e:#}"),
-            },
+            }
             Some(Action::Reject) => eprintln!("  (rejected)"),
             Some(Action::Defer) => {
-                hermes_reflect::deferred_save(DeferredCandidate::Memory(c.clone()));
+                hermes_reflect::deferred_save(DeferredCandidate::Memory {
+                    candidate: c.clone(),
+                    session_owner: session_owner.clone(),
+                });
                 eprintln!("  (deferred — will appear next session)");
             }
             None => {
@@ -471,6 +482,7 @@ fn apply_conflict_action(
     new: &MemoryCandidate,
     old_id: &str,
     action: ConflictAction,
+    session_owner: Option<&str>,
 ) -> Result<Option<PathBuf>> {
     match action {
         ConflictAction::KeepNew => {
@@ -478,7 +490,7 @@ fn apply_conflict_action(
             if !c.supersedes.iter().any(|id| id == old_id) {
                 c.supersedes.push(old_id.to_string());
             }
-            persist_memory(store, &c).map(Some)
+            persist_memory(store, &c, session_owner).map(Some)
         }
         ConflictAction::KeepOld => {
             eprintln!("  (old kept; new candidate discarded)");
@@ -508,7 +520,7 @@ fn apply_conflict_action(
                     if !c.supersedes.iter().any(|id| id == old_id) {
                         c.supersedes.push(old_id.to_string());
                     }
-                    persist_memory(store, &c).map(Some)
+                    persist_memory(store, &c, session_owner).map(Some)
                 }
                 None => {
                     eprintln!("  (editor cancelled)");
@@ -526,7 +538,7 @@ fn apply_conflict_action(
             let mut c = new.clone();
             c.scope = new_scope;
             c.supersedes.retain(|id| id != old_id);
-            persist_memory(store, &c).map(Some)
+            persist_memory(store, &c, session_owner).map(Some)
         }
         ConflictAction::Skip => {
             eprintln!("  (skipped — no changes)");
@@ -611,32 +623,18 @@ pub(crate) async fn review_proposed_skill(
 /// Persist a memory candidate: a fresh id, `supersedes` set to whatever the
 /// candidate carries. Reused by `hermes distill` to write the survivor of a
 /// cluster (its `supersedes` lists the other members' ids).
-pub(crate) fn persist_memory(store: &FsMemoryStore, c: &MemoryCandidate) -> Result<PathBuf> {
-    let zone = {
-        let z = c.zone.trim();
-        if z.is_empty() {
-            "general".to_string()
-        } else {
-            z.to_string()
-        }
-    };
-    let mut fm =
-        MemoryFrontmatter::new(MemorySource::Reflection, c.confidence, c.tags.clone(), zone);
-    fm.supersedes = c.supersedes.clone();
-    let scope = c.scope;
-    // Fall back to User scope if Project was requested but no project
-    // root is configured — the LLM often proposes Project scope without
-    // knowing the user's filesystem layout.
-    let result = store.put(scope, fm.clone(), &c.fact);
-    match result {
-        Err(e) if matches!(scope, MemoryScope::Project) => {
-            tracing::warn!(error=%e, "project scope unavailable, falling back to user");
-            store
-                .put(MemoryScope::User, fm, &c.fact)
-                .map_err(|e| anyhow::anyhow!("{e}"))
-        }
-        other => other.map_err(|e| anyhow::anyhow!("{e}")),
-    }
+///
+/// `session_owner` 是候选来源会话的工位（`SessionMeta.persona` →
+/// `memory_owner_for`）。没有来源会话（跨会话的 distill、取不到会话）传 `None`。
+/// 归属判定只有 `hermes_memory::resolve_owner` 一个地方，这里只传参。
+pub(crate) fn persist_memory(
+    store: &FsMemoryStore,
+    c: &MemoryCandidate,
+    session_owner: Option<&str>,
+) -> Result<PathBuf> {
+    let fm = hermes_reflect::candidate::frontmatter_for(c, session_owner);
+    hermes_reflect::candidate::put_with_fallback(store, c.scope, fm, &c.fact)
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Load deferred candidates (from micro-reflection or deferred decisions in
@@ -704,12 +702,15 @@ async fn review_deferred(
                 };
                 (CandidateKind::Skill, label, act)
             }
-            DeferredCandidate::Memory(c) => {
+            DeferredCandidate::Memory {
+                candidate: c,
+                session_owner,
+            } => {
                 let outcome = prompt_memory(c, i + 1, deferred.len(), &mut reader).await?;
                 let label = c.fact.lines().next().unwrap_or("").to_string();
                 let act = match outcome {
                     Some(Action::Accept) => {
-                        match persist_memory(memory_store, c) {
+                        match persist_memory(memory_store, c, session_owner.as_deref()) {
                             Ok(path) => {
                                 eprintln!("  ✓ wrote {}", path.display());
                                 memories_done += 1;
@@ -724,7 +725,10 @@ async fn review_deferred(
                     }
                     Some(Action::Defer) => {
                         eprintln!("  (kept deferred)");
-                        keep.push(DeferredCandidate::Memory(c.clone()));
+                        keep.push(DeferredCandidate::Memory {
+                            candidate: c.clone(),
+                            session_owner: session_owner.clone(),
+                        });
                         Some(Action::Defer)
                     }
                     None => {

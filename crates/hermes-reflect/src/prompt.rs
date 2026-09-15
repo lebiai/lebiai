@@ -4,6 +4,9 @@ use hermes_core::{ContentBlock, Role, Session};
 use hermes_memory::LoadedMemory;
 use hermes_skills::LoadedSkill;
 
+// 「归属（owner）」那段（见下方）与 `micro.rs` 的 `MICRO_REFLECT_SYSTEM` 里那条
+// `Owner:` 是**同一条纪律的两个语言版本**（这里是中文、那份是英文）。
+// 两条提示词各自维护语言，**不合并**；但改一处必须同步另一处。
 const SYSTEM_PROMPT: &str = r###"You are the living-rule distiller for lebi-AI (a work companion).
 You do NOT write a diary of what happened. You maintain **one active rule
 per kind of work** so the next similar job can be done their way without
@@ -36,6 +39,11 @@ How to extract (all kinds of work — writing, planning, lookup, review):
    If this turn is a one-off exception ("这篇写长一点") → omit (do not store).
 5. CONFLICTS: kind "stale" when replacing; pair with the superseding candidate.
 
+归属（owner）：
+- 这条是在说**用户本人**（偏好、标准、交付习惯）→ 不写 owner，落全局。所有工位都要遵守。
+- 这条是**这份活的专业口径**（本行业的判断规则、数据口径、措辞纪律）→ owner 写当前工位的 id。
+- 拿不准就当成用户本人处理：宁可不隔离，不误隔离。
+
 Skills: only a reusable procedure they would want run again the same way.
 Not a recap of this session.
 
@@ -58,6 +66,7 @@ Reply with EXACTLY ONE JSON object. No prose. No markdown fences.
   "memory_candidates": [
     {
       "fact": "one statement OR work-episode block",
+      "owner": "<当前工位的 id；省略 = 全局>",
       "tags": ["preference"] ,
       "zone": "preferences" | "standards" | "work" | "general",
       "scope": "user" | "project",
@@ -105,6 +114,20 @@ pub fn user_prompt(session: &Session, skills: &[LoadedSkill], memories: &[Loaded
             }
             buf.push('\n');
         }
+    }
+
+    // 当前工位 id 必须写进正文：模型无从猜出 id，猜不中就等于「专业口径」永远落全局。
+    // 「会话 → 归属」的转换只有 `hermes_core::persona::memory_owner_for` 一处。
+    match hermes_core::persona::memory_owner_for(session.meta.persona.as_deref()) {
+        Some(owner) => buf.push_str(&format!(
+            "=== 当前工位 ===\n\
+             {owner} —— 关于这份活的专业口径的候选，`owner` 写 \"{owner}\"；\
+             关于用户本人的，不写 `owner`。\n\n"
+        )),
+        None => buf.push_str(
+            "=== 当前工位 ===\n\
+             （无 —— 一切落全局：候选一律不写 `owner`）\n\n",
+        ),
     }
 
     buf.push_str("=== Session transcript ===\n");
@@ -167,7 +190,12 @@ pub fn user_prompt(session: &Session, skills: &[LoadedSkill], memories: &[Loaded
     }
 
     buf.push_str("\n=== Current living memories (id, slot, fact) ===\n");
-    buf.push_str("Same slot → you MUST supersede these ids, not add a peer.\n");
+    buf.push_str(
+        "A slot is a KIND of work, not a single fact. Entries sharing a slot are usually\
+complementary sides of it — keep them all. Only supersede an id when this turn genuinely\
+replaces that entry (same rule, corrected or merged), never merely because the slot matches.\
+",
+    );
     let living = hermes_memory::living_rules(memories.to_vec());
     if living.is_empty() {
         buf.push_str("(none)\n");
@@ -193,5 +221,43 @@ fn truncate(s: &str, max_chars: usize) -> String {
     } else {
         let truncated: String = s.chars().take(max_chars).collect();
         format!("{truncated}…")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session_with_persona(persona: Option<&str>) -> Session {
+        let mut meta = hermes_core::SessionMeta::new("test-model", "test-provider");
+        meta.persona = persona.map(str::to_string);
+        Session {
+            meta,
+            messages: Vec::new(),
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+        }
+    }
+
+    #[test]
+    fn user_prompt_names_the_current_workspace_only_when_there_is_one() {
+        let with = user_prompt(&session_with_persona(Some("xiao-xie")), &[], &[]);
+        assert!(
+            with.contains("xiao-xie"),
+            "带工位时提示词必须出现该 id：\n{with}"
+        );
+        let without = user_prompt(&session_with_persona(None), &[], &[]);
+        assert!(
+            !without.contains("xiao-xie"),
+            "无工位时不许提 id：\n{without}"
+        );
+    }
+
+    /// 自带角色（李现 / 小文）的会话算「没有工位」——不搞专业分工，
+    /// 转换点仍是 `memory_owner_for` 那一处。
+    #[test]
+    fn a_builtin_persona_session_reads_as_no_workspace() {
+        let p = user_prompt(&session_with_persona(Some("li-xian")), &[], &[]);
+        assert!(!p.contains("li-xian"), "自带角色的会话不该出现工位：\n{p}");
     }
 }

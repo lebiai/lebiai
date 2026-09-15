@@ -120,24 +120,14 @@ fn escape_seatbelt_path(p: &str) -> String {
 
 /// After `allow file-read*`, deny key/token locations. Last matching deny wins
 /// for these subpaths on macOS seatbelt.
+///
+/// The list comes from `safety::secret_paths()` — the same one the tool gates
+/// use — so a data root the user migrated (and the legacy roots older installs
+/// left behind) is covered here too.
 #[cfg(target_os = "macos")]
 fn seatbelt_deny_secrets() -> String {
     let mut out = String::new();
-    let mut paths: Vec<PathBuf> = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".ssh"));
-        paths.push(home.join(".gnupg"));
-        paths.push(home.join(".aws"));
-        paths.push(home.join(".kube"));
-        paths.push(home.join(".netrc"));
-    }
-    let root = hermes_core::data_root();
-    paths.push(root.join("config.toml"));
-    paths.push(root.join("server.token"));
-    paths.push(root.join("wechat.toml"));
-    paths.push(root.join("feishu.toml"));
-    paths.push(root.join("telegram.toml"));
-    for p in paths {
+    for p in crate::safety::secret_paths() {
         let Some(abs) = dunce_abs(&p).or_else(|| p.is_absolute().then_some(p)) else {
             continue;
         };
@@ -249,5 +239,21 @@ mod tests {
             .block_on(async { cmd.output().await })
             .unwrap();
         assert!(out.status.success() || !out.stderr.is_empty() || !out.stdout.is_empty() || true);
+    }
+
+    /// The sandbox must deny the same list the tool gates use — including a
+    /// data root the user migrated to and the legacy roots behind it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_denies_every_secret_path() {
+        let profile = seatbelt_deny_secrets();
+        let expected = crate::safety::secret_paths();
+        assert_eq!(
+            profile.matches("(deny file-read*").count(),
+            expected.len(),
+            "every known secret path must get a deny line"
+        );
+        assert!(profile.contains("config.toml"));
+        assert!(profile.contains(".lebi-ai"), "legacy root missing");
     }
 }

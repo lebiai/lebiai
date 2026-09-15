@@ -16,6 +16,7 @@ use hermes_turn::{AgentConfig, AgentEvent, TurnConfig, TurnEvent};
 use super::context::ContextSources;
 use super::util::{build_active_provider, build_web_ctx, load_tool_host, session_path_for};
 use super::{style, toolfmt};
+use hermes_tools::subagent::MemoryView;
 use hermes_tools::SubagentContext;
 
 pub async fn run(
@@ -47,6 +48,9 @@ pub async fn run(
         hermes_turn::PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
         workspace_root.clone(),
         Some(memory_store_arc.clone()),
+        // `hermes agent` 没有人物这层（无 `--persona`）：父未被收窄，
+        // child 也不收窄。
+        MemoryView::Unscoped,
         Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
     ));
 
@@ -96,25 +100,21 @@ pub async fn run(
 
     let compiled_profile = hermes_memory::load_profile().unwrap_or(None);
 
-    let palace_index: Option<String> = if active_memories.is_empty() {
+    let topic_cards: Option<String> = if active_memories.is_empty() {
         None
     } else {
-        match hermes_memory::load_palace_index() {
-            Ok(Some(idx)) => Some(idx),
-            _ => {
-                let idx = hermes_memory::build_palace_index_simple(&active_memories);
-                if let Err(e) = hermes_memory::save_palace_index(&idx) {
-                    tracing::warn!(error=%e, "save palace index");
-                }
-                Some(idx)
-            }
-        }
+        // `hermes run` 是引擎批处理，不是伴生（companion）路径：它没有会话，
+        // 也就没有工位——这里恒 `None`，不会有 `--persona` 的 owner 传进来。
+        hermes_memory::topics::render_from_disk(&active_memories, None)
     };
 
     // --- build per-goal system prompt with context sources ---
     let sources = ContextSources {
         base: system.as_deref(),
-        palace_index: palace_index.as_deref(),
+        persona: None,
+        // 没有会话就没有工位，名册也用不上（`persona: None` 时整段不发）。
+        roster: &[],
+        topic_cards: topic_cards.as_deref(),
         compiled_profile: compiled_profile.as_deref(),
         always_active_skills: &always_active_refs,
         pinned: &pinned_memories,

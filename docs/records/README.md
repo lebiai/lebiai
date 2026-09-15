@@ -32,6 +32,19 @@ docs/records/YYYYMMDD-短横线-英文或拼音-slug.md
 
 | 编号 | 标题 | 状态 | 日期 |
 |------|------|------|------|
+| [20260915-release-v1.4](./20260915-release-v1.4.md) | **v1.4.0 发布**（你的 AI 团队 / 人物工位 / 记忆主题卡 / 材料分页 / 产出按天归位 / 安静失败 / 安全加固） | **实施中** · 待 CI 与实装 | 2026-09-15 |
+| [20260915-persona-roster](./20260915-persona-roster.md) | **人物名册与工位体验**（六角色入册 + 大导演 + 顶栏写工位 + 侧栏小字改「他是谁」+ 搭子小乐下线 + 冷启动不自动开会话 + **指路名册 & 技能面收窄**） | **工程通过** · 待真机对话 | 2026-09-15 |
+| [20260915-codebase-learning-refresh](./20260915-codebase-learning-refresh.md) | **二次全量代码学习**（工作树为基线：18 crate 精读 + 实测构建/测试 + 分级问题清单；重写 `docs/snapshot/codebase-learning.md`） | **工程通过** · 待用户复核清单 | 2026-09-15 |
+| [20260914-personas](./20260914-personas.md) | **人物（工位）**：常驻会话 + 职责边界 + 记忆归属，名单由授权决定（一个搭子，几顶帽子） | **阶段 1 实施中**（1.1–1.9 已收） | 2026-09-14 |
+| [20260914-memory-topic-cards](./20260914-memory-topic-cards.md) | **记忆「主题卡」蒸馏**（蒸馏的单位是主题、不是槽位；顺带停止「一槽只留一条」静默丢条） | **已验收** | 2026-09-14 |
+| [20260913-know-header-single-line](./20260913-know-header-single-line.md) | **「它记得的」标题与说明合成一行**（结构归位，不是缩字号硬撑） | **工程通过** · 待目视 | 2026-09-13 |
+| [20260913-list-readability-tabs-and-paging](./20260913-list-readability-tabs-and-paging.md) | **列表可读性：记忆按时间倒序分页 · 材料分 tab · 产出不列脚本**（顺带修掉记忆按随机 id 排的根因） | **工程通过** · 待目视 | 2026-09-13 |
+| [20260913-quiet-failures-and-visible-outputs](./20260913-quiet-failures-and-visible-outputs.md) | **失败不喊 · 产出按天归位 · 产出进「我的材料」**（去红叉改文字 + 计数 · `outputs/<YYYY-MM-DD>/` · `list_outputs`/`open_output` + 按天分组） | **工程通过** · 待目视 | 2026-09-13 |
+| [20260913-approval-lighter-and-quieter-process](./20260913-approval-lighter-and-quieter-process.md) | **授权该松的松、该记的记住；过程退回一行**（删内联解释器误伤闸 · 始终允许落盘 · 实时与留存同规则） | **工程通过** · 待目视 | 2026-09-13 |
+| [20260913-gui-close-button](./20260913-gui-close-button.md) | **关闭键一定关得掉**（补 `core:window:allow-destroy` 授权；关闭路径保证终止 + 能力授权回归测试） | **工程通过** · 待目视 | 2026-09-13 |
+| [20260913-secret-path-guard](./20260913-secret-path-guard.md) | **产品密钥一律不进工具**（一份清单五处共用；修 `read` 越权读 key） | **工程通过** · 待目视 | 2026-09-13 |
+| [20260913-skill-index-freshness](./20260913-skill-index-freshness.md) | **技能索引与记忆同一条保鲜规则**（新建技能不再需要重启 App） | **工程通过** · 待真机目视 | 2026-09-13 |
+| [20260913-reflect-write-isolation](./20260913-reflect-write-isolation.md) | **反思落盘不写进程数据根**（注入式目标 + 单次原子追加） | **工程通过** · 待目视 | 2026-09-13 |
 | [20260818-release-v1.3](./20260818-release-v1.3.md) | **v1.3.0 发布**（材料 / 在办顺滑 / 手册 / UTF-8 / 可点更新） | **已验收** | 2026-08-18 |
 | [20260818-remaining-closeout](./20260818-remaining-closeout.md) | **审计余项收口**（桌面撒谎 · 单队列 · 写盘门 · 安全 · 卫生） | **实施中** | 2026-08-18 |
 | [20260818-zone-and-im-honesty](./20260818-zone-and-im-honesty.md) | **记忆分区单一真相 · IM 不再假装能记** | **工程通过** · 待目视 | 2026-08-18 |
@@ -143,3 +156,4 @@ docs/records/YYYYMMDD-短横线-英文或拼音-slug.md
 | [20260803-rule-accept-default-false](./20260803-rule-accept-default-false.md) | RULE-ACCEPT：auto_accept 默认值对齐 P0 | **已验收** | 2026-08-03 |
 | [20260803-pre-dev-review-rules](./20260803-pre-dev-review-rules.md) | 开发前全面审查 + 规则定稿（P1/AGENTS 增补、README/docker 修正、TODO 迁移、缺口表） | **已验收**（规则/文档） | 2026-08-03 |
 | [20260803-authoritative-docs](./20260803-authoritative-docs.md) | 权威文档体系（P0/P1/P2 + docs 索引 + 台账） | **已验收**（文档） | 2026-08-03 |
+| [20260915-persona-roster](./20260915-persona-roster.md) | 人物名册：六角色入册 + GUI 前后端接线 + 大导演 + 侧栏小字改「他是谁」（§C）+ 搭子小乐下线（§C） | 工程通过 · 待目视 | 2026-09-15 |

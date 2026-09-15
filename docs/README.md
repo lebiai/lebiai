@@ -31,6 +31,7 @@
 | 路径 | 内容 |
 |------|------|
 | [`spec/work-companion-solution.md`](./spec/work-companion-solution.md) | 工作搭子体验规格（展开 P0） |
+| [`spec/personas.md`](./spec/personas.md) | **人物（工位）**：常驻会话 · 职责边界 · 记忆归属 · 名单由授权决定（一个搭子，几顶帽子） |
 | [`spec/license-ux.md`](./spec/license-ux.md) | 授权 / 试用 / 续期交互 |
 | [`spec/settings-ia.md`](./spec/settings-ia.md) | 设置页信息架构 |
 | [`spec/in-app-update.md`](./spec/in-app-update.md) | 桌面应用内点击更新（实施中 · U3 未做） |
@@ -71,7 +72,7 @@
 | 路径 | 内容 |
 |------|------|
 | [`snapshot/project-map.md`](./snapshot/project-map.md) | 项目地图（2026-08-17；过期以 P0 与代码为准） |
-| [`snapshot/codebase-learning.md`](./snapshot/codebase-learning.md) | 代码学习快照 |
+| [`snapshot/codebase-learning.md`](./snapshot/codebase-learning.md) | 代码学习快照（2026-09-15 重写 · 基线为工作树含 WIP） |
 | [`snapshot/flutter-progress.md`](./snapshot/flutter-progress.md) | Flutter 进度快照 |
 
 ## 不是文档

@@ -7,6 +7,8 @@ pub mod license;
 pub mod memory;
 pub mod micro;
 pub mod onboarding;
+pub mod outputs;
+pub mod personas;
 pub mod reflect;
 pub mod review;
 pub mod session;

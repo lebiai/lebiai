@@ -6,7 +6,10 @@
 import type { TranslationKey } from "../i18n";
 import { isOnboardingDone } from "./onboarding";
 
-/** Keys for returning users only; first-run relies on welcome.subtitle alone. */
+/**
+ * 首页问候语的时间段 key —— 空会话首页**唯一**的文案。
+ * 引导还没走完时返回 null：那时首页被欢迎仪式覆盖，不需要再摆一句。
+ */
 export function returnGreetingKey(): TranslationKey | null {
   if (!isOnboardingDone()) return null;
   const hour = new Date().getHours();

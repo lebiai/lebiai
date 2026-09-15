@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { exit } from "@tauri-apps/plugin-process";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { Sidebar } from "./components/layout/Sidebar";
@@ -30,8 +31,39 @@ import { useWorkDrawerStore } from "./store/workDrawerStore";
 import { LicenseLockScreen } from "./components/license/LicenseLockScreen";
 import { LicenseNudgeModal } from "./components/license/LicenseNudgeModal";
 
+/** 关闭前留给「下次启动补齐」的写盘窗口；超时也照关，不让记录拦住宿主。 */
+const LEAVE_MARK_TIMEOUT_MS = 1500;
+
+/**
+ * 关闭键必须关得掉：`destroy()` 是受权命令，一旦被拒（权限漏配、桥接异常）
+ * 就会留下一个「点了没反应」的窗口。这里退到进程退出兜底，绝不静默卡住。
+ * 授权与根因见 `docs/records/20260913-gui-close-button.md`。
+ */
+async function forceClose() {
+  try {
+    await getCurrentWindow().destroy();
+  } catch (e) {
+    console.error("window.destroy failed; falling back to app exit", e);
+    await exit(0);
+  }
+}
+
+/** 先记一笔「下次启动补齐这次会话」，再关闭；写不上记录也照样关。 */
+async function markLeaveThenClose(sessionId: string) {
+  try {
+    await Promise.race([
+      invoke("mark_pending_leave", { sessionId }),
+      new Promise((resolve) => setTimeout(resolve, LEAVE_MARK_TIMEOUT_MS)),
+    ]);
+  } catch {
+    /* 记录失败不拦关闭 */
+  }
+  await forceClose();
+}
+
 export default function App() {
   const fetchSessions = useChatStore((s) => s.fetchSessions);
+  const fetchPersonas = useChatStore((s) => s.fetchPersonas);
   const { activePanel } = useNavStore();
   const setLanguage = useUiStore((s) => s.setLanguage);
   const setTheme = useUiStore((s) => s.setTheme);
@@ -49,11 +81,9 @@ export default function App() {
   useEffect(() => {
     applyTheme(useUiStore.getState().theme);
     void (async () => {
-      await fetchSessions();
-      const chat = useChatStore.getState();
-      if (!chat.activeSessionId) {
-        await chat.newSession();
-      }
+      await Promise.all([fetchSessions(), fetchPersonas()]);
+      // 冷启动不自动开会话：每个会话都绑一个人物，谁开由用户点侧栏决定。
+      // 没有会话时对话区是一句问候（`ChatView` 的空态），不是「正在开启…」。
     })();
     bindZaibanListener();
     void useZaibanStore.getState().refresh();
@@ -76,7 +106,14 @@ export default function App() {
         setTheme("system");
         setHasApiKey(false);
       });
-  }, [fetchSessions, setLanguage, setTheme, setHasApiKey, refreshLicense]);
+  }, [
+    fetchSessions,
+    fetchPersonas,
+    setLanguage,
+    setTheme,
+    setHasApiKey,
+    refreshLicense,
+  ]);
 
   // Re-check license when returning to the app (cross-day nudge / expiry).
   useEffect(() => {
@@ -117,19 +154,7 @@ export default function App() {
   // ⌘/Ctrl+N new chat; Esc dismiss overlays (not tool confirm — safety).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey;
-      if (mod && (e.key === "n" || e.key === "N")) {
-        e.preventDefault();
-        const chat = useChatStore.getState();
-        if (chat.isStreaming) {
-          toast.info(useUiStore.getState().t("toast.streamingBusy"));
-          return;
-        }
-        useNavStore.getState().setPanel("chat");
-        void chat.newSession();
-        return;
-      }
-
+      // 不再有「⌘N 新对话」：用户不自己建会话，会话由侧栏选工位产生。
       if (e.key === "Escape") {
         if (showOnboarding) {
           e.preventDefault();
@@ -170,14 +195,7 @@ export default function App() {
           }
           if (state.activeSessionId && state.messages.length > 0) {
             event.preventDefault();
-            try {
-              await invoke("mark_pending_leave", {
-                sessionId: state.activeSessionId,
-              });
-            } catch {
-              /* still close */
-            }
-            await win.destroy();
+            await markLeaveThenClose(state.activeSessionId);
           }
         });
         if (cancelled) {
@@ -223,13 +241,7 @@ export default function App() {
       <ToastHost />
       {showOnboarding && (
         <OnboardingRitual
-          onDone={() => {
-            setShowOnboarding(false);
-            const chat = useChatStore.getState();
-            if (!chat.activeSessionId) {
-              void chat.newSession();
-            }
-          }}
+          onDone={() => setShowOnboarding(false)}
         />
       )}
       {/* License lock above onboarding so expired install cannot skip via onboarding */}

@@ -49,6 +49,10 @@ pub mod zones {
         normalize(zone) == PREFERENCES
     }
 
+    pub fn is_standards(zone: &str) -> bool {
+        normalize(zone) == STANDARDS
+    }
+
     pub fn is_work(zone: &str) -> bool {
         normalize(zone) == WORK
     }
@@ -59,6 +63,24 @@ pub mod tags {
     pub const PREFERENCE: &str = "preference";
     pub const STANDARD: &str = "standard";
     pub const WORK_EPISODE: &str = "work-episode";
+
+    /// tag 也能说明「这条记忆是关于用户本人的」——模型常常只打 tag 不填 `zone`。
+    /// 全仓**只此一份**词表：`hermes-memory` 的归属判定与 `hermes-reflect` 的反思归类都读它。
+    pub fn is_preference_tag(tag: &str) -> bool {
+        let t = tag.trim();
+        t.eq_ignore_ascii_case(PREFERENCE) || t.eq_ignore_ascii_case("prefers")
+    }
+
+    pub fn is_standard_tag(tag: &str) -> bool {
+        tag.trim().eq_ignore_ascii_case(STANDARD)
+    }
+
+    /// 「工作情节」标签同样只此一份词表：`hermes-memory` 的连续性加权与
+    /// `hermes-reflect` 的反思归类都读它。带 trim——模型偶尔把标签写成 `" episode "`。
+    pub fn is_episode_tag(tag: &str) -> bool {
+        let t = tag.trim();
+        t.eq_ignore_ascii_case(WORK_EPISODE) || t.eq_ignore_ascii_case("episode")
+    }
 }
 
 /// Identity + Continuity + Care + Give-and-take. Safe on every surface.
@@ -74,7 +96,7 @@ Your job: (1) **understand** their intent and standards, (2) **move work forward
 ## Do (work together)
 - When files, shell, web, or other tools are needed, **use tools immediately**. Do not claim you cannot act if a tool can.
 - Prefer the smallest correct action. Verify before declaring success.
-- When generating a **new** deliverable and the user did not name a path, write under `outputs/` (workspace-relative). Do not redirect edits of existing files into `outputs/`. Obey explicit paths.
+- When generating a **new** deliverable and the user did not name a path, write under `outputs/<YYYY-MM-DD>/` with **today's** date (workspace-relative). The date folder is part of the default, not optional. Do not redirect edits of existing files into `outputs/`. Obey explicit paths.
 - If they name Desktop / Documents / Downloads (桌面 / 文稿 / 下载), write there in **one** step (`~/Desktop/name.ext` or the absolute path). Do not probe bash vs write, do not test with dummy files, do not use Finder / AppleScript / RTF-as-.doc workarounds.
 - A `[Context]` line may include the current date. **今天 / today means that date.** Never invent another calendar day for searches or filenames.
 - Report **real** paths and results. Never invent UI buttons or exports that did not happen.
@@ -85,7 +107,7 @@ Do the smallest correct action silently. If blocked, one short sentence: the out
 If a tool result is unusable, try a **different** method at most once; then give them what you have. Do not retry the same broken search with a new invented date.
 
 ## Continuity (recognize the past)
-- You may receive memories, a profile, or a memory-palace index. These are **notes** that can be wrong or stale.
+- You may receive memories, a profile, or topic cards (主题卡 — which subjects your notes cover). These are **notes** that can be wrong or stale.
 - When notes clearly match the current task, briefly connect: e.g. "Last time on something similar…" and ground it in the note (topic, structure, preference). One short beat is enough.
 - The user may keep work files (contracts, briefs). This turn may include `[lebi-AI Materials]` excerpts. If they fit, use them and name the title in one short beat (按你那份《标题》). **If no excerpts are present, do not claim you looked in their files.**
 - If two kept files disagree, lay both out briefly and let the user choose. Never silently merge them into one fake rule.
@@ -486,6 +508,36 @@ pub fn tool_suggests_deliverable(tool_name: &str) -> bool {
     matches!(tool_name, "write" | "edit")
 }
 
+/// Extensions that mean "a program or machine config", not an artifact a person
+/// reads. **One list, two consumers:** the Care nudge ([`path_looks_like_user_deliverable`])
+/// and the desktop "我产出的" list — a helper script the agent wrote is process,
+/// not a deliverable, in both places.
+const CODE_FILE_EXTS: &[&str] = &[
+    "py", "pyi", "sh", "bash", "zsh", "fish", "rs", "js", "mjs", "cjs", "jsx", "ts", "tsx", "rb",
+    "go", "java", "kt", "kts", "swift", "c", "cc", "cpp", "cxx", "h", "hpp", "hh", "cs", "php",
+    "lua", "pl", "pm", "r", "sql", "ipynb", "bat", "cmd", "ps1", "vbs", "toml", "yml", "yaml",
+    "ini", "cfg", "conf", "env", "lock", "json", "jsonl", "css", "scss", "sass", "less",
+];
+
+/// Does this file **name or path** point at a program / machine config rather
+/// than something a person reads?
+///
+/// Case-insensitive, extension-based (`.md`, `.docx`, `.html`, `.csv` stay
+/// deliverables). A dotfile or an extension-less name is **not** counted as code
+/// here — hidden files are the caller's business.
+pub fn looks_like_code_file(path_or_name: &str) -> bool {
+    let p = path_or_name.replace('\\', "/");
+    let name = p.rsplit('/').next().unwrap_or("");
+    let lower = name.to_lowercase();
+    if lower.is_empty() || lower.starts_with('.') {
+        return false;
+    }
+    match lower.rsplit_once('.') {
+        Some((_, ext)) => CODE_FILE_EXTS.contains(&ext),
+        None => false,
+    }
+}
+
 /// `write`/`edit` path that is a finished user artifact — not a probe or script.
 pub fn path_looks_like_user_deliverable(path: &str) -> bool {
     let p = path.replace('\\', "/");
@@ -494,12 +546,7 @@ pub fn path_looks_like_user_deliverable(path: &str) -> bool {
     if name.is_empty() || name.starts_with('.') {
         return false;
     }
-    if name.ends_with(".py")
-        || name.ends_with(".sh")
-        || name.ends_with(".rs")
-        || name.ends_with(".js")
-        || name.ends_with(".ts")
-    {
+    if looks_like_code_file(name) {
         return false;
     }
     lower.contains("/desktop/")
@@ -692,6 +739,20 @@ mod tests {
     }
 
     #[test]
+    fn protocol_names_the_dated_outputs_default() {
+        // 2026-09-13: the product default carries the date folder, so a new
+        // deliverable lands under `outputs/<YYYY-MM-DD>/`. Both protocol
+        // variants must say so — dropping it silently would put files flat
+        // again while the "我的材料 → 我产出的" view keeps grouping by day.
+        for p in [companion_protocol_readonly(), companion_protocol().as_str()] {
+            assert!(
+                p.contains("outputs/<YYYY-MM-DD>/"),
+                "outputs default lost its date folder:\n{p}"
+            );
+        }
+    }
+
+    #[test]
     fn protocol_forbids_lab_log_and_invented_today() {
         let p = companion_protocol();
         assert!(p.contains("What the user sees"));
@@ -739,12 +800,50 @@ mod tests {
         assert!(!path_looks_like_user_deliverable(
             "~/Desktop/.lebi_write_test.txt"
         ));
+        assert!(!path_looks_like_user_deliverable("outputs/brief.json"));
+        assert!(!path_looks_like_user_deliverable("outputs/deploy.sh"));
         assert!(path_looks_like_user_deliverable(
             "~/Desktop/抖音今日热点_2026-08-14.docx"
         ));
         assert!(path_looks_like_user_deliverable("outputs/notes.md"));
     }
 
+    #[test]
+    fn code_file_rule_is_one_list_for_scripts_and_configs() {
+        // Scripts / programs / machine config: process, not a deliverable.
+        for name in [
+            "make_galbot_docx.py",
+            "outputs/2026-09-13/build.sh",
+            "OUTPUTS/Deploy.PS1",
+            "notes.rs",
+            "app.tsx",
+            "data.json",
+            "config.yml",
+            "schema.sql",
+        ] {
+            assert!(looks_like_code_file(name), "{name} should read as code");
+        }
+        // Human artifacts — including the ones this user actually produces.
+        for name in [
+            "outputs/2026-09-13/财经资讯-2026-09-13.md",
+            "会议纪要-进度讨论.docx",
+            "从独自抗癌到带队健身.html",
+            "抖音今日热点_2026-08-14.rtf",
+            "meeting-minutes.pdf",
+            "export.csv",
+            "Makefile",
+            "report.tar.gz",
+            "会议纪要_XX项目周例会.docx",
+        ] {
+            assert!(
+                !looks_like_code_file(name),
+                "{name} should not read as code"
+            );
+        }
+        // Hidden names are the caller's business, not this rule's.
+        assert!(!looks_like_code_file(".env"));
+        assert!(!looks_like_code_file(""));
+    }
     #[test]
     fn care_final_only_detected() {
         assert!(user_wants_final_only("这篇直接定稿，不要建议"));
@@ -798,5 +897,68 @@ mod tests {
         assert!(should_inject_zaiban_index("hi", true, false, true));
         assert!(!should_inject_zaiban_index("hi", true, false, false));
         assert!(!should_inject_zaiban_index("记下", false, false, true));
+    }
+
+    #[test]
+    fn user_level_tag_words_ignore_case_and_padding() {
+        for tag in [
+            "preference",
+            "Preference",
+            "PREFERENCE",
+            " preference ",
+            "prefers",
+            "Prefers",
+        ] {
+            assert!(tags::is_preference_tag(tag), "{tag:?} 必须算用户偏好");
+        }
+        for tag in ["standard", "Standard", "STANDARD", " standard "] {
+            assert!(tags::is_standard_tag(tag), "{tag:?} 必须算标准");
+        }
+        for tag in [
+            "",
+            "  ",
+            "news",
+            "preference-list",
+            "prefers-more",
+            "working",
+        ] {
+            assert!(!tags::is_preference_tag(tag), "{tag:?} 不是偏好 tag");
+        }
+        for tag in ["", "  ", "preference", "standards", "standardization"] {
+            assert!(!tags::is_standard_tag(tag), "{tag:?} 不是标准 tag");
+        }
+    }
+
+    #[test]
+    fn preference_and_standard_tag_words_do_not_cross() {
+        assert!(!tags::is_preference_tag(tags::STANDARD));
+        assert!(!tags::is_standard_tag(tags::PREFERENCE));
+        assert!(!tags::is_standard_tag("prefers"));
+    }
+
+    #[test]
+    fn episode_tag_words_are_recognized() {
+        for tag in [
+            "work-episode",
+            "Work-Episode",
+            "WORK-EPISODE",
+            " work-episode ",
+            "episode",
+            "Episode",
+            " EPISODE ",
+        ] {
+            assert!(tags::is_episode_tag(tag), "{tag:?} 必须算工作情节");
+        }
+        for tag in [
+            "",
+            "  ",
+            "standard",
+            "preference",
+            "episodes",
+            "work_episode",
+            "working",
+        ] {
+            assert!(!tags::is_episode_tag(tag), "{tag:?} 不是工作情节 tag");
+        }
     }
 }

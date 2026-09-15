@@ -41,6 +41,8 @@
   --motion-fast: 150ms;
   --motion-base: 260ms;
   --motion-ritual: 520ms;
+  /* 空首页问候语：逐字入场的步进（唯一来源，页面不得自造时长） */
+  --motion-char-step: 20ms;
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -436,6 +438,133 @@ html.dark .mem-highlight {
 }
 @media (prefers-reduced-motion: reduce) {
   .motion-lift:hover:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* ─── 空首页问候语（首页唯一文案） ───
+ *
+ * 首页不做背板、不做卡片、不做插画：美感只能从这一句话来。
+ * 任何「垫在文字底下的色块」在只剩一行字时都会读成一块空色块——禁止再加。
+ * 四件事构成它：逐字浮入（模糊→实）、前后两段层次、破折号收小当分隔、
+ * 落定后自己画出的一笔收尾。
+ */
+.greet-line {
+  font-size: clamp(1.6rem, 3.4vw, 2.25rem);
+  line-height: 1.4;
+  letter-spacing: -0.015em;
+  font-weight: 600;
+  text-wrap: balance;
+  color: var(--color-app-fg);
+}
+
+.greet-ch {
+  display: inline-block;
+  white-space: pre;
+  opacity: 0;
+  filter: blur(10px);
+  transform: translateY(0.26em);
+  animation: greet-ch-in var(--motion-ritual) var(--ease-out-soft) both;
+  animation-delay: calc(var(--greet-i, 0) * var(--motion-char-step));
+}
+
+@keyframes greet-ch-in {
+  0% {
+    opacity: 0;
+    filter: blur(10px);
+    transform: translateY(0.26em);
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+/** 破折号：收小压扁降一档色 —— 它是分隔，不是装饰。 */
+.greet-sep {
+  font-size: 0.6em;
+  font-weight: 400;
+  letter-spacing: -0.08em;
+  vertical-align: 0.12em;
+  margin: 0 0.18em;
+  color: var(--color-app-fg-tertiary);
+}
+
+/** 后半句（动作提示）比问候语轻一档：问候是温度，动作是邀请。 */
+.greet-tail {
+  font-weight: 500;
+  color: var(--color-app-fg-secondary);
+}
+
+/** 收尾的一笔：文字落定后从中间画出，给整组一个「闭」的动作。 */
+.greet-rule {
+  display: block;
+  width: 88px;
+  height: 2px;
+  margin: 26px auto 0;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--color-app-primary) 45%,
+    var(--color-app-primary) 55%,
+    transparent
+  );
+  opacity: 0;
+  transform: scaleX(0.2);
+  animation: greet-rule-in var(--motion-ritual) var(--ease-out-soft) both;
+  animation-delay: calc(
+    var(--motion-ritual) + var(--greet-chars, 10) * var(--motion-char-step)
+  );
+}
+
+@keyframes greet-rule-in {
+  0% {
+    opacity: 0;
+    transform: scaleX(0.2);
+  }
+  100% {
+    opacity: 0.5;
+    transform: scaleX(1);
+  }
+}
+
+html.dark .greet-line {
+  color: #e2e8f0;
+}
+
+html.dark .greet-sep {
+  color: #64748b;
+}
+
+html.dark .greet-tail {
+  color: #94a3b8;
+}
+
+html.dark .greet-rule {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    #60a5fa 45%,
+    #60a5fa 55%,
+    transparent
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .greet-ch {
+    animation: none !important;
+    opacity: 1;
+    filter: none;
+    transform: none;
+  }
+  .greet-rule {
+    animation: none !important;
+    opacity: 0.5;
     transform: none;
   }
 }

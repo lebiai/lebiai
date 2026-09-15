@@ -18,6 +18,6 @@ pub use stats::{
     load_effectiveness, record as record_skill_stat, SkillEffectiveness, SkillEvent, SkillStatEntry,
 };
 pub use store::{
-    standard_project_root, standard_user_root, validate_skill_name, FsSkillStore, SkillStore,
-    SkillStoreError,
+    list_or_cached, standard_project_root, standard_user_root, validate_skill_name, FsSkillStore,
+    SkillStore, SkillStoreError,
 };

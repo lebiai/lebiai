@@ -79,17 +79,18 @@ pub fn search_memories_scored<'a>(
 fn continuity_boost(m: &LoadedMemory) -> f64 {
     let tags = &m.frontmatter.tags;
     let is_episode = hermes_core::companion::zones::is_work(&m.frontmatter.zone)
-        || tags.iter().any(|t| {
-            let t = t.to_lowercase();
-            t == "work-episode" || t == "episode"
-        })
+        || tags
+            .iter()
+            .any(|t| hermes_core::companion::tags::is_episode_tag(t))
         || m.body.contains("【工作情节】");
     if is_episode {
         return 1.4;
     }
     let is_standard = hermes_core::companion::zones::normalize(&m.frontmatter.zone)
         == hermes_core::companion::zones::STANDARDS
-        || tags.iter().any(|t| t.eq_ignore_ascii_case("standard"));
+        || tags
+            .iter()
+            .any(|t| hermes_core::companion::tags::is_standard_tag(t));
     if is_standard {
         return 1.15;
     }
@@ -320,6 +321,22 @@ mod tests {
             hits.iter().any(|m| m.frontmatter.id == "ep"),
             "work episode should appear in top results for similar work query"
         );
+    }
+
+    /// 工单验证点（Task 1.11）：`" standard "` / `" episode "` 这类带空格的 tag 从
+    /// 「匹配不上」变成「匹配得上」——本地字面量删掉、改读 `companion::tags` 的唯一词表
+    /// 带来的归一化方向修正。
+    #[test]
+    fn padded_tags_still_earn_the_continuity_boost() {
+        let tagged = |tag: &str| {
+            let mut m = memory("m", "季度复盘先给结论再给证据", &[tag]);
+            m.frontmatter.zone = "general".into();
+            m
+        };
+        assert_eq!(continuity_boost(&tagged("episode")), 1.4);
+        assert_eq!(continuity_boost(&tagged(" episode ")), 1.4);
+        assert_eq!(continuity_boost(&tagged("standard")), 1.15);
+        assert_eq!(continuity_boost(&tagged(" standard ")), 1.15);
     }
 
     #[test]

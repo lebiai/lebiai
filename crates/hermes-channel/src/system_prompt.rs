@@ -66,7 +66,7 @@ pub fn compose_system_prompt(
              ## Workspace\n\
              Your working directory is `{ws}`. File reads, writes, and commands \
              stay inside it unless the user names an explicit path. New deliverables \
-             the user did not path: write under `outputs/`.\n\n\
+             the user did not path: write under `outputs/<YYYY-MM-DD>/` (today).\n\n\
              ## How you Do work (any domain)\n\
              1. Understand the ask. If notes or the palace may apply, search first \
                 (`memory_search` / palace tools). Do not pretend you remember.\n\
@@ -134,6 +134,7 @@ mod tests {
     fn dialogue_is_not_a_coding_playbook() {
         let p = compose_system_prompt(None, Path::new("/tmp/ws"), PromptKind::Dialogue).unwrap();
         assert!(p.contains("work companion") || p.contains("搭子"));
+        assert!(p.contains("outputs/<YYYY-MM-DD>/"));
         assert!(!p.contains("Code Analysis Workflow"));
         assert!(!p.contains("how you Do engineering work"));
         assert!(p.contains("No probing"));

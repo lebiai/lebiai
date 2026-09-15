@@ -83,7 +83,9 @@ pub struct ServeCtx {
     pub model: String,
     pub provider_name: String,
     pub base_system: Option<String>,
-    pub palace_index: Option<String>,
+    /// Rendered topic-card index for the session prompt. `None` falls back to
+    /// the profile / plain active index.
+    pub topic_cards: Option<String>,
     pub compiled_profile: Option<String>,
     pub always_active_skills: Vec<LoadedSkill>,
     pub pinned_memories: Vec<LoadedMemory>,
@@ -108,7 +110,9 @@ impl ServeCtx {
         let always_active_refs: Vec<&LoadedSkill> = self.always_active_skills.iter().collect();
         let sources = ContextSources {
             base: self.base_system.as_deref(),
-            palace_index: self.palace_index.as_deref(),
+            persona: None,
+            roster: &[],
+            topic_cards: self.topic_cards.as_deref(),
             compiled_profile: self.compiled_profile.as_deref(),
             always_active_skills: &always_active_refs,
             pinned: &self.pinned_memories,

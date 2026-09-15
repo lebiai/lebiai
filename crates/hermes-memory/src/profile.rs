@@ -41,30 +41,11 @@ pub fn save_profile(content: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// `LEBI_DATA_DIR` is process-global, so tests that repoint it must be
-    /// serialized (Rust runs test fns in parallel by default).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    /// Point the data root at a throwaway dir via `LEBI_DATA_DIR` so the test
-    /// exercises the real `save_profile` / `load_profile` / `profile_path`.
-    fn with_data_dir(f: impl FnOnce()) {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let key = "LEBI_DATA_DIR";
-        let prev = std::env::var(key).ok();
-        std::env::set_var(key, dir.path());
-        f();
-        match prev {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
-        }
-    }
+    use crate::test_env::with_data_dir;
 
     #[test]
     fn round_trip_via_save_and_load() {
-        with_data_dir(|| {
+        with_data_dir(|_| {
             let content = "## User\n- architect\n";
             let written = save_profile(content).unwrap();
             assert_eq!(written, profile_path().unwrap());
@@ -75,14 +56,14 @@ mod tests {
 
     #[test]
     fn load_missing_returns_none() {
-        with_data_dir(|| {
+        with_data_dir(|_| {
             assert_eq!(load_profile().unwrap(), None);
         });
     }
 
     #[test]
     fn save_is_atomic_no_tmp_leftover() {
-        with_data_dir(|| {
+        with_data_dir(|_| {
             save_profile("v1").unwrap();
             let tmp = profile_path().unwrap().with_file_name(".profile.md.tmp");
             assert!(!tmp.exists());

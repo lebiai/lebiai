@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { Loader2 } from "lucide-react";
 import { useLicenseStore, formatExpiresAt } from "../../store/licenseStore";
+import { useChatStore } from "../../store/chatStore";
 import { useUiStore } from "../../store/uiStore";
 import { Button, ui } from "../common/ui";
 import { toast } from "../../utils/toast";
@@ -10,7 +12,6 @@ const ERR_KEYS: Record<string, string> = {
   license_wrong_product: "license.err.wrongProduct",
   license_expired: "license.err.expired",
   license_older: "license.err.older",
-  license_same: "license.err.same",
 };
 
 function errMessage(code: string, t: (k: never) => string): string {
@@ -26,7 +27,8 @@ export function LicenseForm({
   autoFocus,
 }: {
   compact?: boolean;
-  onSuccess?: () => void;
+  /** 落码成功：参数是这张码开通的工位名字（空数组 = 这张码没点名任何工位）。 */
+  onSuccess?: (openedWorkstations: string[]) => void;
   autoFocus?: boolean;
 }) {
   const t = useUiStore((s) => s.t);
@@ -45,14 +47,19 @@ export function LicenseForm({
     setBusy(true);
     setError(null);
     try {
-      const st = await applyToken(raw);
+      const { status, enabledPersonas } = await applyToken(raw);
       setToken("");
+      // 名字必须在工位列表刷新**之后**取——否则拿到的是上一份名单。
+      const roster = useChatStore.getState().personas;
+      const names = enabledPersonas.map(
+        (id) => roster.find((p) => p.id === id)?.name ?? id,
+      );
       toast.success(
         t("license.successUntil", {
-          date: formatExpiresAt(st.expiresAt, language),
+          date: formatExpiresAt(status.expiresAt, language),
         }),
       );
-      onSuccess?.();
+      onSuccess?.(names);
     } catch (e) {
       setError(errMessage(String(e), t as never));
     } finally {
@@ -73,12 +80,20 @@ export function LicenseForm({
         className={`${ui.input} resize-y font-mono text-xs`}
         spellCheck={false}
         autoComplete="off"
+        disabled={busy}
         // eslint-disable-next-line jsx-a11y/no-autofocus
         autoFocus={autoFocus}
       />
       {error && <p className="text-sm text-red-600 dark:text-red-300">{error}</p>}
       <Button size="sm" onClick={() => void submit()} disabled={busy}>
-        {busy ? t("license.applying") : t("license.apply")}
+        {busy ? (
+          <>
+            <Loader2 size={13} className="animate-spin" />
+            {t("license.applying")}
+          </>
+        ) : (
+          t("license.apply")
+        )}
       </Button>
     </div>
   );

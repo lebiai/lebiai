@@ -75,11 +75,7 @@ pub async fn create_memory(
     Json(b): Json<CreateMemoryBody>,
 ) -> Result<Json<MemoryItem>, ApiError> {
     let s = parse_scope(&b.scope);
-    let zone = b
-        .zone
-        .map(|z| z.trim().to_string())
-        .filter(|z| !z.is_empty())
-        .unwrap_or_else(|| "general".to_string());
+    let zone = hermes_reflect::candidate::zone_or_general(b.zone.as_deref());
     let mut fm = MemoryFrontmatter::new(Source::User, Confidence::High, b.tags, zone);
     fm.pinned = b.pinned;
     state

@@ -1,13 +1,13 @@
 ---
 name: memory-palace
-description: Protocol for navigating lasting notes — one living rule per kind of work
+description: Protocol for navigating lasting notes — organised by subject, not by slot
 always_active: true
-version: 0.2.0
+version: 0.3.0
 ---
 
 # Memory Palace Protocol
 
-Lasting notes are **living rules**: one active rule per kind of work. They are notes that can be wrong. Do not invent a past you were not given.
+Lasting notes are **living notes**: several complementary sides of one subject can live together. Only a note that truly replaces another supersedes it. They are notes that can be wrong. Do not invent a past you were not given.
 
 ## Zones (only these four)
 
@@ -20,7 +20,7 @@ Old names you may still see on disk: `core` → preferences, `episode` → work,
 
 ## Navigation
 
-1. Check the palace index if it is in the system prompt
+1. If topic cards (主题卡) are in the system prompt, they say **which subjects** you have notes on — open the notes themselves before quoting a rule; the wording of the note is what binds
 2. `palace_read_zone` with one of the four names
 3. `palace_recall` / `memory_search` by topic
 4. Do not guess — load the zone before asserting a preference or standard

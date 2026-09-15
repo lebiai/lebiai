@@ -1,151 +1,89 @@
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { Brain, ListChecks, PenLine, Search } from "lucide-react";
+/**
+ * 空会话的首页：**只有一句问候**。
+ *
+ * 产品决定（2026-09-15）：首页原先那套（场景卡、大标题、标语、底部提示语）
+ * 已经不适用，全部撤掉。首页是一句问候，不是一张菜单——要干什么，用户说出来
+ * 就行，不用我们先摆四个选项替他决定。
+ *
+ * **美感只能从这一句话来**（见 `index.css` 的 `.greet-*`）：
+ * 逐字浮入（模糊→实）、前后两段层次、破折号收小当分隔。
+ * 这里**不套 `AmbientStage`**、不加任何背板 —— 那层光晕是给「有内容的 hero」
+ * 当底的，只剩一行字时它会读成一块空色块。也不加卡片 / 插画 / 标志去撑场面。
+ *
+ * 问候语按时间给（早/午/晚/深夜）；引导流程还没走完时不显示（那时首页被
+ * 引导覆盖，没有「空白」的问题）。
+ */
+import type { CSSProperties } from "react";
 import { useUiStore } from "../../store/uiStore";
-import type { TranslationKey } from "../../i18n";
 import { returnGreetingKey } from "../../utils/greeting";
-import { AmbientStage } from "../motion/AmbientStage";
-import { MotionCard } from "../motion/MotionCard";
-import { RitualMark } from "../ritual/RitualMark";
 
-interface ScenarioDef {
-  tag: string;
-  icon: typeof PenLine;
-  titleKey: TranslationKey;
-  descKey: TranslationKey;
-  promptKey: TranslationKey;
+/** 中英两种破折号：把问候语切成「问候 / 分隔 / 动作」三段。 */
+const SPLIT = /^(.*?)(——|—)(.*)$/;
+
+function Chars({
+  text,
+  start,
+  className = "greet-ch",
+}: {
+  text: string;
+  start: number;
+  className?: string;
+}) {
+  return (
+    <>
+      {Array.from(text).map((ch, i) => (
+        <span
+          key={`${start + i}-${ch}`}
+          className={className}
+          style={{ "--greet-i": start + i } as CSSProperties}
+        >
+          {ch === " " ? "\u00A0" : ch}
+        </span>
+      ))}
+    </>
+  );
 }
 
-const SCENARIOS: ScenarioDef[] = [
-  {
-    tag: "write",
-    icon: PenLine,
-    titleKey: "welcome.sceneWrite.title",
-    descKey: "welcome.sceneWrite.desc",
-    promptKey: "welcome.sceneWrite.prompt",
-  },
-  {
-    tag: "think",
-    icon: Brain,
-    titleKey: "welcome.sceneThink.title",
-    descKey: "welcome.sceneThink.desc",
-    promptKey: "welcome.sceneThink.prompt",
-  },
-  {
-    tag: "research",
-    icon: Search,
-    titleKey: "welcome.sceneResearch.title",
-    descKey: "welcome.sceneResearch.desc",
-    promptKey: "welcome.sceneResearch.prompt",
-  },
-  {
-    tag: "track",
-    icon: ListChecks,
-    titleKey: "welcome.sceneTrack.title",
-    descKey: "welcome.sceneTrack.desc",
-    promptKey: "welcome.sceneTrack.prompt",
-  },
-];
-
-/**
- * Empty-session home: work-scenario cards ordered by the user's onboarding
- * seed (selected scenarios first). Single source: `onboarding_seed_get`
- * reads the same pinned memory the engine loads — no UI copy.
- */
-export function WelcomeScenes({
-  onPick,
-  disabled,
-}: {
-  onPick: (prompt: string) => void;
-  disabled?: boolean;
-}) {
+export function WelcomeScenes() {
   const t = useUiStore((s) => s.t);
-  const returnKey = returnGreetingKey();
-  // Name comes from the global store (synced by onboarding/settings writes);
-  // scenarios are still fetched so the seed stays the single source.
-  const displayName = useUiStore((s) => s.displayName);
-  const [seedScenarios, setSeedScenarios] = useState<string[] | null>(null);
+  const greetingKey = returnGreetingKey();
+  if (!greetingKey) return null;
 
-  useEffect(() => {
-    let alive = true;
-    invoke<{ displayName: string; scenarios: string[] } | null>("onboarding_seed_get")
-      .then((seed) => {
-        if (!alive) return;
-        setSeedScenarios(seed?.scenarios ?? []);
-      })
-      .catch(() => {
-        if (alive) setSeedScenarios([]);
-      });
-    return () => {
-      alive = false;
-    };
-    // Refetch when the name changes (e.g. right after onboarding finishes) so
-    // the scenario order catches up with the just-written seed.
-  }, [displayName]);
-
-  const scenarios =
-    seedScenarios === null
-      ? SCENARIOS
-      : [...SCENARIOS].sort((a, b) => {
-          const ai = seedScenarios.includes(a.tag) ? 0 : 1;
-          const bi = seedScenarios.includes(b.tag) ? 0 : 1;
-          return ai - bi;
-        });
+  const text = t(greetingKey);
+  const parts = text.match(SPLIT);
+  const head = parts ? parts[1].trimEnd() : text;
+  const sep = parts ? parts[2] : "";
+  const tail = parts ? parts[3].trimStart() : "";
+  const charCount = head.length + sep.length + tail.length;
 
   return (
-    <AmbientStage
-      rich
-      className="flex flex-col items-center justify-center px-4 py-12 sm:py-14 min-h-[46vh]"
-    >
-      <div className="max-w-2xl w-full fade-up-in">
-        <div className="flex justify-center mb-5">
-          <RitualMark size="md" tone="primary" className="ritual-mark-ring-primary" />
-        </div>
-
-        {returnKey && (
-          <p className="text-center text-[12px] font-medium text-app-primary dark:text-blue-300/90 tracking-wide mb-2">
-            {t(returnKey)}
-          </p>
-        )}
-
-        <h1 className="text-xl sm:text-[1.65rem] font-semibold text-app-fg dark:text-white text-center tracking-tight leading-snug">
-          {displayName
-            ? t("welcome.titleWithName", { name: displayName })
-            : t("welcome.title")}
-        </h1>
-        <p className="text-sm text-app-fg-secondary dark:text-slate-400 text-center mt-2.5 mb-8 leading-relaxed max-w-lg mx-auto">
-          {t("welcome.subtitle")}
+    <div className="flex items-center justify-center px-4 min-h-[66vh]">
+      <div
+        className="greet-block"
+        style={{ "--greet-chars": charCount } as CSSProperties}
+      >
+        <p className="greet-line">
+          {/* 逐字拆开后屏幕阅读器会一个字一个字念，所以给它整句、把字标成装饰。 */}
+          <span className="sr-only">{text}</span>
+          <span aria-hidden="true">
+            <Chars text={head} start={0} />
+            {sep && (
+              <span
+                className="greet-ch greet-sep"
+                style={{ "--greet-i": head.length } as CSSProperties}
+              >
+                {sep}
+              </span>
+            )}
+            <Chars
+              text={tail}
+              start={head.length + sep.length}
+              className="greet-ch greet-tail"
+            />
+          </span>
         </p>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 stagger-in">
-          {scenarios.map(({ icon: Icon, titleKey, descKey, promptKey }) => (
-            <MotionCard
-              key={titleKey}
-              disabled={disabled}
-              onClick={() => onPick(t(promptKey))}
-              className="p-4 dark:bg-slate-900/90 border-app-border/90 dark:border-slate-700/90"
-            >
-              <div className="flex items-start gap-3">
-                <div className="p-2 rounded-xl bg-app-primary-soft dark:bg-blue-950/50 text-app-primary dark:text-blue-300 shrink-0">
-                  <Icon size={17} strokeWidth={1.75} />
-                </div>
-                <div className="min-w-0 pt-0.5">
-                  <div className="text-sm font-medium text-app-fg dark:text-slate-100 mb-1">
-                    {t(titleKey)}
-                  </div>
-                  <div className="text-xs text-app-fg-secondary dark:text-slate-400 leading-relaxed">
-                    {t(descKey)}
-                  </div>
-                </div>
-              </div>
-            </MotionCard>
-          ))}
-        </div>
-
-        <p className="text-center text-[11px] text-app-fg-tertiary dark:text-slate-500 mt-7 leading-relaxed">
-          {t("welcome.hint")}
-        </p>
+        <span className="greet-rule" aria-hidden="true" />
       </div>
-    </AmbientStage>
+    </div>
   );
 }

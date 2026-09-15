@@ -11,8 +11,9 @@
 use hermes_core::Message;
 use hermes_memory::{Confidence, MemoryStore};
 use hermes_reflect::{
-    enqueue_from_reflection, run_micro_after_turn, update_cooldown_after, InboxSource,
-    MicroApplyConfig, MicroApplyResult, MicroRunOutcome, MicroRunRequest, ReflectionOutput,
+    enqueue_from_reflection_marked, run_micro_after_turn, update_cooldown_after, EnqueueMark,
+    InboxSource, MicroApplyConfig, MicroApplyResult, MicroRunOutcome, MicroRunRequest,
+    ReflectionOutput,
 };
 use hermes_skills::LoadedSkill;
 use serde::Serialize;
@@ -162,6 +163,8 @@ pub fn spawn_after_turn(
     turn_messages: Vec<Message>,
     session_key: String,
     session_id_for_log: String,
+    // 会话的人物 id（`SessionMeta.persona`）。归属由它决定，这里不传算好的 owner。
+    session_persona: Option<String>,
     auto_accept: bool,
     min_confidence: Confidence,
     live_llm: Arc<LiveLlmGate>,
@@ -177,13 +180,16 @@ pub fn spawn_after_turn(
             *map.get(&session_key).unwrap_or(&0)
         };
 
+        // 本会话的工位：自动落盘用它，待审候选入队时也要记下它（批准时才有依据）。
+        let session_owner = hermes_core::persona::memory_owner_for(session_persona.as_deref());
         let apply = MicroApplyConfig::new(
             session_id_for_log.clone(),
             auto_accept,
             min_confidence,
             false, // filled inside run_micro_after_turn from messages
         )
-        .inbox_only();
+        .inbox_only()
+        .with_memory_owner(session_owner.clone());
 
         let outcome = run_micro_after_turn(MicroRunRequest {
             provider: provider.as_ref(),
@@ -234,10 +240,16 @@ pub fn spawn_after_turn(
 
         // Persist pending candidates into the pending-review inbox (Micro
         // source) so nothing is lost across restarts — the event below is
-        // only an in-session notification.
+        // only an in-session notification. 标记只带工位、不带 `session_id`：
+        // 带上它会触发「替换本会话旧条目」，而 micro 一批通常只有 1 条候选，
+        // 结果是用户还没审就被下一批吞掉（见 `EnqueueMark::append_only`）。
         if applied.has_pending() {
             let pending = applied.pending_as_output();
-            match enqueue_from_reflection(&pending, InboxSource::Micro) {
+            match enqueue_from_reflection_marked(
+                &pending,
+                InboxSource::Micro,
+                EnqueueMark::append_only(session_owner),
+            ) {
                 Ok(added) => {
                     if added > 0 {
                         tracing::info!(added, "micro pending enqueued to inbox");

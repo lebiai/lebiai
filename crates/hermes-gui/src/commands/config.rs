@@ -307,6 +307,27 @@ fn ensure_table<'a>(parent: &'a mut Table, key: &str) -> &'a mut Table {
     parent[key].as_table_mut().expect("ensured table")
 }
 
+/// "Always allow" has to outlive the process: write the rule into
+/// `[permissions].allow` and hot-swap the in-memory config so the very next
+/// turn honours it.
+///
+/// `hermes-turn` still refuses to let *any* allow rule skip an absolute-risk
+/// call (`is_absolute_risk`: `rm -rf`, `sudo`, `skill_install`, MCP tools), so
+/// remembering a tool name never turns it into an open door.
+pub fn remember_allow_rule(state: &AppState, rule: &str) -> Result<(), GuiError> {
+    let path = Config::default_path().map_err(|e| GuiError::Config(e.to_string()))?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| GuiError::Config(format!("reading {}: {e}", path.display())))?;
+    let updated = hermes_llm::config::add_allow_rule(&raw, rule)
+        .map_err(|e| GuiError::Config(format!("parsing config.toml: {e}")))?;
+    if updated != raw {
+        write_atomically_600(&path, updated.as_bytes())?;
+    }
+    let fresh = Config::load_default().map_err(|e| GuiError::Config(e.to_string()))?;
+    *state.config.write().unwrap() = fresh;
+    Ok(())
+}
+
 fn write_atomically_600(path: &PathBuf, bytes: &[u8]) -> Result<(), GuiError> {
     let dir = path.parent().ok_or_else(|| {
         GuiError::Config(format!("config path has no parent: {}", path.display()))

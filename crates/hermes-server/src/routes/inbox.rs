@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use axum::extract::{Query, State};
 use axum::Json;
-use hermes_memory::{MemoryFrontmatter, MemoryStore, Scope, Source};
 use hermes_reflect::{
     log_append, ActionTaken, CandidateKind, InboxItem, InboxPayload, InboxSource, ReflectLogEntry,
 };
@@ -122,27 +121,17 @@ pub async fn accept_pending(
         .ok_or_else(|| ApiError::NotFound(format!("pending item {}", body.id)))?;
     log_inbox_action(&item, ActionTaken::Accept);
 
-    match item.payload {
+    match &item.payload {
         InboxPayload::Memory(c) => {
-            let mut fm = MemoryFrontmatter::new(Source::Reflection, c.confidence, c.tags, c.zone);
-            fm.supersedes = c.supersedes;
-            state
-                .memory_store
-                .put(c.scope, fm.clone(), &c.fact)
-                .or_else(|e| {
-                    if matches!(c.scope, Scope::Project) {
-                        state.memory_store.put(Scope::User, fm, &c.fact)
-                    } else {
-                        Err(e)
-                    }
-                })
+            // 归属的判定与落盘都在 `hermes-reflect` 里，GUI / server / CLI 同一份实现。
+            hermes_reflect::inbox_accept_memory_item(state.memory_store.as_ref(), &item, c)
                 .map_err(|e| ApiError::Internal(e.to_string()))?;
         }
         InboxPayload::Skill(c) => {
             let fm = SkillFrontmatter {
-                name: c.name,
-                description: c.description,
-                triggers: c.triggers,
+                name: c.name.clone(),
+                description: c.description.clone(),
+                triggers: c.triggers.clone(),
                 version: None,
                 license: None,
                 always_active: false,

@@ -22,8 +22,9 @@ pub fn spec() -> ToolSpec {
             For large content (>150 lines), write a skeleton first, then use `edit` \
             to fill in sections incrementally.\n\
             **Generated artifacts (product default):** When the user asks you to *generate* \
-            a new deliverable and does **not** name a path, write under `outputs/` \
-            (e.g. `outputs/meeting-notes.md`). \
+            a new deliverable and does **not** name a path, write under \
+            `outputs/<YYYY-MM-DD>/` with **today's** date \
+            (e.g. `outputs/2026-09-13/meeting-notes.md`). \
             If the user asks for Desktop / Documents / Downloads (or gives `~/Desktop/...`), \
             write there — those home export folders are allowed. \
             Paths ending in .docx/.xlsx/.doc/.xls are packaged as real Office files \
@@ -35,7 +36,7 @@ pub fn spec() -> ToolSpec {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Workspace-relative path, or absolute/~/ path under Desktop/Documents/Downloads (e.g. ~/Desktop/report.docx). Prefer outputs/<name> for new deliverables when user does not specify a location."
+                    "description": "Workspace-relative path, or absolute/~/ path under Desktop/Documents/Downloads (e.g. ~/Desktop/report.docx). Prefer outputs/<YYYY-MM-DD>/<name> (today's date) for new deliverables when user does not specify a location."
                 },
                 "content": {"type": "string", "description": "Content to write"}
             },
@@ -75,6 +76,16 @@ pub async fn run(workspace: &Path, args: serde_json::Value) -> Result<ToolCallOu
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn spec_teaches_the_dated_outputs_default() {
+        let s = spec();
+        assert!(s.description.contains("outputs/<YYYY-MM-DD>/"));
+        let path_desc = s.input_schema["properties"]["path"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(path_desc.contains("outputs/<YYYY-MM-DD>/"));
+    }
 
     #[tokio::test]
     async fn writes_text_under_outputs() {

@@ -5,12 +5,10 @@
 //! Prefer **no** episode over a hollow one.
 
 use hermes_core::companion::{tags, zones};
-use hermes_memory::{Confidence, Scope};
 
 use crate::output::{MemoryCandidate, ReflectionOutput};
 
 const EPISODE_MARKER: &str = "【工作情节】";
-const MIN_SUMMARY_CHARS: usize = 16;
 const MIN_EPISODE_BODY_CHARS: usize = 36;
 
 /// Care delivery nudge markers. `[lebi-AI Care]` is the current brand;
@@ -24,10 +22,12 @@ pub fn is_work_episode(c: &MemoryCandidate) -> bool {
     if zones::is_work(&zone) {
         return true;
     }
-    if c.tags.iter().any(|t| {
-        let t = t.to_lowercase();
-        t == tags::WORK_EPISODE || t == "episode" || t.contains("work-episode")
-    }) {
+    // 精确词读唯一词表；`contains` 是对「work-episode-<后缀>」这类复合标签的
+    // 宽松兜底（今天的既有语义，保持不变）。
+    if c.tags
+        .iter()
+        .any(|t| tags::is_episode_tag(t) || t.to_lowercase().contains(tags::WORK_EPISODE))
+    {
         return true;
     }
     c.fact.contains(EPISODE_MARKER)
@@ -80,13 +80,8 @@ pub fn episode_is_self_contained(fact: &str) -> bool {
 /// Fix zone/tags so accepted memories land in the right palace zone.
 pub fn normalize_candidate(c: &mut MemoryCandidate) {
     let fact = c.fact.as_str();
-    let tags_lower: Vec<String> = c.tags.iter().map(|t| t.to_lowercase()).collect();
 
-    if fact.contains(EPISODE_MARKER)
-        || tags_lower
-            .iter()
-            .any(|t| t == tags::WORK_EPISODE || t == "episode")
-    {
+    if fact.contains(EPISODE_MARKER) || c.tags.iter().any(|t| tags::is_episode_tag(t)) {
         if c.zone.trim().is_empty() || c.zone == "general" {
             c.zone = zones::WORK.to_string();
         }
@@ -94,10 +89,7 @@ pub fn normalize_candidate(c: &mut MemoryCandidate) {
         return;
     }
 
-    if tags_lower
-        .iter()
-        .any(|t| t == tags::STANDARD || t == "standard")
-    {
+    if c.tags.iter().any(|t| tags::is_standard_tag(t)) {
         if c.zone.trim().is_empty() || c.zone == "general" {
             c.zone = zones::STANDARDS.to_string();
         }
@@ -105,10 +97,7 @@ pub fn normalize_candidate(c: &mut MemoryCandidate) {
         return;
     }
 
-    if tags_lower
-        .iter()
-        .any(|t| t == tags::PREFERENCE || t == "preference" || t == "prefers")
-    {
+    if c.tags.iter().any(|t| tags::is_preference_tag(t)) {
         if c.zone.trim().is_empty() || c.zone == "general" {
             c.zone = zones::PREFERENCES.to_string();
         }
@@ -134,31 +123,6 @@ fn has_quality_work_episode(out: &ReflectionOutput) -> bool {
         .any(|c| is_work_episode(c) && episode_is_self_contained(&c.fact))
 }
 
-fn summary_worth_episode(summary: &str) -> bool {
-    let s = summary.trim();
-    if s.chars().count() < MIN_SUMMARY_CHARS {
-        return false;
-    }
-    if is_internal_noise_text(s) {
-        return false;
-    }
-    let lower = s.to_lowercase();
-    const SKIP: &[&str] = &[
-        "hello",
-        "hi ",
-        "greeting",
-        "no work",
-        "nothing",
-        "闲聊",
-        "打招呼",
-        "无实质",
-        "empty",
-        "chatted",
-        "small talk",
-    ];
-    !SKIP.iter().any(|k| lower.contains(k))
-}
-
 /// Build a **self-contained** episode body from a real summary (no session pointers).
 /// Disabled for low-signal summaries — seeding hollow episodes flooded the inbox.
 pub fn seed_episode_from_summary(summary: &str) -> Option<MemoryCandidate> {
@@ -166,42 +130,6 @@ pub fn seed_episode_from_summary(summary: &str) -> Option<MemoryCandidate> {
     // Prefer LLM-produced candidates that pass quality gates, or explicit preferences.
     let _ = summary;
     None
-}
-
-#[allow(dead_code)]
-fn seed_episode_from_summary_legacy(summary: &str) -> Option<MemoryCandidate> {
-    if !summary_worth_episode(summary) {
-        return None;
-    }
-    let summary = summary.trim();
-    let one_line: String = summary
-        .lines()
-        .next()
-        .unwrap_or(summary)
-        .chars()
-        .take(100)
-        .collect();
-    // Entire summary is stored so deleting the session does not gut the memory.
-    let fact = format!(
-        "{EPISODE_MARKER}{one_line}\n\
-         - 情境：{summary}\n\
-         - 做法：{summary}\n\
-         - 产出：写入记忆时以本条为准（不依赖原会话文件）\n\
-         - 用户反馈/修正：无\n\
-         - 可复用点：{one_line}"
-    );
-    if !episode_is_self_contained(&fact) {
-        return None;
-    }
-    Some(MemoryCandidate {
-        fact,
-        tags: vec![tags::WORK_EPISODE.to_string()],
-        zone: zones::WORK.to_string(),
-        scope: Scope::User,
-        confidence: Confidence::Medium,
-        rationale: "C-SESS: self-contained work episode from reflection summary — usable after session delete".into(),
-        supersedes: vec![],
-    })
 }
 
 /// Run after every full/quick reflection parse.
@@ -259,6 +187,7 @@ pub fn finalize_reflection_output_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hermes_memory::{Confidence, Scope};
 
     #[test]
     fn normalize_episode_marker_sets_zone_and_tag() {
@@ -270,11 +199,74 @@ mod tests {
             confidence: Confidence::High,
             rationale: "t".into(),
             supersedes: vec![],
+            owner: None,
         };
         normalize_candidate(&mut c);
         assert_eq!(c.zone, zones::WORK);
         assert!(c.tags.iter().any(|t| t == tags::WORK_EPISODE));
         assert!(is_work_episode(&c));
+    }
+
+    /// 工单验证点（Task 1.11）：`" episode "` 这类带空格的 tag 从「匹配不上」变成
+    /// 「匹配得上」——本地 `"episode"` 字面量删掉、改读 `companion::tags::is_episode_tag`
+    /// （唯一词表，带 trim）带来的归一化方向修正。
+    #[test]
+    fn a_padded_episode_tag_fixes_the_zone() {
+        let mut c = MemoryCandidate {
+            fact: "带空格 tag 的候选记忆，够长到能过门槛的一条。".into(),
+            tags: vec![" episode ".into()],
+            zone: "general".into(),
+            scope: Scope::User,
+            confidence: Confidence::High,
+            rationale: "t".into(),
+            supersedes: vec![],
+            owner: None,
+        };
+        normalize_candidate(&mut c);
+        assert_eq!(c.zone, zones::WORK, "` episode ` 必须把 zone 归到 work");
+        assert!(c.tags.iter().any(|t| t == tags::WORK_EPISODE));
+        assert!(is_work_episode(&c));
+    }
+
+    /// 词表住在 `companion::tags`，这里只证明「读的是同一份」：只打 tag、zone 缺省时
+    /// 归类仍然正确（含它带的 trim）。
+    #[test]
+    fn a_user_level_tag_alone_fixes_the_zone() {
+        for (tag, expected) in [
+            ("preference", zones::PREFERENCES),
+            ("Preference", zones::PREFERENCES),
+            ("prefers", zones::PREFERENCES),
+            (" preference ", zones::PREFERENCES),
+            ("standard", zones::STANDARDS),
+            ("STANDARD", zones::STANDARDS),
+        ] {
+            let mut c = MemoryCandidate {
+                fact: "只打 tag 不填 zone 的一条候选记忆，够长到能过门槛。".into(),
+                tags: vec![tag.into()],
+                zone: "general".into(),
+                scope: Scope::User,
+                confidence: Confidence::High,
+                rationale: "t".into(),
+                supersedes: vec![],
+                owner: None,
+            };
+            normalize_candidate(&mut c);
+            assert_eq!(c.zone, expected, "tag {tag:?} 必须把 zone 归到 {expected}");
+        }
+
+        // 无关 tag 不动 zone
+        let mut c = MemoryCandidate {
+            fact: "无关 tag 的候选记忆，同样够长到能过门槛。".into(),
+            tags: vec!["news".into()],
+            zone: "general".into(),
+            scope: Scope::User,
+            confidence: Confidence::High,
+            rationale: "t".into(),
+            supersedes: vec![],
+            owner: None,
+        };
+        normalize_candidate(&mut c);
+        assert_eq!(c.zone, zones::GENERAL);
     }
 
     #[test]
@@ -310,6 +302,7 @@ mod tests {
             confidence: Confidence::Medium,
             rationale: "bad".into(),
             supersedes: vec![],
+            owner: None,
         };
         let out = ReflectionOutput {
             summary: "hi".into(),
@@ -335,6 +328,7 @@ mod tests {
                 tags: vec!["preference".into()],
                 zone: "general".into(),
                 supersedes: vec![],
+                owner: None,
                 extra: Default::default(),
             },
             body: "用户偏好写文档时使用短句、先结论后细节的写作结构。".into(),
@@ -349,6 +343,7 @@ mod tests {
             confidence: Confidence::High,
             rationale: "修订同一格".into(),
             supersedes: vec![],
+            owner: None,
         };
         let out = ReflectionOutput {
             summary: "revised writing standard".into(),
@@ -373,6 +368,7 @@ mod tests {
             confidence: Confidence::High,
             rationale: "x".into(),
             supersedes: vec![],
+            owner: None,
         };
         assert!(episode_is_self_contained(&existing.fact));
         let out = ReflectionOutput {

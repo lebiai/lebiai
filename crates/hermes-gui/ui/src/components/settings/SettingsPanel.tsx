@@ -14,6 +14,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { useUiStore, refreshProviderLabel } from "../../store/uiStore";
+import { useChatStore } from "../../store/chatStore";
 import type { Language, TranslationKey } from "../../i18n";
 import type { ThemeMode } from "../../utils/theme";
 import { Button, ui } from "../common/ui";
@@ -141,6 +142,7 @@ export function SettingsPanel() {
     workspace: false,
     ritual: false,
     dev: true,
+    persona: false,
   });
   const [devTools, setDevTools] = useState(false);
   const [devHasBackup, setDevHasBackup] = useState(false);
@@ -879,6 +881,14 @@ export function SettingsPanel() {
             </Accordion>
 
             <Accordion
+              title={t("settings.sectionPersona")}
+              open={moreOpen.persona}
+              onToggle={() => setMoreOpen((m) => ({ ...m, persona: !m.persona }))}
+            >
+              <PersonaSection />
+            </Accordion>
+
+            <Accordion
               title={t("settings.sectionData")}
               open={moreOpen.data}
               onToggle={() => setMoreOpen((m) => ({ ...m, data: !m.data }))}
@@ -1098,6 +1108,70 @@ function QuickLink({ label, onClick }: { label: string; onClick: () => void }) {
   );
 }
 
+/**
+ * 人物多选：勾哪个，工位列表里就出现哪个。
+ * 只有**有资格的**角色上榜（自带，或授权码点名）；系统自带的三个永远在，
+ * 复选框禁用并标注「自带」。
+ */
+function PersonaSection() {
+  const personas = useChatStore((s) => s.personas);
+  const fetchPersonas = useChatStore((s) => s.fetchPersonas);
+  const setPersonas = useChatStore((s) => s.setPersonas);
+  const license = useLicenseStore((s) => s.status);
+  const t = useUiStore((s) => s.t);
+
+  const licensedIds = license?.personas ?? [];
+  const unknownCount = license?.unknownPersonas.length ?? 0;
+  const eligible = personas.filter((p) => p.builtin || licensedIds.includes(p.id));
+
+  useEffect(() => {
+    if (useChatStore.getState().personas.length === 0) void fetchPersonas();
+  }, [fetchPersonas]);
+
+  const toggle = (id: string, on: boolean) => {
+    const ids = personas.filter((p) => p.enabled).map((p) => p.id);
+    void setPersonas(on ? [...ids, id] : ids.filter((x) => x !== id));
+  };
+
+  return (
+    <div className="space-y-1.5 p-1">
+      {unknownCount > 0 && (
+        <p className="px-1 text-xs text-app-fg-tertiary">
+          {t("persona.unknown", { n: unknownCount })}
+        </p>
+      )}
+      <p className="text-xs text-app-fg-tertiary px-1 pb-0.5">
+        {t("persona.settingsHint")}
+      </p>
+      {eligible.map((p) => (
+        <label
+          key={p.id}
+          className="flex items-start gap-2 px-2 py-1.5 rounded-lg text-sm text-app-fg dark:text-slate-200 cursor-pointer hover:bg-app-muted/40 dark:hover:bg-slate-800/40"
+        >
+          <input
+            type="checkbox"
+            className="mt-0.5 rounded border-app-border"
+            checked={p.enabled}
+            disabled={p.builtin}
+            onChange={(e) => toggle(p.id, e.target.checked)}
+          />
+          <span className="min-w-0">
+            <span className="font-medium">{p.name}</span>
+            {p.builtin && (
+              <span className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded bg-app-muted dark:bg-slate-800 text-app-fg-tertiary">
+                {t("persona.builtinBadge")}
+              </span>
+            )}
+            <span className="block text-xs text-app-fg-tertiary mt-0.5">
+              {p.role}
+            </span>
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function Accordion({
   title,
   open,
@@ -1258,5 +1332,3 @@ function ReadOnlyField({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-
-

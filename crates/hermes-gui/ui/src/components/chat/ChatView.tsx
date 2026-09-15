@@ -69,9 +69,10 @@ export function ChatView() {
     clearReflection,
     regenerateLast,
     editAndResend,
+    personas,
+    personaId,
   } = useChatStore();
   const t = useUiStore((s) => s.t);
-  const setComposerPrefill = useUiStore((s) => s.setComposerPrefill);
   const drawerOpen = useWorkDrawerStore((s) => s.open);
   const toggleDrawer = useWorkDrawerStore((s) => s.toggle);
   const closeDrawer = useWorkDrawerStore((s) => s.close);
@@ -95,12 +96,25 @@ export function ChatView() {
   const readOnly =
     activeReadOnly || !!sessions.find((s) => s.id === activeSessionId)?.readOnly;
 
-  const sessionTitle = useMemo(() => {
-    if (!activeSessionId) return t("chat.header");
+  /**
+   * 头部只回答一件事：**你现在在跟谁干活**。
+   * 会话标题不上头部——用户不建会话、不挑标题，一个工位就是一段连续的对话，
+   * 把某个历史标题钉在顶上只会和「换了话题」打架。
+   */
+  const station = useMemo(
+    () => personas.find((p) => p.id === personaId) ?? null,
+    [personas, personaId]
+  );
+
+  /**
+   * 兜底：**没有工位**的会话（persona 落地之前的老会话、别的渠道进来的会话）
+   * 退回「这是哪一段」。没有正经标题时给产品名，**不回「新对话」**——
+   * 那三个字按用户要求已经从首页撤掉了。
+   */
+  const orphanTopic = useMemo(() => {
     const s = sessions.find((x) => x.id === activeSessionId);
-    if (!s) return t("chat.defaultTitle");
-    return isDefaultTitle(s.title) ? t("chat.defaultTitle") : s.title;
-  }, [activeSessionId, sessions, t]);
+    return s && !isDefaultTitle(s.title) ? s.title : null;
+  }, [activeSessionId, sessions]);
 
   const displayMessages = useMemo(
     () =>
@@ -177,10 +191,6 @@ export function ChatView() {
     useVirtual,
   ]);
 
-  const handlePickPrompt = (prompt: string) => {
-    setComposerPrefill(prompt);
-  };
-
   const lastAssistantIdx = useMemo(() => {
     for (let i = displayMessages.length - 1; i >= 0; i--) {
       if (displayMessages[i].role === "assistant") return i;
@@ -210,16 +220,6 @@ export function ChatView() {
     return () => window.removeEventListener("keydown", onKey);
   }, [drawerOpen, closeDrawer, pendingConfirm]);
 
-  if (!activeSessionId) {
-    return (
-      <div className={`flex flex-col h-full ${ui.page}`}>
-        <div className="flex-1 flex items-center justify-center">
-          <p className="text-sm text-app-fg-tertiary">{t("chat.opening")}</p>
-        </div>
-      </div>
-    );
-  }
-
   const renderMessage = (msg: (typeof displayMessages)[0], i: number) => {
     const key = messageKeys[i] ?? messageKey(msg, i);
     const enter = !!enteringKeys[key];
@@ -242,17 +242,17 @@ export function ChatView() {
     );
   };
 
-  return (
-    <div className={`flex h-full min-w-0 ${ui.page}`}>
-      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+  const headerNode = (
       <header className={ui.header}>
         <div className="min-w-0 flex-1 flex items-baseline gap-2">
           <h1 className="text-sm font-semibold text-app-fg dark:text-slate-100 truncate min-w-0">
-            {sessionTitle}
+            {station ? station.name : (orphanTopic ?? t("chat.header"))}
           </h1>
-          <span className="shrink-0 text-[11px] text-app-fg-tertiary dark:text-slate-500 whitespace-nowrap">
-            {t("chat.headerSubShort")}
-          </span>
+          {station && (
+            <span className="shrink-0 text-[11px] text-app-fg-tertiary dark:text-slate-500 whitespace-nowrap">
+              {station.role}
+            </span>
+          )}
         </div>
         <button
           type="button"
@@ -281,6 +281,27 @@ export function ChatView() {
           )}
         </button>
       </header>
+  );
+
+  if (!activeSessionId) {
+    return (
+      <div className={`flex h-full min-w-0 ${ui.page}`}>
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
+          {headerNode}
+          <div className="flex-1 overflow-y-auto px-4 py-4">
+            <div className="max-w-3xl mx-auto">
+              <WelcomeScenes />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`flex h-full min-w-0 ${ui.page}`}>
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+      {headerNode}
 
       <ZaibanCue />
 
@@ -292,7 +313,7 @@ export function ChatView() {
       >
         <div className="max-w-3xl mx-auto">
           {showWelcome ? (
-            <WelcomeScenes onPick={handlePickPrompt} disabled={isStreaming} />
+            <WelcomeScenes />
           ) : useVirtual ? (
             <div
               className="relative w-full"

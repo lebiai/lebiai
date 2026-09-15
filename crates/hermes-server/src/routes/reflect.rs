@@ -168,12 +168,20 @@ pub async fn accept_memory_candidate(
 ) -> Result<Json<()>, ApiError> {
     let s = parse_scope(&b.scope);
     let conf = parse_confidence(&b.confidence);
-    let zone = b
-        .zone
-        .map(|z| z.trim().to_string())
-        .filter(|z| !z.is_empty())
-        .unwrap_or_else(|| "general".to_string());
-    let mut fm = MemoryFrontmatter::new(Source::Reflection, conf, b.tags, zone);
+    let zone = hermes_reflect::candidate::zone_or_general(b.zone.as_deref());
+    // 这个入口（HTTP / IPC）的入参里既没有来源会话、也没有候选自己写的 owner
+    // ——`MemoryCandidateView` 就没把 `owner` 带给界面，界面也不回传。所以
+    // `None, None` 是今天**唯一诚实的值**，判定结果就是落全局。归属判定仍然只走
+    // `resolve_owner` 一处，将来真要透传：给视图与请求体各加一个可选字段、
+    // 让界面回传，然后只改这里传参（登记为残留，不在 1.8b 内做）。
+    let owner = hermes_memory::resolve_owner(
+        None,
+        None,
+        &zone,
+        &b.tags,
+        hermes_memory::OwnerDefault::Global,
+    );
+    let mut fm = MemoryFrontmatter::new(Source::Reflection, conf, b.tags, zone).owned(owner);
     fm.supersedes = b.supersedes;
     let label = b.fact.lines().next().unwrap_or("").to_string();
     put_memory_with_fallback(&state.memory_store, s, fm, &b.fact)?;
@@ -208,11 +216,16 @@ pub async fn handle_conflict(
 ) -> Result<Json<()>, ApiError> {
     let s = parse_scope(&b.scope);
     let conf = parse_confidence(&b.confidence);
-    let zone = b
-        .zone
-        .map(|z| z.trim().to_string())
-        .filter(|z| !z.is_empty())
-        .unwrap_or_else(|| "general".to_string());
+    let zone = hermes_reflect::candidate::zone_or_general(b.zone.as_deref());
+    // 与 `accept_memory_candidate` 同理：入参既没有来源会话也没有候选 owner，
+    // `None, None` 是唯一诚实的值 → 落全局（真透传要动视图与请求体，登记为残留）。
+    let owner = hermes_memory::resolve_owner(
+        None,
+        None,
+        &zone,
+        &b.tags,
+        hermes_memory::OwnerDefault::Global,
+    );
     let label = b.fact.lines().next().unwrap_or("").to_string();
     let log = |action: ActionTaken| {
         log_append(ReflectLogEntry {
@@ -230,7 +243,8 @@ pub async fn handle_conflict(
             if !sup.iter().any(|id| id == &b.old_id) {
                 sup.push(b.old_id);
             }
-            let mut fm = MemoryFrontmatter::new(Source::Reflection, conf, b.tags, zone);
+            let mut fm =
+                MemoryFrontmatter::new(Source::Reflection, conf, b.tags, zone).owned(owner);
             fm.supersedes = sup;
             put_memory_with_fallback(&state.memory_store, s, fm, &b.fact)?;
             log(ActionTaken::Accept);
@@ -245,7 +259,8 @@ pub async fn handle_conflict(
             if !sup.iter().any(|id| id == &b.old_id) {
                 sup.push(b.old_id);
             }
-            let mut fm = MemoryFrontmatter::new(Source::Reflection, conf, b.tags, zone);
+            let mut fm =
+                MemoryFrontmatter::new(Source::Reflection, conf, b.tags, zone).owned(owner);
             fm.supersedes = sup;
             put_memory_with_fallback(&state.memory_store, s, fm, &body)?;
             log(ActionTaken::Merge);
@@ -257,7 +272,8 @@ pub async fn handle_conflict(
             };
             let mut sup = b.supersedes;
             sup.retain(|id| id != &b.old_id);
-            let mut fm = MemoryFrontmatter::new(Source::Reflection, conf, b.tags, zone);
+            let mut fm =
+                MemoryFrontmatter::new(Source::Reflection, conf, b.tags, zone).owned(owner);
             fm.supersedes = sup;
             put_memory_with_fallback(&state.memory_store, opposite, fm, &b.fact)?;
             log(ActionTaken::ScopeSplit);
@@ -293,15 +309,7 @@ fn put_memory_with_fallback(
     fm: MemoryFrontmatter,
     body: &str,
 ) -> Result<(), ApiError> {
-    match store.put(scope, fm.clone(), body) {
-        Ok(_) => Ok(()),
-        Err(e) if matches!(scope, Scope::Project) => {
-            tracing::warn!(error=%e, "project scope unavailable, falling back to user");
-            store
-                .put(Scope::User, fm, body)
-                .map(|_| ())
-                .map_err(|e| ApiError::Internal(e.to_string()))
-        }
-        Err(e) => Err(ApiError::Internal(e.to_string())),
-    }
+    hermes_reflect::candidate::put_with_fallback(store, scope, fm, body)
+        .map(|_| ())
+        .map_err(|e| ApiError::Internal(e.to_string()))
 }

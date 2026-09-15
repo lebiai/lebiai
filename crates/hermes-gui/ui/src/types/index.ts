@@ -48,6 +48,17 @@ export interface SessionSummary {
   path: string;
   channel?: string | null;
   readOnly?: boolean;
+  /** 工位（人物）id；null 表示自由对话。 */
+  persona?: string | null;
+}
+
+/** A 工位 the user can talk to. `enabled` is computed by the engine. */
+export interface PersonaItem {
+  id: string;
+  name: string;
+  role: string;
+  builtin: boolean;
+  enabled: boolean;
 }
 
 export type ContentBlock =
@@ -81,6 +92,8 @@ export interface LoadedSessionData {
   outputTokens: number;
   channel?: string | null;
   readOnly?: boolean;
+  /** 工位（人物）id；null 表示自由对话。 */
+  persona?: string | null;
 }
 
 export interface SkillCandidateView {

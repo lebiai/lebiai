@@ -19,9 +19,10 @@ use anyhow::{anyhow, Context, Result};
 use hermes_channel::{ServeCtx, IM_TOOL_WHITELIST};
 use hermes_core::{ContentBlock, Role, Session, SessionEvent, SessionMeta, ToolSpec};
 use hermes_llm::Config;
-use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryEffectiveness, MemoryStore};
+use hermes_memory::{views_for, FsMemoryStore, LoadedMemory, MemoryEffectiveness, MemoryStore};
 use hermes_skills::{FsSkillStore, LoadedSkill, SkillEffectiveness, SkillStore};
 use hermes_store::SessionWriter;
+use hermes_tools::subagent::MemoryView;
 use hermes_tools::{ProposeContext, SubagentContext};
 use hermes_turn::{PermissionChecker, TurnConfig};
 
@@ -42,6 +43,7 @@ pub async fn run(
     system: Option<String>,
     model_override: Option<String>,
     resume_path: Option<std::path::PathBuf>,
+    persona: Option<&'static hermes_core::persona::Persona>,
 ) -> Result<()> {
     let cfg = super::util::load_config_or_hint()?;
     let provider_cfg = cfg.active_provider()?.clone();
@@ -67,18 +69,60 @@ pub async fn run(
         queue: propose_queue.clone(),
     });
 
+    // ---- session: resume or fresh（身份先定，早于任何装配与网络连接）----
+    // 这个会话是谁，只由 `session.meta.persona` 说了算：提示词的人物块、记忆归属、
+    // micro 打标三处都读它。续会话时它以**文件里**的值为准，命令行的 `--persona`
+    // 与文件不符就报错（见 `resumed_persona`）——静默换身份会让三处里外不一。
+    let (mut session, mut writer, session_path, resumed, persona) = match resume_path {
+        Some(path) => {
+            let s = hermes_store::read_session(&path)
+                .map_err(|e| anyhow::anyhow!("reading session {}: {e}", path.display()))?;
+            let resumed_id = resumed_persona(
+                &path,
+                s.meta.persona.as_deref(),
+                persona.map(|p| p.id.as_str()),
+            )?;
+            // 身份转换只走 `session_persona` 一处：它的返回类型里没有 `Err`，
+            // 「文件里的 id 本版本不认识」在类型上就写不出 bail（见该函数）。
+            let persona = session_persona(resumed_identity(resumed_id), &path);
+            let w = SessionWriter::open_append(&path).map_err(|e| {
+                anyhow::anyhow!("opening session {} for append: {e}", path.display())
+            })?;
+            (s, w, path, true, persona)
+        }
+        None => {
+            let model_for_meta = model_override
+                .clone()
+                .unwrap_or_else(|| provider_cfg.model.clone());
+            let meta = meta_for_new_session(&model_for_meta, provider.name(), persona);
+            let path = session_path_for(&meta)?;
+            let mut w = SessionWriter::create(&path)
+                .with_context(|| format!("creating session file at {}", path.display()))?;
+            w.append(&SessionEvent::Meta(meta.clone()))
+                .context("writing session meta line")?;
+            (Session::new(meta), w, path, false, persona)
+        }
+    };
+
+    // 会话 → 记忆归属：转换只走 `persona::memory_owner_for` 一处（自带角色 → 全局）。
+    let owner: Option<String> =
+        hermes_core::persona::memory_owner_for(session.meta.persona.as_deref());
+
     // Wire up `subagent`: lets the agent spawn fresh child contexts (used by
     // skill-creator's eval flow — each test prompt runs in a clean context so
     // the parent's reasoning doesn't leak into the grade).
-    let subagent_ctx = Arc::new(SubagentContext::new(
+    // **建在 `owner` 之后**：child 是同一个会话伸出去的一只手，读面与写面都 = 父的
+    // 那一件外套（`subagent_ctx_for` 恒给 `Scoped(owner)`）。
+    let subagent_ctx = Arc::new(subagent_ctx_for(
         provider.clone(),
         provider_cfg.model.clone(),
         provider_cfg.max_tokens,
         cfg.limits.max_tool_rounds,
-        hermes_turn::PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
+        PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
         workspace_root.clone(),
-        Some(memory_store_arc.clone()),
-        Some(skill_store_arc.clone() as Arc<dyn hermes_skills::SkillStore>),
+        memory_store_arc.clone(),
+        Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
+        owner.clone(),
     ));
 
     let host = load_tool_host(
@@ -90,6 +134,14 @@ pub async fn run(
         Some(build_web_ctx(&cfg, provider.clone())),
     )
     .await?;
+    // 工具面收窄：记忆工具只认这个会话的人物——读面只看「全局 + 本人物」，写面带上
+    // 归属。`store` 必须与建 host 时用的是同一个 `Arc`（见 `PersonaToolHost::new`）。
+    let host: Arc<dyn hermes_core::ToolHost> =
+        Arc::new(hermes_tools::persona_scope::PersonaToolHost::new(
+            host,
+            Some(memory_store_arc.clone()),
+            owner.clone(),
+        ));
     let tools = host
         .list_tools()
         .await
@@ -109,11 +161,8 @@ pub async fn run(
     let active_memories: Vec<LoadedMemory> = memory_store_arc
         .list_active()
         .map_err(|e| anyhow::anyhow!("listing memories: {e}"))?;
-    let pinned_memories: Vec<LoadedMemory> = active_memories
-        .iter()
-        .filter(|m| m.frontmatter.pinned)
-        .cloned()
-        .collect();
+    // 注入隔离（规格 §5.2）：人物会话只给「全局 + 本人物」，别人的一条都不给。
+    let (active_view, pinned_view) = views_for(&active_memories, owner.as_deref());
 
     // Load skill effectiveness data for deprioritizing low-use skills.
     let effectiveness: std::collections::HashMap<String, hermes_skills::SkillEffectiveness> =
@@ -131,43 +180,10 @@ pub async fn run(
         .filter(|s| s.frontmatter.always_active)
         .collect();
 
-    let palace_index: Option<String> = if active_memories.is_empty() {
+    let topic_cards: Option<String> = if active_memories.is_empty() {
         None
     } else {
-        match hermes_memory::load_palace_index() {
-            Ok(Some(idx)) => Some(idx),
-            _ => {
-                let idx = hermes_memory::build_palace_index_simple(&active_memories);
-                if let Err(e) = hermes_memory::save_palace_index(&idx) {
-                    tracing::warn!(error=%e, "save palace index");
-                }
-                Some(idx)
-            }
-        }
-    };
-
-    // ---- session: resume or fresh ----
-    let (mut session, mut writer, session_path, resumed) = match resume_path {
-        Some(path) => {
-            let s = hermes_store::read_session(&path)
-                .map_err(|e| anyhow::anyhow!("reading session {}: {e}", path.display()))?;
-            let w = SessionWriter::open_append(&path).map_err(|e| {
-                anyhow::anyhow!("opening session {} for append: {e}", path.display())
-            })?;
-            (s, w, path, true)
-        }
-        None => {
-            let model_for_meta = model_override
-                .clone()
-                .unwrap_or_else(|| provider_cfg.model.clone());
-            let meta = SessionMeta::new(&model_for_meta, provider.name());
-            let path = session_path_for(&meta)?;
-            let mut w = SessionWriter::create(&path)
-                .with_context(|| format!("creating session file at {}", path.display()))?;
-            w.append(&SessionEvent::Meta(meta.clone()))
-                .context("writing session meta line")?;
-            (Session::new(meta), w, path, false)
-        }
+        hermes_memory::topics::render_from_disk(&active_view, owner.as_deref())
     };
 
     let model = model_override.unwrap_or_else(|| session.meta.model.clone());
@@ -183,9 +199,15 @@ pub async fn run(
             "(new)".into()
         }
     );
+    if let Some(p) = persona {
+        eprintln!("persona:  {} · {} ({})", p.name, p.role, p.id);
+    }
     eprintln!("tools:    {} loaded", tools.len());
     {
-        let zones = hermes_memory::group_by_zone(&active_memories);
+        // 开场的这一行也是「他记得什么」的面：吃本会话可见的那一份，和
+        // `/memory` / `/palace` / 真正注入模型的**同一份切片**（`active_view`）。
+        // 用全量会让开了人物的会话报出别的人物才看得见的区与条数。
+        let zones = hermes_memory::group_by_zone(&active_view);
         let zone_info: String = zones
             .iter()
             .map(|(z, m)| format!("{}:{}", z, m.len()))
@@ -194,13 +216,13 @@ pub async fn run(
         if zone_info.is_empty() {
             eprintln!(
                 "memory:   {} active ({} pinned)",
-                active_memories.len(),
-                pinned_memories.len()
+                active_view.len(),
+                pinned_view.len()
             );
         } else {
             eprintln!(
                 "palace:   {} memories across {} zones [{}]",
-                active_memories.len(),
+                active_view.len(),
                 zones.len(),
                 zone_info
             );
@@ -211,12 +233,16 @@ pub async fn run(
     eprintln!();
 
     // Auto-compile profile on first session if memories exist but profile.md doesn't.
-    if !active_memories.is_empty() && hermes_memory::load_profile().unwrap_or(None).is_none() {
+    // `profile.md` 是**单个全局文件**、被每个视图无条件注入系统提示词，所以它只能装
+    // 全局可见的口径（`profile_input`）。空集合守卫也用同一份——否则「全是人物私有」
+    // 时会编出一个空 profile。
+    let profile_memories = hermes_reflect::profile_input(&active_memories);
+    if !profile_memories.is_empty() && hermes_memory::load_profile().unwrap_or(None).is_none() {
         eprintln!(
             "{}",
             style::dim("(compiling memory profile for the first time...)")
         );
-        match hermes_reflect::compile_profile(provider.as_ref(), &active_memories).await {
+        match hermes_reflect::compile_profile(provider.as_ref(), &profile_memories).await {
             Ok(profile) => match hermes_memory::save_profile(&profile) {
                 Ok(p) => eprintln!(
                     "{}",
@@ -269,9 +295,16 @@ pub async fn run(
                 &session_path,
                 &tools,
                 &all_skills,
+                persona,
+                // 记忆分两份喂：`active_memories` 是全量（只有 `/compile` 该吃，
+                // 编译前再取全局可见的一份给 `profile.md`）；`active_view` /
+                // `pinned_view` 是本会话可见的那一份——与真正注入模型的**同一份切片**，
+                // 显示面才不是假话。
                 &active_memories,
+                &active_view,
+                &pinned_view,
                 system.as_deref(),
-                palace_index.as_deref(),
+                topic_cards.as_deref(),
                 &always_active_refs,
                 &*memory_store_arc,
                 skill_store_arc.as_ref(),
@@ -285,16 +318,19 @@ pub async fn run(
             continue;
         }
 
-        // Build per-turn system prompt: base + palace/memories + skills index +
+        // Build per-turn system prompt: base + topic cards + skills index +
         // bodies of skills triggered by *this* user input.
         let compiled_profile = hermes_memory::load_profile().unwrap_or(None);
+        let roster = hermes_core::persona::open();
         let sources = ContextSources {
             base: system.as_deref(),
-            palace_index: palace_index.as_deref(),
+            persona,
+            roster: &roster,
+            topic_cards: topic_cards.as_deref(),
             compiled_profile: compiled_profile.as_deref(),
             always_active_skills: &always_active_refs,
-            pinned: &pinned_memories,
-            active: &active_memories,
+            pinned: &pinned_view,
+            active: &active_view,
             all_skills: &all_skills,
             effectiveness: Some(&effectiveness),
             memory_effectiveness: Some(&mem_effectiveness),
@@ -324,9 +360,9 @@ pub async fn run(
         // Skip when a compiled profile is active (no per-turn retrieval).
         let loaded_memory_ids: Vec<String> = if compiled_profile.is_none() {
             hermes_memory::search_memories_effective(
-                &active_memories,
+                &active_view,
                 trimmed,
-                3 + pinned_memories.len(),
+                3 + pinned_view.len(),
                 Some(&mem_effectiveness),
             )
             .into_iter()
@@ -498,13 +534,16 @@ pub async fn run(
                 .unwrap_or(hermes_memory::Confidence::Medium);
             let session_id = session.meta.id.clone();
             let turns_since = turns_since_last_reflect;
+            let memory_owner =
+                hermes_core::persona::memory_owner_for(session.meta.persona.as_deref());
             tokio::spawn(async move {
                 let apply = hermes_reflect::MicroApplyConfig::new(
                     session_id,
                     auto_accept,
                     min_confidence,
                     false,
-                );
+                )
+                .with_memory_owner(memory_owner);
                 let outcome =
                     hermes_reflect::run_micro_after_turn(hermes_reflect::MicroRunRequest {
                         provider: prov.as_ref(),
@@ -584,6 +623,131 @@ pub async fn run(
     Ok(())
 }
 
+/// 新会话的身份写在 `meta.persona` 上——它是这次会话唯一的身份来源，
+/// 提示词的人物块、记忆归属、micro 打标都读它。
+///
+/// 自带角色（李现 / 小文）也照样记 id：「记不记」与「归谁」是两件事——
+/// 归属由 `persona::memory_owner_for` 判（自带角色 → 全局）。
+fn meta_for_new_session(
+    model: &str,
+    provider: &str,
+    persona: Option<&hermes_core::persona::Persona>,
+) -> SessionMeta {
+    let mut meta = SessionMeta::new(model, provider);
+    meta.persona = persona.map(|p| p.id.clone());
+    meta
+}
+
+/// 一次会话的**注入切片**：给 `list_active()` 的全量加一层可见性，返回
+/// 这次会话派出去的 child 穿什么：**与父同一件** `PersonaToolHost`。
+/// `hermes chat` 的父**恒**被收窄（无人物时收窄成「只看全局」），所以这里恒给
+/// `Scoped(owner)`——**不是** `Unscoped`（那是父未被收窄的 `hermes agent` / IM）。
+/// 读面与写面必须同轴：child 只读得到本人物，它写下的话也必须归本人物，否则就是
+/// 「父私有、子广播」（Task 1.10f 的 B-1）。
+/// 抽成纯函数是为了让这条接线本身可测（B-2）：把它改回 `Unscoped` 必须变红——
+/// 以前它零覆盖，改坏了全量测试照样全绿。
+#[allow(clippy::too_many_arguments)]
+fn subagent_ctx_for(
+    provider: Arc<dyn hermes_core::LlmProvider>,
+    model: String,
+    max_tokens: u32,
+    max_tool_rounds: usize,
+    permissions: PermissionChecker,
+    workspace: std::path::PathBuf,
+    memory_store: Arc<dyn MemoryStore>,
+    skill_store: Option<Arc<dyn SkillStore>>,
+    owner: Option<String>,
+) -> SubagentContext {
+    SubagentContext::new(
+        provider,
+        model,
+        max_tokens,
+        max_tool_rounds,
+        permissions,
+        workspace,
+        Some(memory_store),
+        MemoryView::Scoped(owner),
+        skill_store,
+    )
+}
+
+/// 续会话时文件里那个人物 id 的解析结果（`resumed_persona` 之后的第二步）。
+/// 为什么单列一个类型而不是 `Option`：三种处境里有一种是**异常但必须放行**——
+/// 文件里的 id 本版本不认识（授权名单变了 / 人物下线了）。压成 `Option` 会让
+/// 「本来就没人物」和「不认识这个人物」在调用点长得一模一样，那条 warn 就容易被
+/// 顺手删掉，用户只会看到自己的会话静默换了归属。
+enum ResumedIdentity<'a> {
+    /// 文件里没有人物：无人物会话，照常开工（零影响）。
+    None,
+    /// 本版本认识：用它。
+    Persona(&'static hermes_core::persona::Persona),
+    /// 本版本不认识：**不阻断**，按无人物开工；归属落全局（见调用点）；会话文件里
+    /// 那个 id 原样不动（不改写用户文件）。`session_persona` 在这里留一条 warn 后放行。
+    Unknown(&'a str),
+}
+
+fn resumed_identity(id: Option<&str>) -> ResumedIdentity<'_> {
+    match id {
+        None => ResumedIdentity::None,
+        Some(id) => match hermes_core::persona::get(id) {
+            Some(p) => ResumedIdentity::Persona(p),
+            None => ResumedIdentity::Unknown(id),
+        },
+    }
+}
+
+/// 「这次会话算谁」：`ResumedIdentity` → 本次会话的人物。**返回类型里没有 `Err`**，
+/// 所以「文件里的 id 本版本不认识」在类型上就写不出 bail —— 放行是编译期事实，
+/// 不靠一句注释守着。
+///
+/// 为什么必须放行：bail 会把用户锁在自己的会话外用不了（授权名单变了 / 人物下线了）。
+/// 放行的代价写在这里——会话文件里那个 id **原样不动**（不改写用户文件）；归属也
+/// **不**随它走：`persona::memory_owner_for` 对不认识的 id 返回 `None`
+/// （persona.rs:113-118），这个会话的记忆归**全局**。唯一的交代是那条 warn：用户得
+/// 能查到自己的会话为什么"没了人物"。
+fn session_persona(
+    identity: ResumedIdentity<'_>,
+    session: &std::path::Path,
+) -> Option<&'static hermes_core::persona::Persona> {
+    match identity {
+        ResumedIdentity::None => None,
+        ResumedIdentity::Persona(p) => Some(p),
+        ResumedIdentity::Unknown(id) => {
+            tracing::warn!(
+                persona = %id,
+                session = %session.display(),
+                "会话文件里的人物 id 本版本不认识：不阻断，按无人物开工（归属落全局）"
+            );
+            None
+        }
+    }
+}
+
+/// 续会话时这次会话是谁：以**文件里**的 `meta.persona` 为准。
+///
+/// 命令行给的 id 与文件不符就算错——**包括**"文件里没有人物、命令行给了"。
+/// 静默改身份会让这次会话的两套归属打架：micro 打标读 `session.meta.persona`，
+/// 而工具写面读命令行那个人物，同一条记忆会被记到两个人头上。
+fn resumed_persona<'a>(
+    path: &std::path::Path,
+    file_persona: Option<&'a str>,
+    cli_id: Option<&str>,
+) -> Result<Option<&'a str>> {
+    match (file_persona, cli_id) {
+        (Some(file), Some(cli)) if file != cli => anyhow::bail!(
+            "会话 {} 属于人物 `{file}`，不接受 `--persona {cli}`。\n  \
+             → 想以 `{cli}` 开工，请开新会话（去掉 --resume）",
+            path.display()
+        ),
+        (None, Some(cli)) => anyhow::bail!(
+            "会话 {} 没有人物，不接受 `--persona {cli}`。\n  \
+             → 想以 `{cli}` 开工，请开新会话（去掉 --resume）",
+            path.display()
+        ),
+        (file, _) => Ok(file),
+    }
+}
+
 fn print_stats(session: &Session, stats: &SessionStats) {
     eprintln!("--- session stats ---");
     eprintln!("turns:     {}", stats.turn_count);
@@ -638,6 +802,9 @@ pub(crate) async fn build_channel_ctx() -> Result<Arc<ServeCtx>> {
         PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
         workspace_root.clone(),
         Some(memory_store_arc.clone()),
+        // IM 渠道还没接人物（阶段 5）：`Unscoped` = 父未被收窄，child 也不收窄，
+        // 行为与今天一致。
+        MemoryView::Unscoped,
         Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
     ));
 
@@ -681,13 +848,11 @@ pub(crate) async fn build_channel_ctx() -> Result<Arc<ServeCtx>> {
     let memory_effectiveness: HashMap<String, MemoryEffectiveness> =
         hermes_memory::load_effectiveness().unwrap_or_default();
 
-    let palace_index: Option<String> = if active_memories.is_empty() {
+    let topic_cards: Option<String> = if active_memories.is_empty() {
         None
     } else {
-        match hermes_memory::load_palace_index() {
-            Ok(Some(idx)) => Some(idx),
-            _ => Some(hermes_memory::build_palace_index_simple(&active_memories)),
-        }
+        // 工位：IM 渠道级固定人物归**阶段 5**（规格 §7）——今天这条路径恒无人物。
+        hermes_memory::topics::render_from_disk(&active_memories, None)
     };
     let compiled_profile: Option<String> = hermes_memory::load_profile().unwrap_or(None);
 
@@ -720,7 +885,7 @@ pub(crate) async fn build_channel_ctx() -> Result<Arc<ServeCtx>> {
         model,
         provider_name,
         base_system,
-        palace_index,
+        topic_cards,
         compiled_profile,
         always_active_skills,
         pinned_memories,
@@ -730,4 +895,265 @@ pub(crate) async fn build_channel_ctx() -> Result<Arc<ServeCtx>> {
         memory_effectiveness,
         limits: cfg.limits,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `subagent_ctx_for` 只做装配、不碰 provider；真被调到就是测试写错了
+    /// （与 `subagent.rs` 的测试夹具同一手法）。
+    struct NeverCalledProvider;
+
+    #[async_trait::async_trait]
+    impl hermes_core::LlmProvider for NeverCalledProvider {
+        async fn complete(
+            &self,
+            _req: hermes_core::CompletionRequest,
+        ) -> hermes_core::Result<hermes_core::CompletionResponse> {
+            Err(hermes_core::Error::Provider(
+                "test provider: complete() must never be called".into(),
+            ))
+        }
+
+        fn capabilities(&self) -> hermes_core::Capabilities {
+            hermes_core::Capabilities {
+                tool_use: true,
+                prompt_caching: false,
+                streaming: false,
+            }
+        }
+
+        fn name(&self) -> &str {
+            "never-called"
+        }
+    }
+
+    fn write_session_meta(path: &std::path::Path, persona: Option<&str>) {
+        let meta = meta_for_new_session("m", "p", persona.and_then(hermes_core::persona::get));
+        let mut w = SessionWriter::create(path).unwrap();
+        w.append(&SessionEvent::Meta(meta)).unwrap();
+    }
+
+    fn mem(owner: Option<&str>, body: &str, pinned: bool) -> LoadedMemory {
+        let mut fm = hermes_memory::MemoryFrontmatter::new(
+            hermes_memory::Source::User,
+            hermes_memory::Confidence::High,
+            vec![],
+            "general".into(),
+        )
+        .owned(owner.map(str::to_string));
+        fm.pinned = pinned;
+        LoadedMemory {
+            frontmatter: fm,
+            body: body.into(),
+            source_path: std::path::PathBuf::from("/nowhere"),
+            scope: hermes_memory::Scope::User,
+        }
+    }
+
+    /// 注入切片是用户可见价值的那条线（提示词 / `/memory` / `/palace` / 子代理都吃
+    /// 它）——没有断言的接线等于没接。
+    #[test]
+    fn views_for_keeps_globals_and_own_memories_only() {
+        let active = vec![
+            mem(None, "全局：交付一律给 Word 放桌面", true),
+            mem(Some("xiao-xie"), "自己的：林碳报告只引 IEA", false),
+            mem(Some("wang-hai-yan"), "别人的：标题不夸张", true),
+        ];
+
+        let (view, pinned) = views_for(&active, Some("xiao-xie"));
+        assert_eq!(
+            view.iter().map(|m| m.body.as_str()).collect::<Vec<_>>(),
+            vec!["全局：交付一律给 Word 放桌面", "自己的：林碳报告只引 IEA"],
+            "人物会话只拿「全局 + 本人物」"
+        );
+        assert!(
+            !view
+                .iter()
+                .any(|m| m.frontmatter.owner.as_deref() == Some("wang-hai-yan")),
+            "别的人物的那条一条都不许进来"
+        );
+        // pinned 是 view 的**子集**：别人的 pinned 不许借「置顶」溜进提示词。
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].frontmatter.owner, None);
+        assert!(pinned.iter().all(|p| {
+            p.frontmatter.pinned && view.iter().any(|m| m.frontmatter.id == p.frontmatter.id)
+        }));
+    }
+
+    #[test]
+    fn views_for_without_a_persona_is_the_globals_only() {
+        let active = vec![
+            mem(None, "全局：交付一律给 Word 放桌面", true),
+            mem(Some("xiao-xie"), "自己的：林碳报告只引 IEA", false),
+            mem(Some("wang-hai-yan"), "别人的：标题不夸张", true),
+        ];
+
+        let (view, pinned) = views_for(&active, None);
+        assert_eq!(view.len(), 1, "无人物 = 只看得到全局");
+        assert_eq!(view[0].frontmatter.owner, None);
+        assert_eq!(pinned.len(), 1);
+
+        // 全是全局时 = 全量（不是「一律只剩 pinned」也不是空手）
+        let globals = vec![
+            mem(None, "全局一", true),
+            mem(None, "全局二", false),
+            mem(None, "全局三", false),
+        ];
+        let (view, pinned) = views_for(&globals, None);
+        assert_eq!(view.len(), 3);
+        assert_eq!(pinned.len(), 1);
+    }
+
+    #[test]
+    fn a_new_session_records_the_persona_it_was_started_with() {
+        let meta = meta_for_new_session("m", "p", hermes_core::persona::get("xiao-xie"));
+        assert_eq!(meta.persona.as_deref(), Some("xiao-xie"));
+        assert_eq!(
+            meta_for_new_session("m", "p", None).persona,
+            None,
+            "没人物就别写出这个键"
+        );
+
+        // 自带角色照样记 id；「归全局」是归属判定的事，不是"不记"
+        let le = meta_for_new_session("m", "p", hermes_core::persona::get("li-xian"));
+        assert_eq!(le.persona.as_deref(), Some("li-xian"));
+        assert_eq!(
+            hermes_core::persona::memory_owner_for(le.persona.as_deref()),
+            None,
+            "自带角色会话产生的记忆算全局"
+        );
+    }
+
+    #[test]
+    fn resuming_keeps_the_identity_in_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        write_session_meta(&path, Some("xiao-xie"));
+        let s = hermes_store::read_session(&path).unwrap();
+
+        // 命令行没给 / 给的与文件一致 → 用文件里的那个人
+        assert_eq!(
+            resumed_persona(&path, s.meta.persona.as_deref(), None).unwrap(),
+            Some("xiao-xie")
+        );
+        assert_eq!(
+            resumed_persona(&path, s.meta.persona.as_deref(), Some("xiao-xie")).unwrap(),
+            Some("xiao-xie")
+        );
+    }
+
+    #[test]
+    fn resuming_never_switches_identity_silently() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        write_session_meta(&path, Some("xiao-xie"));
+        let s = hermes_store::read_session(&path).unwrap();
+
+        let err = resumed_persona(&path, s.meta.persona.as_deref(), Some("wang-hai-yan"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("xiao-xie") && err.contains("wang-hai-yan"),
+            "报错要说清是谁的会话、想换成谁：{err}"
+        );
+        assert!(err.contains("新会话"), "报错要给出出路：{err}");
+
+        // 旧会话（没有人物）也不许被"补"一个人物进去：那会让这段对话的记忆归属
+        // 从全局变成某个人物的私有。
+        let plain = dir.path().join("plain.jsonl");
+        write_session_meta(&plain, None);
+        let s = hermes_store::read_session(&plain).unwrap();
+        assert_eq!(s.meta.persona, None);
+        let err = resumed_persona(&plain, s.meta.persona.as_deref(), Some("xiao-xie"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("没有人物"), "{err}");
+    }
+
+    /// child 的视野与父**同一件外套**（Task 1.10f 的 B-2）：`hermes chat` 的父恒被
+    /// `PersonaToolHost` 收窄，所以 child 恒是 `Scoped(owner)`。这一行以前零覆盖——
+    /// 改成 `Unscoped`（= 把 1.10d 整条撤销）全量测试也全绿，这条就是钉子。
+    #[test]
+    fn subagent_ctx_follows_the_parent_persona() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn MemoryStore> =
+            Arc::new(FsMemoryStore::new(dir.path().to_path_buf(), None));
+
+        let xie = subagent_ctx_for(
+            Arc::new(NeverCalledProvider),
+            "m".into(),
+            1024,
+            4,
+            PermissionChecker::new(&[], &[]),
+            dir.path().to_path_buf(),
+            store.clone(),
+            None,
+            Some("xiao-xie".into()),
+        );
+        assert!(
+            matches!(&xie.memory_view, MemoryView::Scoped(Some(id)) if id == "xiao-xie"),
+            "人物会话的 child 必须继承本人物: {:?}",
+            xie.memory_view
+        );
+
+        // 无人物会话也必须**恒**收窄成「只看全局」：`Unscoped`（父没被收窄）是
+        // `hermes agent` / IM 才有的处境，`hermes chat` 不许出现。
+        let nobody = subagent_ctx_for(
+            Arc::new(NeverCalledProvider),
+            "m".into(),
+            1024,
+            4,
+            PermissionChecker::new(&[], &[]),
+            dir.path().to_path_buf(),
+            store,
+            None,
+            None,
+        );
+        assert!(
+            matches!(nobody.memory_view, MemoryView::Scoped(None)),
+            "无人物会话的 child 也必须收窄成只看全局（不许 Unscoped）: {:?}",
+            nobody.memory_view
+        );
+    }
+
+    /// 续会话时文件里的人物 id 本版本不认识：**不阻断**，按无人物开工——Task 1.10f
+    /// 的 B-5。bail 会把用户锁在自己的会话外用不了（授权名单变了 / 人物下线了）。
+    /// 这条钉的是**决定本身**（`Unknown` → `None`），不是「`Unknown` 变体存在」：
+    /// 老版本只调了纯分类函数，把调用点改成 bail 也全绿（Task 1.12 必修 A）。
+    #[test]
+    fn an_unknown_resumed_persona_id_does_not_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+
+        assert_eq!(
+            session_persona(resumed_identity(None), &path).map(|p| p.id.as_str()),
+            None,
+            "文件里没人物 → 无人物开工"
+        );
+        assert_eq!(
+            session_persona(resumed_identity(Some("xiao-xie")), &path).map(|p| p.id.as_str()),
+            Some("xiao-xie"),
+            "认识的 id → 用文件里那个人物"
+        );
+
+        // 不认识的 id：**不 panic、不报错**，按无人物开工（会话文件里那个 id 原样不动）。
+        assert_eq!(
+            session_persona(resumed_identity(Some("nobody-here")), &path).map(|p| p.id.as_str()),
+            None,
+            "不认识的 id 必须放行：整条链走一遍也不许阻断"
+        );
+        assert_eq!(
+            session_persona(ResumedIdentity::Unknown("nobody"), &path).map(|p| p.id.as_str()),
+            None,
+            "直接给它 Unknown 也放行"
+        );
+
+        // 分类仍要报出是哪个 id：那条 warn 靠它，静默当没人物会让用户查不出原因。
+        match resumed_identity(Some("nobody-here")) {
+            ResumedIdentity::Unknown(id) => assert_eq!(id, "nobody-here"),
+            _ => panic!("不认识的 id 必须走 Unknown，不许静默当没人物"),
+        }
+    }
 }

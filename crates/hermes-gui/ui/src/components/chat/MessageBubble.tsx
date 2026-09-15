@@ -9,7 +9,6 @@ import {
   Loader2,
   Pencil,
   RefreshCw,
-  XCircle,
 } from "lucide-react";
 import { useUiStore } from "../../store/uiStore";
 import type { DisplayMessage, MessageData } from "../../types";
@@ -300,10 +299,12 @@ function ProcessGroup({
   streaming: boolean;
 }) {
   const t = useUiStore((s) => s.t);
-  // Streaming: expanded so user sees progress; finished: collapsed by default.
-  const [expanded, setExpanded] = useState(streaming);
+  // Collapsed by default, streaming or not: the headline already carries the
+  // live state (verb + spinner, or a failure icon). Detail is on demand — a
+  // long task used to unfold every single tool call as it ran.
+  const [expanded, setExpanded] = useState(false);
   const running = streaming && tools.some((tc) => tc.result === undefined);
-  const anyError = tools.some((tc) => tc.isError);
+  const errorCount = tools.filter((tc) => tc.isError).length;
   const summary = processHeadline(
     tools.map((tc) => tc.name),
     thinking,
@@ -322,16 +323,19 @@ function ProcessGroup({
       >
         {running ? (
           <Loader2 size={13} className="animate-spin text-app-primary shrink-0 motion-safe-only" />
-        ) : anyError ? (
-          <XCircle size={13} className="text-app-danger shrink-0" />
         ) : streaming && thinking ? (
           <Brain size={13} className="text-app-accent shrink-0" />
-        ) : (
+        ) : errorCount > 0 ? null : (
           <CheckCircle2 size={13} className="text-app-success shrink-0" />
         )}
         <span className="font-medium text-app-fg-secondary dark:text-slate-300 truncate">
           {summary}
         </span>
+        {!running && errorCount > 0 && (
+          <span className="shrink-0 text-[11px] text-app-fg-tertiary">
+            {t("message.toolStepsFailed", { n: errorCount })}
+          </span>
+        )}
         <span
           className={`ml-auto text-app-fg-tertiary shrink-0 transition-transform duration-[var(--motion-fast)] ${
             expanded ? "rotate-0" : ""
@@ -388,9 +392,7 @@ function ToolRow({ tc, streaming }: { tc: ToolCallView; streaming: boolean }) {
       >
         {isRunning ? (
           <Loader2 size={12} className="animate-spin text-app-primary shrink-0 motion-safe-only" />
-        ) : tc.isError ? (
-          <XCircle size={12} className="text-app-danger shrink-0" />
-        ) : (
+        ) : tc.isError ? null : (
           <CheckCircle2 size={12} className="text-app-success shrink-0" />
         )}
         <span className="font-medium text-app-fg dark:text-slate-200 truncate">
@@ -399,7 +401,7 @@ function ToolRow({ tc, streaming }: { tc: ToolCallView; streaming: boolean }) {
         <span
           className={`text-[11px] transition-colors duration-[var(--motion-fast)] ${
             tc.isError
-              ? "text-red-500"
+              ? "text-app-fg-tertiary"
               : isRunning
                 ? "text-app-fg-tertiary"
                 : "text-emerald-600 dark:text-emerald-400"

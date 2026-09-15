@@ -63,7 +63,10 @@ pub trait MemoryStore: Send + Sync {
     /// records for audit / curation flows.
     fn list(&self) -> Result<Vec<LoadedMemory>>;
 
-    /// Memories not transitively superseded.
+    /// Memories not transitively superseded, minus the empty shells that must
+    /// never enter a prompt. A `pinned` memory is exempt from that second
+    /// filter: pinning is the user saying "this one stays", so a derived
+    /// filter must not silently overrule it.
     fn list_active(&self) -> Result<Vec<LoadedMemory>>;
 
     /// Active and `pinned == true`.
@@ -302,7 +305,7 @@ impl MemoryStore for FsMemoryStore {
         Ok(all
             .into_iter()
             .filter(|m| !superseded_owned.contains(m.id()))
-            .filter(|m| !crate::slot::is_worthless_for_living(&m.body))
+            .filter(|m| m.frontmatter.pinned || !crate::slot::is_worthless_for_living(&m.body))
             .collect())
     }
 

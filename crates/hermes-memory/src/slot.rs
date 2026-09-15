@@ -203,41 +203,20 @@ fn contains_any(hay: &str, needles: &[&str]) -> bool {
     needles.iter().any(|n| hay.contains(n))
 }
 
-/// Drop worthless bodies; for each inferred slot keep one (newest, then higher confidence).
+/// The rules that are still worth carrying into a prompt: worthless shells
+/// dropped, everything else kept.
+///
+/// This used to keep only **one memory per work slot**, which silently discarded
+/// six of twenty real memories (see `docs/records/20260914-memory-topic-cards.md`).
+/// Slots say "same kind of work", not "same fact": two entries in one slot are
+/// usually complementary sides of it, not duplicates. Real duplicates are the
+/// job of write-time dedup and `crate::distill`; the reflection prompt is told
+/// the difference instead of being protected by a delete.
 pub fn living_rules(memories: Vec<LoadedMemory>) -> Vec<LoadedMemory> {
-    let mut unslotted = Vec::new();
-    let mut by_slot: Vec<(WorkSlot, LoadedMemory)> = Vec::new();
-
-    for m in memories {
-        if is_worthless_for_living(&m.body) {
-            continue;
-        }
-        match infer_slot(&m.frontmatter.zone, &m.frontmatter.tags, &m.body) {
-            None => unslotted.push(m),
-            Some(slot) => {
-                if let Some(pos) = by_slot.iter().position(|(s, _)| *s == slot) {
-                    if should_replace(&by_slot[pos].1, &m) {
-                        by_slot[pos] = (slot, m);
-                    }
-                } else {
-                    by_slot.push((slot, m));
-                }
-            }
-        }
-    }
-
-    let mut out: Vec<LoadedMemory> = by_slot.into_iter().map(|(_, m)| m).collect();
-    out.extend(unslotted);
-    out
-}
-
-fn should_replace(old: &LoadedMemory, new: &LoadedMemory) -> bool {
-    use std::cmp::Ordering;
-    match new.frontmatter.confidence.cmp(&old.frontmatter.confidence) {
-        Ordering::Greater => true,
-        Ordering::Less => false,
-        Ordering::Equal => new.frontmatter.created >= old.frontmatter.created,
-    }
+    memories
+        .into_iter()
+        .filter(|m| !is_worthless_for_living(&m.body))
+        .collect()
 }
 
 /// Existing active memory ids that occupy the same slot as `body`.
@@ -277,6 +256,7 @@ mod tests {
                 tags: vec![],
                 zone: zone.into(),
                 supersedes: vec![],
+                owner: None,
                 extra: Default::default(),
             },
             body: body.into(),
@@ -323,22 +303,30 @@ mod tests {
     }
 
     #[test]
-    fn living_keeps_one_write_slot() {
+    fn living_keeps_complementary_memories_in_the_same_slot() {
+        // Both are write-deliverable. They are different facts, not duplicates,
+        // so both must survive — dropping one is exactly the bug this guards.
         let a = mem(
             "mem_old",
             "general",
             "用户偏好写文档时使用短句、先结论后细节的写作结构。",
             Confidence::Medium,
         );
-        let mut b = mem(
+        let b = mem(
             "mem_new",
             "work",
             "用户认可犀利观点风、点名更狠，写科技稿按此执行。",
             Confidence::High,
         );
-        b.frontmatter.created += chrono::Duration::seconds(10);
         let out = living_rules(vec![a, b]);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].id(), "mem_new");
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            infer_slot("general", &[], "用户偏好写文档时使用短句、先结论"),
+            infer_slot(
+                "work",
+                &[],
+                "用户认可犀利观点风、点名更狠，写科技稿按此执行。"
+            )
+        );
     }
 }

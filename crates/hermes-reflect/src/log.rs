@@ -5,14 +5,19 @@
 //! / keep_new / skip) and the timestamp. Aggregating across sessions tells
 //! us whether the reflection prompt itself is producing useful candidates
 //! — low acceptance is a signal to improve the prompt (meta-reflection).
+//!
+//! The file target is **always passed in** (`*_at`); the pathless wrappers
+//! exist only for application entry points that already resolved the root.
 
-use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+use crate::jsonl;
+
+const FILE: &str = "reflect-log.jsonl";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReflectLogEntry {
@@ -54,48 +59,32 @@ pub enum ActionTaken {
     Cancelled,
 }
 
-pub fn default_log_path() -> Result<PathBuf> {
-    Ok(hermes_core::data_path("reflect-log.jsonl"))
+/// `reflect-log.jsonl` inside an explicit data root.
+pub fn path_in(root: &Path) -> PathBuf {
+    root.join(FILE)
 }
 
-/// Append one entry. Best-effort — failures are logged but not propagated
-/// because a log write must never block the reflection UX.
-pub fn append(entry: ReflectLogEntry) {
-    if let Err(e) = try_append(entry) {
+/// Append one entry into `root`. Best-effort — failures are logged but not
+/// propagated because a log write must never block the reflection UX.
+pub fn append_at(root: &Path, entry: ReflectLogEntry) {
+    if let Err(e) = jsonl::append_line(&path_in(root), &entry) {
         tracing::warn!(error=%e, "failed to write reflect-log entry");
     }
 }
 
-fn try_append(entry: ReflectLogEntry) -> Result<()> {
-    let path = default_log_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let line = serde_json::to_string(&entry)?;
-    let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
-    writeln!(f, "{line}")?;
-    Ok(())
+/// Append into the process data root — application entry points only.
+pub fn append(entry: ReflectLogEntry) {
+    append_at(&hermes_core::data_root(), entry);
 }
 
-/// Read all entries (newest last). Missing file is not an error.
+/// Read all entries in `root` (newest last). Missing file is not an error.
+pub fn read_all_at(root: &Path) -> Result<Vec<ReflectLogEntry>> {
+    jsonl::read_lines(&path_in(root), "reflect-log")
+}
+
+/// Read all entries from the process data root — application entry points only.
 pub fn read_all() -> Result<Vec<ReflectLogEntry>> {
-    let path = default_log_path()?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let f = std::fs::File::open(&path)?;
-    let reader = BufReader::new(f);
-    let mut out = Vec::new();
-    for line in reader.lines().map_while(|r| r.ok()) {
-        if line.trim().is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<ReflectLogEntry>(&line) {
-            Ok(e) => out.push(e),
-            Err(e) => tracing::debug!(error=%e, "skipping bad reflect-log line"),
-        }
-    }
-    Ok(out)
+    read_all_at(&hermes_core::data_root())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -116,10 +105,10 @@ impl Stats {
     }
 }
 
-/// Aggregate stats across the most recent `last_n` entries (or all if
-/// `None`).
-pub fn stats(last_n: Option<usize>) -> Result<Stats> {
-    let mut all = read_all()?;
+/// Aggregate stats across the most recent `last_n` entries in `root` (or all
+/// if `None`).
+pub fn stats_at(root: &Path, last_n: Option<usize>) -> Result<Stats> {
+    let mut all = read_all_at(root)?;
     if let Some(n) = last_n {
         if all.len() > n {
             all.drain(..all.len() - n);
@@ -138,16 +127,36 @@ pub fn stats(last_n: Option<usize>) -> Result<Stats> {
     Ok(s)
 }
 
-/// Return the `n` most recent log entries (newest last).
-pub fn recent_outcomes(n: usize) -> Result<Vec<ReflectLogEntry>> {
-    let mut all = read_all()?;
+/// Aggregate stats from the process data root — application entry points only.
+pub fn stats(last_n: Option<usize>) -> Result<Stats> {
+    stats_at(&hermes_core::data_root(), last_n)
+}
+
+/// Return the `n` most recent entries in `root` (newest last).
+pub fn recent_outcomes_at(root: &Path, n: usize) -> Result<Vec<ReflectLogEntry>> {
+    let mut all = read_all_at(root)?;
     let start = all.len().saturating_sub(n);
     Ok(all.drain(start..).collect())
+}
+
+/// The `n` most recent entries from the process data root — entry points only.
+pub fn recent_outcomes(n: usize) -> Result<Vec<ReflectLogEntry>> {
+    recent_outcomes_at(&hermes_core::data_root(), n)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(label: &str) -> ReflectLogEntry {
+        ReflectLogEntry {
+            at: Utc::now(),
+            session_id: "sess".into(),
+            kind: CandidateKind::Memory,
+            action: ActionTaken::AutoAccept,
+            label: label.into(),
+        }
+    }
 
     #[test]
     fn acceptance_rate_calc() {
@@ -159,5 +168,57 @@ mod tests {
             other: 0,
         };
         assert!((s.acceptance_rate().unwrap() - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn append_read_and_stats_in_explicit_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        append_at(root, entry("first"));
+        append_at(root, entry("second"));
+        assert!(read_all_at(root).unwrap().len() == 2);
+        assert_eq!(stats_at(root, None).unwrap().accepted, 2);
+        assert_eq!(stats_at(root, Some(1)).unwrap().total, 1);
+        assert_eq!(recent_outcomes_at(root, 1).unwrap()[0].label, "second");
+
+        // An unrelated root stays untouched: the log target is not global.
+        let other = tempfile::tempdir().unwrap();
+        assert!(read_all_at(other.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn concurrent_appends_never_tear_a_line() {
+        const THREADS: usize = 16;
+        const PER_THREAD: usize = 8;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let start = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+
+        std::thread::scope(|scope| {
+            for t in 0..THREADS {
+                let root = root.clone();
+                let start = start.clone();
+                scope.spawn(move || {
+                    start.wait();
+                    for i in 0..PER_THREAD {
+                        append_at(&root, entry(&format!("concurrent entry {t}-{i}")));
+                    }
+                });
+            }
+        });
+
+        let raw = std::fs::read_to_string(path_in(&root)).unwrap();
+        assert_eq!(
+            raw.matches('\n').count(),
+            THREADS * PER_THREAD,
+            "each append must terminate exactly one line"
+        );
+        assert_eq!(
+            read_all_at(&root).unwrap().len(),
+            THREADS * PER_THREAD,
+            "every append must survive as its own parseable entry"
+        );
     }
 }

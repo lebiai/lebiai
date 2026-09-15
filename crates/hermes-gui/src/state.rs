@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
@@ -25,10 +25,6 @@ pub type Sessions = Arc<Mutex<HashMap<String, ActiveSession>>>;
 pub type CancelTokens = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>;
 pub type ConfirmTokens =
     Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<hermes_turn::ConfirmAction>>>>;
-/// Session-scoped allowlist populated when the user clicks "Always Allow" on
-/// a tool confirmation. Lives only for the lifetime of the GUI process; to
-/// persist allow rules, the user edits `config.toml` directly.
-pub type AlwaysAllowedTools = Arc<Mutex<HashSet<String>>>;
 pub type ProposeMessages = Arc<RwLock<Vec<hermes_core::Message>>>;
 pub type ProposeQueue = Arc<std::sync::Mutex<Vec<SkillCandidate>>>;
 
@@ -74,8 +70,9 @@ pub struct AppState {
     pub sessions: Sessions,
     pub cancel_tokens: CancelTokens,
     pub confirm_tokens: ConfirmTokens,
-    pub always_allowed_tools: AlwaysAllowedTools,
     pub tools: Mutex<Vec<ToolSpec>>,
+    /// Last known skill index — never read directly for a turn, call
+    /// [`Self::refresh_skills`] so skills created mid-run are visible.
     pub skills: Mutex<Vec<LoadedSkill>>,
     /// Shared so background micro-reflection can refresh context after auto-accept.
     pub pinned_memories: Arc<Mutex<Vec<LoadedMemory>>>,
@@ -300,7 +297,6 @@ impl AppState {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             cancel_tokens: Arc::new(Mutex::new(HashMap::new())),
             confirm_tokens: Arc::new(Mutex::new(HashMap::new())),
-            always_allowed_tools: Arc::new(Mutex::new(HashSet::new())),
             tools: Mutex::new(tools),
             skills: Mutex::new(skills),
             pinned_memories: Arc::new(Mutex::new(pinned)),
@@ -357,6 +353,19 @@ impl AppState {
             .into_owned()
     }
 
+    /// Current skill index, re-read from the store.
+    ///
+    /// Skills are created, edited and installed while the app runs, so a
+    /// startup snapshot would leave a new skill unusable until restart — the
+    /// same reason memories are re-read every turn. Falls back to the last
+    /// known index if listing fails.
+    pub async fn refresh_skills(&self) -> Vec<LoadedSkill> {
+        let cached = self.skills.lock().await.clone();
+        let fresh = hermes_skills::list_or_cached(self.skill_store.as_ref(), &cached);
+        *self.skills.lock().await = fresh.clone();
+        fresh
+    }
+
     /// Build the shared channel [`ServeCtx`] from this GUI's engine wiring,
     /// filtered to the IM whitelist — single source with the CLI's channel
     /// driver (`hermes_channel`).
@@ -374,7 +383,7 @@ impl AppState {
             .collect();
         let active_memories = self.active_memories.lock().await.clone();
         let pinned_memories = self.pinned_memories.lock().await.clone();
-        let all_skills = self.skills.lock().await.clone();
+        let all_skills = self.refresh_skills().await;
         let always_active_skills: Vec<LoadedSkill> = all_skills
             .iter()
             .filter(|s| s.frontmatter.always_active)
@@ -384,13 +393,10 @@ impl AppState {
             hermes_skills::load_effectiveness().unwrap_or_default();
         let memory_effectiveness: HashMap<String, MemoryEffectiveness> =
             hermes_memory::load_effectiveness().unwrap_or_default();
-        let palace_index: Option<String> = if active_memories.is_empty() {
+        let topic_cards: Option<String> = if active_memories.is_empty() {
             None
         } else {
-            match hermes_memory::load_palace_index() {
-                Ok(Some(idx)) => Some(idx),
-                _ => Some(hermes_memory::build_palace_index_simple(&active_memories)),
-            }
+            hermes_memory::topics::render_from_disk(&active_memories, None) // 无会话工位 → 全局那份卡
         };
         let compiled_profile: Option<String> = hermes_memory::load_profile().unwrap_or(None);
         let base_system = compose_system_prompt(None, &workspace_root, PromptKind::Im);
@@ -418,7 +424,7 @@ impl AppState {
             model: provider_cfg.model.clone(),
             provider_name,
             base_system,
-            palace_index,
+            topic_cards,
             compiled_profile,
             always_active_skills,
             pinned_memories,

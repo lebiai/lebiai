@@ -9,6 +9,7 @@ import type {
   MessageData,
   MicroReflectionEvent,
   PendingConfirm,
+  PersonaItem,
   ReflectionResult,
   SessionEndReflectionOutcome,
   SessionSummary,
@@ -72,6 +73,10 @@ interface ChatState {
   /** From load_session — not only the sidebar list (which is capped). */
   activeReadOnly: boolean;
   activeChannel: string | null;
+  /** 工位列表（含 enabled 计算）。 */
+  personas: PersonaItem[];
+  /** 当前会话/草稿所属工位；null = 没有工位（人物落地之前的老会话、别的渠道进来的会话）。 */
+  personaId: string | null;
   messages: MessageData[];
   streamingText: string;
   streamingThinking: string;
@@ -97,7 +102,10 @@ interface ChatState {
 
   fetchSessions: () => Promise<void>;
   clearSessionsError: () => void;
-  newSession: () => Promise<void>;
+  fetchPersonas: () => Promise<void>;
+  setPersonas: (ids: string[]) => Promise<void>;
+  setPersonaId: (id: string | null) => void;
+  newSession: (personaId?: string | null) => Promise<void>;
   loadSession: (path: string) => Promise<void>;
   deleteSession: (path: string) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
@@ -186,6 +194,11 @@ function bindStreamChannel(
         break;
       case "toolUseStart":
         set((s) => ({
+          // The segment just finished was process narration, not the answer:
+          // a tool call starts a new segment. This matches what survives the
+          // turn (`mergeAssistantContent` keeps only the last text segment), so
+          // the live view no longer shows a wall of text that later collapses.
+          streamingText: "",
           activeToolCalls: [
             ...s.activeToolCalls,
             { id: event.data.id, name: event.data.name },
@@ -342,21 +355,27 @@ function bindStreamChannel(
 
 async function doNewSession(
   set: (partial: Partial<ChatState> | ((s: ChatState) => Partial<ChatState>)) => void,
-  get: () => ChatState
+  get: () => ChatState,
+  personaId: string | null = null
 ) {
-  // Already on an empty draft — do not create another "session".
+  // Already on an empty draft for this same 工位 — do not create another session.
   const cur = get();
-  if (cur.activeSessionId && cur.messages.length === 0) {
+  if (
+    cur.activeSessionId &&
+    cur.messages.length === 0 &&
+    cur.personaId === personaId
+  ) {
     return;
   }
 
-  const session = await invoke<SessionSummary>("new_session");
+  const session = await invoke<SessionSummary>("new_session", { personaId });
   set((s) => ({
     // Draft is active but NOT listed in history until it has user content.
     sessions: s.sessions.filter((x) => x.id !== session.id),
     activeSessionId: session.id,
     activeReadOnly: false,
     activeChannel: null,
+    personaId: session.persona ?? personaId,
     messages: [],
     streamingText: "",
     streamingThinking: "",
@@ -380,6 +399,7 @@ async function doLoadSession(
     activeSessionId: data.id,
     activeReadOnly: !!data.readOnly,
     activeChannel: data.channel ?? null,
+    personaId: data.persona ?? null,
     messages: data.messages,
     inputTokens: data.inputTokens,
     outputTokens: data.outputTokens,
@@ -400,6 +420,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeSessionId: null,
   activeReadOnly: false,
   activeChannel: null,
+  personas: [],
+  personaId: null,
   messages: [],
   streamingText: "",
   streamingThinking: "",
@@ -428,6 +450,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearSessionsError: () => set({ sessionsError: null }),
+
+  fetchPersonas: async () => {
+    try {
+      const personas = await invoke<PersonaItem[]>("list_personas");
+      set({ personas });
+    } catch {
+      // 没有工位列表不影响对话；静默留空。
+      set({ personas: [] });
+    }
+  },
+
+  setPersonas: async (ids) => {
+    try {
+      const personas = await invoke<PersonaItem[]>("set_personas", { ids });
+      set({ personas });
+      const cur = get().personaId;
+      // 被取消勾选的工位若正开着，退回自由对话，不让用户卡在空工位上。
+      if (cur && !personas.some((p) => p.id === cur && p.enabled)) {
+        set({ personaId: null });
+      }
+      toast.success(useUiStore.getState().t("persona.saved"));
+    } catch (e) {
+      toast.error(String(e));
+    }
+  },
+
+  setPersonaId: (id) => set({ personaId: id }),
 
   runAfterSessionEnd: async (action) => {
     const { activeSessionId, isStreaming, messages } = get();
@@ -538,13 +587,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({ sessionEnd: null, reflectJobId: s.reflectJobId + 1 }));
   },
 
-  newSession: async () => {
-    // Empty draft: no leave/reflect — just stay.
-    if (get().activeSessionId && get().messages.length === 0) {
+  newSession: async (personaId) => {
+    const target = personaId === undefined ? null : personaId;
+    // Empty draft for the same 工位: no leave/reflect — just stay.
+    if (
+      get().activeSessionId &&
+      get().messages.length === 0 &&
+      get().personaId === target
+    ) {
       return;
     }
     await get().runAfterSessionEnd(async () => {
-      await doNewSession(set, get);
+      await doNewSession(set, get, target);
     });
   },
 
@@ -588,7 +642,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (isActive) {
       await get().runAfterSessionEnd(remove);
       if (!get().activeSessionId) {
-        await doNewSession(set, get);
+        await doNewSession(set, get, get().personaId ?? null);
       }
     } else {
       await remove();

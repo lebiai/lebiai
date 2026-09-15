@@ -130,8 +130,10 @@ pub fn data_path(component: impl AsRef<Path>) -> PathBuf {
 /// Relative directory under the agent **workspace** for all *user-requested
 /// generated artifacts* (reports, minutes, exports, drafts).
 ///
-/// Product rule (2026-08-03):
-/// - Default: put new generated files under `outputs/`
+/// Product rule:
+/// - Default: put new generated files under `outputs/<YYYY-MM-DD>/` — 今天
+///   (2026-09-13: the date subfolder is part of the default so deliverables are
+///   findable by day; files written flat under `outputs/` before that stay put)
 /// - Do **not** redirect edits of existing files into `outputs/`
 /// - If the user names an explicit path, obey the user
 pub const WORKSPACE_OUTPUTS_DIR: &str = "outputs";

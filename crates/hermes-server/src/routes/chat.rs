@@ -165,7 +165,7 @@ async fn handle_send(
     let model = state.model();
     let max_tokens = state.max_tokens();
     let tools = state.tools.lock().await.clone();
-    let skills = state.skills.lock().await.clone();
+    let skills = state.refresh_skills().await;
     // Refresh memory cache from disk each turn (parity with GUI).
     let (pinned, active) = {
         let all = match state.memory_store.list_active() {
@@ -187,9 +187,8 @@ async fn handle_send(
         (cfg.limits, cfg.default_provider.clone())
     };
 
-    let mut allow_rules: Vec<String> = state.config.read().unwrap().permissions.allow.clone();
+    let allow_rules: Vec<String> = state.config.read().unwrap().permissions.allow.clone();
     let deny_rules: Vec<String> = state.config.read().unwrap().permissions.deny.clone();
-    allow_rules.extend(state.always_allowed_tools.lock().await.iter().cloned());
     let permissions = hermes_turn::PermissionChecker::new(&allow_rules, &deny_rules);
 
     let (history, turn_system) = {
@@ -231,8 +230,16 @@ async fn handle_send(
             sessions.get_mut(&session_id).unwrap()
         };
 
+        // 卡面按工位分区（§5.5）：全局那份所有视图共用，这个会话的人物接自己那份；
+        // 无人物 / 自带角色 → `None`（只看全局那份）。
+        let cards_owner =
+            hermes_core::persona::memory_owner_for(active_session.session.meta.persona.as_deref());
+        let topic_cards = hermes_memory::topics::render_from_disk(&active, cards_owner.as_deref());
         let sources = ContextSources {
             base: None,
+            persona: None,
+            roster: &[],
+            topic_cards: topic_cards.as_deref(),
             pinned: &pinned,
             active: &active,
             all_skills: &skills,
@@ -440,12 +447,14 @@ async fn handle_send(
 
         let mut turn_messages: Vec<hermes_core::Message> = Vec::new();
         let mut session_id_for_log = sid.clone();
+        let mut session_persona_for_log: Option<String> = None;
 
         match result {
             Ok(output) => {
                 turn_messages = output.new_messages.clone();
                 if let Some(s) = sessions_arc.lock().await.get_mut(&sid) {
                     session_id_for_log = s.session.meta.id.clone();
+                    session_persona_for_log = s.session.meta.persona.clone();
                     for msg in &output.new_messages {
                         s.session.messages.push(msg.clone());
                         let to_disk = msg.for_persist(persist_thinking);
@@ -523,18 +532,21 @@ async fn handle_send(
             let cooldown = micro_cooldown;
             let session_key = sid.clone();
             let sess_log = session_id_for_log;
+            let memory_owner =
+                hermes_core::persona::memory_owner_for(session_persona_for_log.as_deref());
             tokio::spawn(async move {
                 let turns_since = {
                     let map = cooldown.lock().await;
                     *map.get(&session_key).unwrap_or(&0)
                 };
                 let apply = hermes_reflect::MicroApplyConfig::new(
-                    sess_log,
+                    sess_log.clone(),
                     auto_accept,
                     min_confidence,
                     false,
                 )
-                .inbox_only();
+                .inbox_only()
+                .with_memory_owner(memory_owner.clone());
                 let outcome =
                     hermes_reflect::run_micro_after_turn(hermes_reflect::MicroRunRequest {
                         provider: prov.as_ref(),
@@ -581,12 +593,15 @@ async fn handle_send(
                 // Persist pending candidates into the shared pending-review
                 // inbox (Micro source) so Flutter-originated evolution survives
                 // restarts and can be reviewed on the desktop GUI — mirrors
-                // `hermes-gui/src/commands/micro.rs`.
+                // `hermes-gui/src/commands/micro.rs`. 标记只带工位、不带
+                // `session_id`：带上它会触发「替换本会话旧条目」，micro 一批
+                // 通常只有 1 条候选，用户还没审就被下一批吞掉。
                 if applied.has_pending() {
                     let pending_for_inbox = applied.pending_as_output();
-                    match hermes_reflect::enqueue_from_reflection(
+                    match hermes_reflect::enqueue_from_reflection_marked(
                         &pending_for_inbox,
                         hermes_reflect::InboxSource::Micro,
+                        hermes_reflect::EnqueueMark::append_only(memory_owner),
                     ) {
                         Ok(added) => {
                             if added > 0 {
@@ -648,7 +663,9 @@ async fn handle_confirm(
         "allow" | "y" => ConfirmAction::Allow,
         "alwaysallow" | "always_allow" => {
             if let Some(name) = &tool_name {
-                state.always_allowed_tools.lock().await.insert(name.clone());
+                if let Err(e) = crate::routes::config::remember_allow_rule(&state, name) {
+                    eprintln!("could not persist allow rule for {name}: {e}");
+                }
             }
             ConfirmAction::AlwaysAllow
         }

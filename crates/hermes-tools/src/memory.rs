@@ -1,12 +1,57 @@
-//! Memory tools: search, save, delete, and distill episodic memories.
+//! Memory tools: search, save, delete, and distill episodic memories, plus the
+//! Memory Palace navigation that reads the same store (`palace_*`).
 
 use hermes_core::{Result, ToolCallOutcome, ToolSpec};
 use hermes_memory::{
     distill::{find_clusters, DEFAULT_THRESHOLD},
-    load_effectiveness, Confidence, MemoryFrontmatter, MemoryStore, MemoryStoreError, Scope,
-    Source, DEFAULT_DEDUP_THRESHOLD,
+    load_effectiveness, resolve_owner, Confidence, MemoryFrontmatter, MemoryStore,
+    MemoryStoreError, OwnerDefault, Scope, Source, DEFAULT_DEDUP_THRESHOLD,
 };
 use serde::Deserialize;
+
+/// 由 [`dispatch`] 路由的记忆工具名。`BuiltinToolHost` 与 `PersonaToolHost`
+/// 共用这一张表——记忆面只允许有一个路由表。
+///
+/// **palace 三件套也在这张表里**：它们读的就是同一份记忆，另开一张表 = 多一个
+/// 能绕过 `ScopedMemoryStore` 的读面。漏一个就是一个泄漏口
+/// （`docs/records/20260914-personas.md` Task 1.10b 的端到端证据）。
+pub fn handles(name: &str) -> bool {
+    matches!(
+        name,
+        "memory_search"
+            | "memory_save"
+            | "memory_delete"
+            | "memory_distill"
+            | "palace_zones"
+            | "palace_read_zone"
+            | "palace_recall"
+    )
+}
+
+/// 路由一次记忆工具调用。`None` = 不是记忆工具，调用方继续往下走。
+///
+/// `session_owner` 是当前会话的人物 id（无人物 / 自带角色 = `None`），
+/// 由调用方从 `Persona::memory_owner()` 得来；它是写入归属的唯一来源，
+/// 判定本身只发生在 [`resolve_owner`] 里。
+pub async fn dispatch(
+    store: &dyn MemoryStore,
+    name: &str,
+    args: serde_json::Value,
+    session_owner: Option<&str>,
+) -> Option<Result<ToolCallOutcome>> {
+    match name {
+        "memory_search" => Some(run(store, args).await),
+        "memory_save" => Some(save_run(store, args, session_owner).await),
+        "memory_delete" => Some(delete_run(store, args).await),
+        "memory_distill" => Some(distill_run(store, args).await),
+        // 读面，与 memory_search 同源：只想让它们看得见 `store` 允许看见的那些。
+        // 归属与可见性判定不在这里——`store` 已经是收窄过的那一层。
+        "palace_zones" => Some(crate::palace::zones_run(store).await),
+        "palace_read_zone" => Some(crate::palace::read_zone_run(store, args).await),
+        "palace_recall" => Some(crate::palace::recall_run(store, args).await),
+        _ => None,
+    }
+}
 
 // --- memory_search ---
 
@@ -122,7 +167,11 @@ pub fn save_spec() -> ToolSpec {
     }
 }
 
-pub async fn save_run(store: &dyn MemoryStore, args: serde_json::Value) -> Result<ToolCallOutcome> {
+pub async fn save_run(
+    store: &dyn MemoryStore,
+    args: serde_json::Value,
+    session_owner: Option<&str>,
+) -> Result<ToolCallOutcome> {
     let a: SaveArgs = serde_json::from_value(args)
         .map_err(|e| hermes_core::Error::ToolHost(format!("memory_save: bad args: {e}")))?;
 
@@ -141,6 +190,7 @@ pub async fn save_run(store: &dyn MemoryStore, args: serde_json::Value) -> Resul
         confidence: hermes_memory::Confidence::High,
         rationale: String::new(),
         supersedes: a.supersedes.clone(),
+        owner: None,
     };
     if !hermes_reflect::memory_passes_gate(&gate) {
         return Ok(ToolCallOutcome {
@@ -151,7 +201,18 @@ pub async fn save_run(store: &dyn MemoryStore, args: serde_json::Value) -> Resul
         });
     }
 
-    let mut fm = MemoryFrontmatter::new(Source::User, Confidence::High, a.tags, a.zone);
+    let fm = MemoryFrontmatter::new(Source::User, Confidence::High, a.tags, a.zone);
+    // 「在谁的会话里说的就归谁」（规格 §5.2）。判定只有 `resolve_owner` 一处；
+    // `memory_save` 的入参没有 owner 字段，模型不该自己填，所以 `asked_owner = None`
+    // ——永远走规则 4 的 `Session` 方向。zone 兜底（规则 2）把用户偏好挡回全局。
+    let owner = resolve_owner(
+        session_owner,
+        None,
+        &fm.zone,
+        &fm.tags,
+        OwnerDefault::Session,
+    );
+    let mut fm = fm.owned(owner);
     let id = fm.id.clone();
     // `MemoryFrontmatter::new` initialises `supersedes` to empty; honour the
     // caller's list if provided (the distill flow uses this to retire the
@@ -168,12 +229,25 @@ pub async fn save_run(store: &dyn MemoryStore, args: serde_json::Value) -> Resul
                 existing_id,
                 similarity,
             }) => {
+                // 查重看的是**全库**（`ScopedMemoryStore` 有意透传，见 scoped.rs）：
+                // 命中的那条可能是本视图看不见的别人的记忆。id 与相似度都是「它存在」
+                // 的探针，所以看不见时只回一句通用的拒绝，不留任何线索。
+                let visible = store
+                    .get(&existing_id)
+                    .map_err(|e| hermes_core::Error::ToolHost(format!("memory_save: {e}")))?
+                    .is_some();
                 return Ok(ToolCallOutcome {
-                    content: format!(
-                        "memory_save refused: too similar to existing memory {existing_id} \
-                         (similarity {similarity:.2}). Use memory_search to review it, or \
-                         call memory_save with supersedes=[\"{existing_id}\"] to replace it."
-                    ),
+                    content: if visible {
+                        format!(
+                            "memory_save refused: too similar to existing memory {existing_id} \
+                             (similarity {similarity:.2}). Use memory_search to review it, or \
+                             call memory_save with supersedes=[\"{existing_id}\"] to replace it."
+                        )
+                    } else {
+                        "memory_save refused: too similar to an existing memory. \
+                         Try rephrasing."
+                            .to_string()
+                    },
                     is_error: true,
                 });
             }
@@ -404,6 +478,50 @@ mod tests {
         (dir, store)
     }
 
+    /// `handles` 与 `dispatch` 的分派臂是同文件里的两张名单，会漂移：名字进了
+    /// `handles` 却没进 `dispatch` → 调用方拿到 `None`，最后报「unknown memory
+    /// tool」。这条测试把两张名单钉在一起。
+    #[tokio::test]
+    async fn the_handles_table_and_the_dispatch_arms_cannot_drift() {
+        // 循环里的 `memory_save` 会往这份 store 里放一条，palace 读随后就会命中
+        // ——命中要往数据根记 `accessed`（`palace.rs`），所以整条用例套临时数据根。
+        let _root = crate::test_env::temp_data_root();
+        let (_dir, store) = fresh_store();
+        let args = |name: &str| match name {
+            "memory_search" => serde_json::json!({"query": "anything"}),
+            "memory_save" => serde_json::json!({"content": "漂移守卫：一条够长的长期规则"}),
+            "memory_delete" => serde_json::json!({"id": "mem_missing"}),
+            "palace_read_zone" => serde_json::json!({"zone": "general"}),
+            "palace_recall" => serde_json::json!({"topic": "anything"}),
+            _ => serde_json::json!({}),
+        };
+
+        for name in [
+            "memory_search",
+            "memory_save",
+            "memory_delete",
+            "memory_distill",
+            "palace_zones",
+            "palace_read_zone",
+            "palace_recall",
+        ] {
+            assert!(handles(name), "{name} 必须在路由表里");
+            assert!(
+                dispatch(&store, name, args(name), None).await.is_some(),
+                "{name} 进了 handles 却没有 dispatch 臂——调用方会拿到 None"
+            );
+        }
+
+        // 反向：不属于记忆面的工具必须落到 None——这张表只管记忆与 palace
+        // 导航，文件 / 技能 / 网络工具留在各自的臂里。
+        assert!(!handles("read"));
+        assert!(
+            dispatch(&store, "read", serde_json::json!({"path": "x"}), None)
+                .await
+                .is_none()
+        );
+    }
+
     #[tokio::test]
     async fn distill_run_reports_a_cluster_for_near_duplicates() {
         let (_dir, store) = fresh_store();
@@ -504,7 +622,8 @@ mod tests {
             "content": "new merged fact",
             "supersedes": [old_id]
         });
-        let out = save_run(&store, args).await.unwrap();
+        // 归属不是本测试的主题：无人物会话 → 全局（跟今天的生产路径一致）。
+        let out = save_run(&store, args, None).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
 
         // The old memory must now be filtered OUT of the active set.
@@ -526,7 +645,8 @@ mod tests {
     #[tokio::test]
     async fn save_run_refuses_worthless_shell() {
         let (_dir, store) = fresh_store();
-        let out = save_run(&store, serde_json::json!({"content": "hi"}))
+        // 归属不是本测试的主题：无人物会话 → 全局（跟今天的生产路径一致）。
+        let out = save_run(&store, serde_json::json!({"content": "hi"}), None)
             .await
             .unwrap();
         assert!(out.is_error, "{}", out.content);
@@ -537,7 +657,8 @@ mod tests {
     async fn save_run_without_supersedes_is_backward_compatible() {
         let (_dir, store) = fresh_store();
         let args = serde_json::json!({"content": "plain lasting rule about how they write titles"});
-        let out = save_run(&store, args).await.unwrap();
+        // 归属不是本测试的主题：无人物会话 → 全局（跟今天的生产路径一致）。
+        let out = save_run(&store, args, None).await.unwrap();
         assert!(!out.is_error);
         assert_eq!(store.list_active().unwrap().len(), 1);
     }
@@ -548,13 +669,15 @@ mod tests {
         let first = serde_json::json!({
             "content": "The user prefers vim as their primary editor"
         });
-        let out1 = save_run(&store, first).await.unwrap();
+        // 归属不是本测试的主题：无人物会话 → 全局（跟今天的生产路径一致）。
+        let out1 = save_run(&store, first, None).await.unwrap();
         assert!(!out1.is_error, "{}", out1.content);
 
         let second = serde_json::json!({
             "content": "User prefers vim as the primary editor"
         });
-        let out2 = save_run(&store, second).await.unwrap();
+        // 同上：第三条断言的是查重，不是归属。
+        let out2 = save_run(&store, second, None).await.unwrap();
         assert!(
             out2.is_error,
             "expected near-dup refusal, got: {}",
@@ -586,7 +709,8 @@ mod tests {
             "content": "User prefers vim as the primary editor",
             "supersedes": [old_id]
         });
-        let out = save_run(&store, args).await.unwrap();
+        // 归属不是本测试的主题：无人物会话 → 全局（跟今天的生产路径一致）。
+        let out = save_run(&store, args, None).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert_eq!(store.list_active().unwrap().len(), 1);
     }

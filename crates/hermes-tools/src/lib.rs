@@ -16,6 +16,7 @@ pub mod memory;
 pub mod office_export;
 pub mod open;
 pub mod palace;
+pub mod persona_scope;
 pub mod read;
 pub mod safety;
 pub mod skill;
@@ -53,6 +54,53 @@ pub use web::{SearchBackend, WebToolsContext};
 const BASIC_TOOLS: &[&str] = &[
     "read", "write", "edit", "bash", "glob", "grep", "git", "open",
 ];
+
+/// 本 crate 的测试专用夹具（`#[cfg(test)]`）。
+///
+/// 数据根在**进程**里是全局的（`LEBI_DATA_DIR`），所以「重定向数据根」必须全
+/// crate 抢**同一把**锁：两把锁互不串行，一个用例的还原动作会落到另一个用例的
+/// 正文中间——最坏的结果不是红，而是**写到用户真实数据根**。
+///
+/// 本 crate 里会写数据根的是 palace 读：命中时往 `{数据根}/memory-stats.jsonl`
+/// 记一条 `accessed`（`palace.rs`）。凡是可能命中的 palace 用例都要套这一层——
+/// 「谁看得见什么」正是这些用例在验的事，赌「查空不落盘」等于赌断言一定过
+/// （故意改坏时就会写用户的盘）。
+#[cfg(test)]
+pub(crate) mod test_env {
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 数据根指向一个临时目录，`Drop` 时（**含 panic 展开**）自己还原。
+    pub(crate) struct TempDataRoot {
+        prev: Option<String>,
+        _dir: tempfile::TempDir,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for TempDataRoot {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => std::env::set_var(hermes_core::paths::ENV_DATA_DIR, v),
+                None => std::env::remove_var(hermes_core::paths::ENV_DATA_DIR),
+            }
+        }
+    }
+
+    /// 拿到返回值期间，本进程的数据根是一个空的临时目录。
+    pub(crate) fn temp_data_root() -> TempDataRoot {
+        let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // 先拿锁再读 `prev`：等锁期间别的用例可能已经改过 / 还原过环境。
+        let prev = std::env::var(hermes_core::paths::ENV_DATA_DIR).ok();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var(hermes_core::paths::ENV_DATA_DIR, dir.path());
+        TempDataRoot {
+            prev,
+            _dir: dir,
+            _lock: lock,
+        }
+    }
+}
 
 pub struct BuiltinToolHost {
     workspace: PathBuf,
@@ -121,18 +169,12 @@ impl BuiltinToolHost {
     pub fn handles(&self, name: &str) -> bool {
         BASIC_TOOLS.contains(&name)
             || todo::handles(name)
+            || memory::handles(name)
             || matches!(
                 name,
                 "think"
                     | "web_fetch"
                     | "web_search"
-                    | "memory_search"
-                    | "memory_save"
-                    | "memory_delete"
-                    | "memory_distill"
-                    | "palace_zones"
-                    | "palace_read_zone"
-                    | "palace_recall"
                     | "skill_list"
                     | "skill_read"
                     | "skill_read_file"
@@ -215,47 +257,15 @@ impl ToolHost for BuiltinToolHost {
             "web_fetch" => web_fetch::run(&self.workspace, args, self.web_ctx.as_deref()).await,
             "web_search" => web_search::run(&self.workspace, args, self.web_ctx.as_deref()).await,
             "think" => think::run(args).await,
-            "memory_search" => {
+            // `session_owner = None`：内置宿主不认人物，写入一律落全局 = 今天的行为。
+            // 人物会话走 `PersonaToolHost`（persona_scope.rs），那里才带上归属。
+            _ if memory::handles(name) => {
                 let store = self.memory_store.as_ref().ok_or_else(|| {
-                    Error::ToolHost("memory_search: no memory store configured".into())
+                    Error::ToolHost(format!("{name}: no memory store configured"))
                 })?;
-                memory::run(store.as_ref(), args).await
-            }
-            "memory_save" => {
-                let store = self.memory_store.as_ref().ok_or_else(|| {
-                    Error::ToolHost("memory_save: no memory store configured".into())
-                })?;
-                memory::save_run(store.as_ref(), args).await
-            }
-            "memory_delete" => {
-                let store = self.memory_store.as_ref().ok_or_else(|| {
-                    Error::ToolHost("memory_delete: no memory store configured".into())
-                })?;
-                memory::delete_run(store.as_ref(), args).await
-            }
-            "memory_distill" => {
-                let store = self.memory_store.as_ref().ok_or_else(|| {
-                    Error::ToolHost("memory_distill: no memory store configured".into())
-                })?;
-                memory::distill_run(store.as_ref(), args).await
-            }
-            "palace_zones" => {
-                let store = self.memory_store.as_ref().ok_or_else(|| {
-                    Error::ToolHost("palace_zones: no memory store configured".into())
-                })?;
-                palace::zones_run(store.as_ref()).await
-            }
-            "palace_read_zone" => {
-                let store = self.memory_store.as_ref().ok_or_else(|| {
-                    Error::ToolHost("palace_read_zone: no memory store configured".into())
-                })?;
-                palace::read_zone_run(store.as_ref(), args).await
-            }
-            "palace_recall" => {
-                let store = self.memory_store.as_ref().ok_or_else(|| {
-                    Error::ToolHost("palace_recall: no memory store configured".into())
-                })?;
-                palace::recall_run(store.as_ref(), args).await
+                memory::dispatch(store.as_ref(), name, args, None)
+                    .await
+                    .unwrap_or_else(|| Err(Error::ToolHost(format!("unknown memory tool: {name}"))))
             }
             "skill_list" => {
                 let store = self.skill_store.as_ref().ok_or_else(|| {

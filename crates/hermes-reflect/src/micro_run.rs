@@ -11,12 +11,10 @@
 //! ```
 
 use hermes_core::{LlmProvider, Message};
-use hermes_memory::{
-    build_palace_index_simple, save_palace_index, save_profile, LoadedMemory, MemoryStore,
-};
+use hermes_memory::{save_profile, LoadedMemory, MemoryStore};
 use hermes_skills::LoadedSkill;
 
-use crate::compile::compile_profile;
+use crate::compile::{compile_profile, profile_input};
 use crate::micro::{has_explicit_intent, micro_reflect, should_micro_reflect};
 use crate::micro_apply::{apply_micro_output, MicroApplyConfig, MicroApplyResult};
 use crate::runner::ReflectError;
@@ -31,7 +29,10 @@ pub struct MicroRunRequest<'a> {
     /// Turns since last micro-reflect for this session (periodic gate).
     pub turns_since_last: usize,
     pub apply: MicroApplyConfig,
-    /// When true and memories were auto-accepted, recompile profile + palace.
+    /// When true and memories were auto-accepted, recompile the profile.
+    /// Topic cards are deliberately **not** rebuilt here: they are derived, the
+    /// UI says when they have fallen behind, and a background LLM call the user
+    /// never asked for is exactly the kind of noise we are removing.
     pub recompile_on_auto_accept: bool,
 }
 
@@ -72,7 +73,14 @@ pub async fn run_micro_after_turn(
     // Always recompute explicit intent from this turn's messages.
     apply_cfg.explicit_intent = has_explicit_intent(req.turn_messages);
 
-    let output = micro_reflect(req.provider, req.turn_messages, req.skills, req.memories).await?;
+    let output = micro_reflect(
+        req.provider,
+        req.turn_messages,
+        req.skills,
+        req.memories,
+        apply_cfg.memory_owner.as_deref(),
+    )
+    .await?;
 
     if output.is_empty() {
         return Ok(MicroRunOutcome::Empty);
@@ -82,7 +90,8 @@ pub async fn run_micro_after_turn(
 
     if req.recompile_on_auto_accept && applied.auto_accepted > 0 {
         if let Ok(fresh) = req.store.list_active() {
-            match compile_profile(req.provider, &fresh).await {
+            // `profile.md` 是全局文件、被每个视图注入，只能装全局可见口径（1.10e）。
+            match compile_profile(req.provider, &profile_input(&fresh)).await {
                 Ok(profile) => {
                     if let Err(e) = save_profile(&profile) {
                         tracing::warn!(error=%e, "micro_run: save profile");
@@ -91,10 +100,6 @@ pub async fn run_micro_after_turn(
                 Err(e) => {
                     tracing::debug!(error=%e, "micro_run: profile compile failed");
                 }
-            }
-            let idx = build_palace_index_simple(&fresh);
-            if let Err(e) = save_palace_index(&idx) {
-                tracing::warn!(error=%e, "micro_run: save palace index");
             }
         }
     }

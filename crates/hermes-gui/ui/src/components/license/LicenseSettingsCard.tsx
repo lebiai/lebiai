@@ -27,14 +27,23 @@ export function LicenseSettingsCard() {
   const clearFocus = useSettingsNavStore((s) => s.clearFocus);
   const ref = useRef<HTMLDivElement>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
+  /** 上一次落码开通的工位名字。折叠表单会把这行反馈一起藏掉，所以放在卡片层。 */
+  const [opened, setOpened] = useState<string[] | null>(null);
   /** Last navRequestId we already handled — avoid re-entry loops. */
   const handledNavId = useRef(0);
+
+  /** 重新打开粘贴框 = 上一次的「已开通…」反馈已经过期，清掉，别和新的报错并排。 */
+  const openPaste = () => {
+    setOpened(null);
+    setPasteOpen(true);
+  };
 
   // Deep-link from sidebar / overview: expand paste once per openTo().
   useEffect(() => {
     if (navRequestId <= 0 || navFocus !== "license") return;
     if (handledNavId.current === navRequestId) return;
     handledNavId.current = navRequestId;
+    setOpened(null);
     setPasteOpen(true);
     // Defer scroll so accordion has painted.
     requestAnimationFrame(() => {
@@ -128,7 +137,7 @@ export function LicenseSettingsCard() {
           <p className="text-xs text-app-fg-secondary flex-1 min-w-[10rem]">
             {t("license.activeQuiet")}
           </p>
-          <Button size="sm" variant="secondary" onClick={() => setPasteOpen(true)}>
+          <Button size="sm" variant="secondary" onClick={openPaste}>
             {t("license.showRenew")}
           </Button>
         </div>
@@ -138,7 +147,7 @@ export function LicenseSettingsCard() {
       {isTrial && !isExpiring && !showPaste && (
         <div className="space-y-3">
           <LicenseBuyHint />
-          <Button size="sm" variant="secondary" onClick={() => setPasteOpen(true)}>
+          <Button size="sm" variant="secondary" onClick={openPaste}>
             {t("license.iHaveCode")}
           </Button>
         </div>
@@ -161,11 +170,24 @@ export function LicenseSettingsCard() {
           <LicenseBuyHint />
           <LicenseForm
             autoFocus={mustPaste || pasteOpen}
-            onSuccess={() => {
+            onSuccess={(names) => {
+              setOpened(names);
               if (!mustPaste) setPasteOpen(false);
             }}
           />
         </div>
+      )}
+
+      {/* 落码结果留在卡片层：表单成功后会折叠，反馈不能跟着消失 */}
+      {opened && (
+        <p className="text-xs text-app-fg-secondary">
+          {opened.length > 0
+            ? t("license.enabledPersonas", {
+                n: opened.length,
+                names: opened.join(language === "zh-CN" ? "、" : ", "),
+              })
+            : t("license.enabledOk")}
+        </p>
       )}
     </div>
   );

@@ -3,7 +3,7 @@
 //! Parallel to `hermes-gui/src/state.rs` (same stores / tool host / sessions),
 //! without Tauri. Not a claim of 1:1 command coverage — see project-map matrix.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -24,10 +24,6 @@ pub type Sessions = Arc<Mutex<HashMap<String, ActiveSession>>>;
 pub type CancelTokens = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>;
 pub type ConfirmTokens =
     Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<hermes_turn::ConfirmAction>>>>;
-/// Session-scoped allowlist populated when the user clicks "Always Allow" on
-/// a tool confirmation. Lives only for the lifetime of the server process;
-/// to persist allow rules, the user edits `config.toml` directly.
-pub type AlwaysAllowedTools = Arc<Mutex<HashSet<String>>>;
 pub type ProposeMessages = Arc<RwLock<Vec<hermes_core::Message>>>;
 pub type ProposeQueue = Arc<std::sync::Mutex<Vec<SkillCandidate>>>;
 
@@ -43,8 +39,9 @@ pub struct AppState {
     pub sessions: Sessions,
     pub cancel_tokens: CancelTokens,
     pub confirm_tokens: ConfirmTokens,
-    pub always_allowed_tools: AlwaysAllowedTools,
     pub tools: Mutex<Vec<ToolSpec>>,
+    /// Last known skill index — never read directly for a request, call
+    /// [`Self::refresh_skills`] so skills created mid-run are visible.
     pub skills: Mutex<Vec<LoadedSkill>>,
     pub pinned_memories: Arc<Mutex<Vec<LoadedMemory>>>,
     pub active_memories: Arc<Mutex<Vec<LoadedMemory>>>,
@@ -160,7 +157,6 @@ impl AppState {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             cancel_tokens: Arc::new(Mutex::new(HashMap::new())),
             confirm_tokens: Arc::new(Mutex::new(HashMap::new())),
-            always_allowed_tools: Arc::new(Mutex::new(HashSet::new())),
             tools: Mutex::new(tools),
             skills: Mutex::new(skills),
             pinned_memories: Arc::new(Mutex::new(pinned)),
@@ -203,6 +199,18 @@ impl AppState {
             .root
             .to_string_lossy()
             .into_owned()
+    }
+
+    /// Current skill index, re-read from the store.
+    ///
+    /// Skills are created, edited and installed while the server runs, so a
+    /// startup snapshot would leave a new skill unusable until restart. Falls
+    /// back to the last known index if listing fails.
+    pub async fn refresh_skills(&self) -> Vec<LoadedSkill> {
+        let cached = self.skills.lock().await.clone();
+        let fresh = hermes_skills::list_or_cached(self.skill_store.as_ref(), &cached);
+        *self.skills.lock().await = fresh.clone();
+        fresh
     }
 }
 

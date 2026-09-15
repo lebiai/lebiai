@@ -20,6 +20,7 @@ serde_json = { workspace = true }
 reqwest = { workspace = true, features = ["stream"] }
 dirs = { workspace = true }
 toml = { workspace = true }
+toml_edit = { workspace = true }
 bytes = "1"
 
 [dev-dependencies]

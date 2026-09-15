@@ -582,9 +582,97 @@ impl ProviderConfig {
     }
 }
 
+/// Merge one rule into `[permissions].allow`, preserving order and skipping
+/// duplicates. Returns the new TOML text (unchanged text when the rule is
+/// already there, so callers can skip the write).
+///
+/// Lives here rather than in each front-end so GUI and server cannot drift:
+/// a rule the user granted through one surface has to mean the same thing on
+/// the other. Pure string transform on purpose — testable without a data root.
+pub fn add_allow_rule(toml_text: &str, rule: &str) -> Result<String, String> {
+    use toml_edit::{value, Array, DocumentMut, Item, Table};
+
+    fn ensure_table<'a>(parent: &'a mut Table, key: &str) -> &'a mut Table {
+        if !parent.contains_key(key) {
+            parent.insert(key, Item::Table(Table::new()));
+        }
+        parent[key].as_table_mut().expect("ensured table")
+    }
+
+    let rule = rule.trim();
+    if rule.is_empty() {
+        return Err("empty permission rule".into());
+    }
+    let mut doc: DocumentMut = toml_text
+        .parse()
+        .map_err(|e: toml_edit::TomlError| e.to_string())?;
+    let existing: Vec<String> = doc
+        .as_table()
+        .get("permissions")
+        .and_then(|p| p.as_table())
+        .and_then(|p| p.get("allow"))
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if existing.iter().any(|r| r == rule) {
+        return Ok(toml_text.to_string());
+    }
+    let mut next = existing;
+    next.push(rule.to_string());
+    let perms = ensure_table(doc.as_table_mut(), "permissions");
+    perms["allow"] = value(Array::from_iter(next));
+    Ok(doc.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Config, ProviderPreset, PROVIDER_PRESETS};
+
+    #[test]
+    fn add_allow_rule_appends_and_dedupes() {
+        let base = Config::default_config_toml();
+        let once = super::add_allow_rule(&base, "bash").unwrap();
+        let parsed: Config = toml::from_str(&once).unwrap();
+        assert!(parsed.permissions.allow.contains(&"bash".to_string()));
+
+        // Idempotent: adding the same rule again returns the text untouched.
+        let twice = super::add_allow_rule(&once, "bash").unwrap();
+        assert_eq!(twice, once);
+        let parsed: Config = toml::from_str(&twice).unwrap();
+        assert_eq!(
+            parsed
+                .permissions
+                .allow
+                .iter()
+                .filter(|r| *r == "bash")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn add_allow_rule_preserves_other_keys_and_comments() {
+        #[derive(serde::Deserialize)]
+        struct OnlyPermissions {
+            permissions: super::PermissionsConfig,
+        }
+
+        let text = "# 手写的注释\n[permissions]\nallow = [\"read\"]\ndeny = [\"bash:rm -rf *\"]\n";
+        let out = super::add_allow_rule(text, "write").unwrap();
+        assert!(out.contains("# 手写的注释"));
+        let parsed: OnlyPermissions = toml::from_str(&out).unwrap();
+        assert_eq!(parsed.permissions.allow, vec!["read", "write"]);
+        assert_eq!(parsed.permissions.deny, vec!["bash:rm -rf *"]);
+    }
+
+    #[test]
+    fn add_allow_rule_rejects_empty() {
+        assert!(super::add_allow_rule("[permissions]\nallow = []\n", "   ").is_err());
+    }
 
     #[test]
     fn default_config_template_loads() {

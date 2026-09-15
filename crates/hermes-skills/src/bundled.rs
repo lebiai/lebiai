@@ -16,10 +16,12 @@ pub fn auto_install_bundled(skill_store: &FsSkillStore) {
 }
 
 fn auto_install_palace_skill(skill_store: &FsSkillStore) {
-    // Bundled protocol — overwrite when the on-disk copy still teaches old zones.
+    // Bundled protocol — overwrite when the on-disk copy still teaches old
+    // zones or still points at the retired palace index.
     if let Ok(Some(existing)) = skill_store.get("memory-palace") {
-        let current = existing.frontmatter.version.as_deref() == Some("0.2.0")
-            && !existing.body.contains("core — stable");
+        let current = existing.frontmatter.version.as_deref() == Some("0.3.0")
+            && !existing.body.contains("core — stable")
+            && !existing.body.contains("Check the palace index");
         if current {
             return;
         }
@@ -180,6 +182,10 @@ mod tests {
             body.contains("If `memory_save` is **not**"),
             "palace skill must not promise a save on surfaces without the tool"
         );
+        assert!(
+            body.contains("topic cards (主题卡)"),
+            "palace skill must point at topic cards — the injected index it named is retired"
+        );
     }
 
     #[test]
@@ -206,9 +212,38 @@ mod tests {
 
         auto_install_bundled(&store);
         let next = store.get("memory-palace").unwrap().expect("reinstalled");
-        assert_eq!(next.frontmatter.version.as_deref(), Some("0.2.0"));
+        assert_eq!(next.frontmatter.version.as_deref(), Some("0.3.0"));
         assert!(next.body.contains("preferences"));
         assert!(!next.body.contains("core —"));
+    }
+
+    #[test]
+    fn auto_install_upgrades_a_protocol_that_still_names_the_palace_index() {
+        use crate::{FsSkillStore, SkillFrontmatter, SkillStore};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsSkillStore::new(tmp.path().to_path_buf(), None);
+        let stale = SkillFrontmatter {
+            name: "memory-palace".into(),
+            description: "old".into(),
+            triggers: vec![],
+            version: Some("0.2.0".into()),
+            license: None,
+            always_active: true,
+            extra: Default::default(),
+        };
+        store
+            .put(
+                crate::Scope::User,
+                stale,
+                "# Memory Palace Protocol\n\n1. Check the palace index if it is in the system prompt\n",
+            )
+            .unwrap();
+
+        auto_install_bundled(&store);
+        let next = store.get("memory-palace").unwrap().expect("reinstalled");
+        assert_eq!(next.frontmatter.version.as_deref(), Some("0.3.0"));
+        assert!(!next.body.contains("Check the palace index"));
+        assert!(next.body.contains("topic cards (主题卡)"));
     }
 
     #[test]

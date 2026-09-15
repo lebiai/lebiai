@@ -383,6 +383,26 @@ fn ensure_table<'a>(parent: &'a mut Table, key: &str) -> &'a mut Table {
     parent[key].as_table_mut().expect("ensured table")
 }
 
+/// "Always allow" has to outlive the process: write the rule into
+/// `[permissions].allow` and hot-swap the in-memory config.
+///
+/// Same semantics as the desktop GUI (`hermes-gui/src/commands/config.rs`) —
+/// both call `hermes_llm::config::add_allow_rule` so the two surfaces cannot
+/// drift on what a remembered rule means.
+pub fn remember_allow_rule(state: &AppState, rule: &str) -> Result<(), ApiError> {
+    let path = Config::default_path().map_err(|e| ApiError::Config(e.to_string()))?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| ApiError::Config(format!("reading {}: {e}", path.display())))?;
+    let updated = hermes_llm::config::add_allow_rule(&raw, rule)
+        .map_err(|e| ApiError::Config(format!("parsing config.toml: {e}")))?;
+    if updated != raw {
+        write_atomically_600(&path, updated.as_bytes())?;
+    }
+    let fresh = Config::load_default().map_err(|e| ApiError::Config(e.to_string()))?;
+    *state.config.write().unwrap() = fresh;
+    Ok(())
+}
+
 fn write_atomically_600(path: &PathBuf, bytes: &[u8]) -> Result<(), ApiError> {
     let dir = path.parent().ok_or_else(|| {
         ApiError::Config(format!("config path has no parent: {}", path.display()))

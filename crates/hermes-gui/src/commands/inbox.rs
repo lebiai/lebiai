@@ -1,6 +1,5 @@
 //! Pending-review inbox Tauri commands (quiet evolution queue).
 
-use hermes_memory::{MemoryFrontmatter, MemoryStore, Scope, Source};
 use hermes_reflect::{
     log_append, ActionTaken, CandidateKind, InboxItem, InboxPayload, InboxSource, ReflectLogEntry,
 };
@@ -79,25 +78,6 @@ fn item_to_view(item: InboxItem) -> InboxItemView {
     }
 }
 
-fn put_memory_with_fallback(
-    store: &dyn MemoryStore,
-    scope: Scope,
-    fm: MemoryFrontmatter,
-    body: &str,
-) -> Result<(), GuiError> {
-    match store.put(scope, fm.clone(), body) {
-        Ok(_) => Ok(()),
-        Err(e) if matches!(scope, Scope::Project) => {
-            tracing::warn!(error=%e, "project scope unavailable, falling back to user");
-            store
-                .put(Scope::User, fm, body)
-                .map(|_| ())
-                .map_err(|e| GuiError::Internal(e.to_string()))
-        }
-        Err(e) => Err(GuiError::Internal(e.to_string())),
-    }
-}
-
 #[tauri::command]
 pub async fn list_pending_review() -> Result<Vec<InboxItemView>, GuiError> {
     let items = hermes_reflect::inbox_list().map_err(|e| GuiError::Internal(e.to_string()))?;
@@ -126,35 +106,17 @@ pub async fn accept_pending_review(state: State<'_, AppState>, id: String) -> Re
         .ok_or_else(|| GuiError::NotFound(format!("pending item {id}")))?;
     log_inbox_action(&item, ActionTaken::Accept);
 
-    match item.payload {
+    match &item.payload {
         InboxPayload::Memory(c) => {
-            let mut fm = MemoryFrontmatter::new(Source::Reflection, c.confidence, c.tags, c.zone);
-            fm.supersedes = c.supersedes;
-            if let Some(id) = item.distill_id.clone() {
-                fm.extra.insert(
-                    serde_yaml::Value::String("distill_id".into()),
-                    serde_yaml::Value::String(id),
-                );
-            }
-            if let Some(sid) = item.session_id.clone() {
-                fm.extra.insert(
-                    serde_yaml::Value::String("source_session".into()),
-                    serde_yaml::Value::String(sid),
-                );
-            }
-            if let Some(t) = item.through_at.clone() {
-                fm.extra.insert(
-                    serde_yaml::Value::String("through_at".into()),
-                    serde_yaml::Value::String(t),
-                );
-            }
-            put_memory_with_fallback(state.memory_store.as_ref(), c.scope, fm, &c.fact)?;
+            // 归属的判定与落盘都在 `hermes-reflect` 里，GUI / server / CLI 同一份实现。
+            hermes_reflect::inbox_accept_memory_item(state.memory_store.as_ref(), &item, c)
+                .map_err(|e| GuiError::Internal(e.to_string()))?;
         }
         InboxPayload::Skill(c) => {
             let fm = SkillFrontmatter {
-                name: c.name,
-                description: c.description,
-                triggers: c.triggers,
+                name: c.name.clone(),
+                description: c.description.clone(),
+                triggers: c.triggers.clone(),
                 version: None,
                 license: None,
                 always_active: false,

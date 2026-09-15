@@ -55,6 +55,9 @@ enum Command {
         system: Option<String>,
         #[arg(long)]
         model: Option<String>,
+        /// 作为某个人物（工位）开工。省略 = 无人物，行为与今天一致。
+        #[arg(long, value_name = "ID")]
+        persona: Option<String>,
         /// Resume a previous session by JSONL path.
         #[arg(long, value_name = "PATH", conflicts_with = "resume_last")]
         resume: Option<std::path::PathBuf>,
@@ -62,6 +65,9 @@ enum Command {
         #[arg(long, conflicts_with = "resume")]
         resume_last: bool,
     },
+
+    /// List the personas (工位) built into this version.
+    Personas,
 
     /// Inspect configured MCP servers.
     #[command(subcommand)]
@@ -104,6 +110,17 @@ enum Command {
         /// score below ~0.1.
         #[arg(long, default_value_t = hermes_memory::distill::DEFAULT_THRESHOLD)]
         threshold: f64,
+    },
+
+    /// Topic cards: group memories by subject (a derived, rebuildable view —
+    /// no memory is ever merged or deleted by this).
+    Topics {
+        /// Fold memories that no card covers into the cards (one model call).
+        #[arg(long, default_value_t = false)]
+        build: bool,
+        /// Re-cut every theme from the full active set. Implies `--build`.
+        #[arg(long, default_value_t = false)]
+        rebuild: bool,
     },
 
     /// WeChat (iLink Bot) bridge: scan QR in the terminal, chat with the model
@@ -284,12 +301,17 @@ async fn main() -> Result<()> {
         Command::Chat {
             system,
             model,
+            persona,
             resume,
             resume_last,
         } => {
+            // 人物 id 先解析：拼错了就在这里退，不要让使用者先进了会话再发现。
+            let persona = commands::personas::resolve_persona(persona.as_deref())
+                .map_err(anyhow::Error::msg)?;
             let resume_path = resolve_resume(resume, resume_last)?;
-            commands::chat::run(system, model, resume_path).await
+            commands::chat::run(system, model, resume_path, persona).await
         }
+        Command::Personas => commands::personas::run(),
         Command::Mcp(sub) => match sub {
             McpCmd::List => commands::mcp::list().await,
             McpCmd::Test { server } => commands::mcp::test(server).await,
@@ -336,6 +358,9 @@ async fn main() -> Result<()> {
                 threshold,
             })
             .await
+        }
+        Command::Topics { build, rebuild } => {
+            commands::topics::run(build || rebuild, rebuild).await
         }
         Command::Wechat(sub) => match sub {
             WechatCmd::Login => commands::wechat::login().await,

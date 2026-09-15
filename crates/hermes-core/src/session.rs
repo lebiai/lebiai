@@ -20,6 +20,9 @@ pub struct SessionMeta {
     /// Updated when the first *meaningful* user message is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// 人物（工位）id。`None` = 无人物（旧会话 / 未指定）。见 `persona` 模块。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona: Option<String>,
 }
 
 impl SessionMeta {
@@ -30,6 +33,7 @@ impl SessionMeta {
             model: model.into(),
             provider: provider.into(),
             title: None,
+            persona: None,
         }
     }
 }
@@ -287,5 +291,33 @@ mod title_tests {
         )];
         assert!(!session_has_user_text(&msgs));
         assert_eq!(derive_title_from_messages(&msgs), DEFAULT_SESSION_TITLE);
+    }
+}
+
+#[cfg(test)]
+mod persona_tests {
+    use super::*;
+
+    #[test]
+    fn a_session_without_a_persona_still_reads() {
+        let line = r#"{"meta":{"id":"s1","created_at":"2026-09-14T00:00:00Z","model":"m","provider":"p","title":"t"}}"#;
+        let ev: SessionEvent = serde_json::from_str(line).unwrap();
+        let SessionEvent::Meta(meta) = ev else {
+            panic!("expected meta line")
+        };
+        assert_eq!(meta.persona, None, "旧会话没有人物，必须照样读得出来");
+    }
+
+    #[test]
+    fn persona_survives_a_round_trip_and_stays_out_when_absent() {
+        let mut meta = SessionMeta::new("m", "p");
+        meta.persona = Some("xiao-xie".into());
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(json.contains("\"persona\":\"xiao-xie\""));
+        let back: SessionMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.persona.as_deref(), Some("xiao-xie"));
+
+        let plain = serde_json::to_string(&SessionMeta::new("m", "p")).unwrap();
+        assert!(!plain.contains("persona"), "没有人物就别写出这个键");
     }
 }

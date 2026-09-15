@@ -12,6 +12,7 @@ pub mod error;
 pub mod license;
 pub mod message;
 pub mod paths;
+pub mod persona;
 pub mod provider;
 pub mod session;
 pub mod style;

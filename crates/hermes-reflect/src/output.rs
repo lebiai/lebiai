@@ -63,6 +63,10 @@ pub struct MemoryCandidate {
     /// `frontmatter.supersedes`.
     #[serde(default)]
     pub supersedes: Vec<String>,
+    /// 这条记忆属于谁：写当前会话人物的 id = 专业口径；不写 = 全局
+    /// （关于用户本人的偏好与标准）。见 `docs/spec/personas.md` §5.3。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -114,9 +114,9 @@ async fn begin_turn(
     let model = state.model();
     let max_tokens = state.max_tokens();
     let tools = state.tools.lock().await.clone();
-    let skills = state.skills.lock().await.clone();
+    let skills = state.refresh_skills().await;
     // Refresh memory cache from disk so mid-session memory_save is visible next turn.
-    let (pinned, active) = {
+    let active = {
         let all = match state.memory_store.list_active() {
             Ok(v) => v,
             Err(_) => state.active_memories.lock().await.clone(),
@@ -127,8 +127,8 @@ async fn begin_turn(
             .cloned()
             .collect();
         *state.active_memories.lock().await = all.clone();
-        *state.pinned_memories.lock().await = pinned.clone();
-        (pinned, all)
+        *state.pinned_memories.lock().await = pinned;
+        all
     };
     let workspace_root = state.workspace_root();
     let (limits, default_provider) = {
@@ -136,9 +136,8 @@ async fn begin_turn(
         (cfg.limits, cfg.default_provider.clone())
     };
 
-    let mut allow_rules: Vec<String> = state.config.read().unwrap().permissions.allow.clone();
+    let allow_rules: Vec<String> = state.config.read().unwrap().permissions.allow.clone();
     let deny_rules: Vec<String> = state.config.read().unwrap().permissions.deny.clone();
-    allow_rules.extend(state.always_allowed_tools.lock().await.iter().cloned());
     let permissions = hermes_turn::PermissionChecker::new(&allow_rules, &deny_rules);
 
     let mut sessions = state.sessions.lock().await;
@@ -271,12 +270,21 @@ async fn begin_turn(
                 confidence: hermes_memory::Confidence::Medium,
                 rationale: "user asked to remember a standard".into(),
                 supersedes: vec![],
+                owner: None,
             }],
             ..Default::default()
         };
-        if let Ok(n) =
-            hermes_reflect::enqueue_from_reflection(&output, hermes_reflect::InboxSource::Micro)
-        {
+        // 用户当场点「记住」是一个片段、不是整场 distill 的结果，所以只记工位、
+        // 不带 `session_id`（`append_only`）——否则它会被同会话下一批 micro 候选
+        // 或 session-end 那份挤掉。
+        let mark = hermes_reflect::EnqueueMark::append_only(
+            hermes_core::persona::memory_owner_for(active_session.session.meta.persona.as_deref()),
+        );
+        if let Ok(n) = hermes_reflect::enqueue_from_reflection_marked(
+            &output,
+            hermes_reflect::InboxSource::Micro,
+            mark,
+        ) {
             if n > 0 {
                 let _ = on_event.send(crate::events::ChatStreamEvent::RememberQueued);
             }
@@ -289,17 +297,31 @@ async fn begin_turn(
         let today = chrono::Utc::now().date_naive();
         seq == 0 || at.map(|t| t.date_naive() < today).unwrap_or(true)
     };
-    let sources = ContextSources {
-        base: None,
-        pinned: &pinned,
-        active: &active,
-        all_skills: &skills,
-        open_work: &open_work,
-        material_hits: &material_hits,
+    // 卡面按工位分区（§5.5）：全局那份所有视图共用，这个会话的人物接自己那份；
+    // 无人物 / 自带角色 → `None`（只看全局那份）。
+    let cards_owner =
+        hermes_core::persona::memory_owner_for(active_session.session.meta.persona.as_deref());
+    // 注入面与卡面**同轴**：人物会话只看得见「全局 + 本人物」，别人的一条都不给
+    // （`docs/spec/personas.md` §5.2）。装配只走 `views_for` 一处——CLI 用的是同
+    // 一个函数，谁再自己写一份判据，就会有一天只改一处、某个人物开始看见别人的记忆。
+    // 注意：上面写进 `state.active_memories` 缓存的是**全量**，缓存本身不受影响。
+    let (active, pinned) = visible_memories(&active, cards_owner.as_deref());
+    let topic_cards = hermes_memory::topics::render_from_disk(&active, cards_owner.as_deref());
+    // 指路名册 = 侧栏上真正有的那几个工位（授权 ∩ 勾选 + 自带）。
+    let roster = hermes_core::persona::open();
+    let sources = turn_sources(
+        active_session,
+        &roster,
+        topic_cards.as_deref(),
+        &pinned,
+        &active,
+        &skills,
+        &open_work,
+        &material_hits,
         first_human_today,
-        workspace_root: &workspace_root,
+        &workspace_root,
         limits,
-    };
+    );
     let turn_system = sources.build_turn_system(&prompt_for_system);
 
     if let Some(content) = new_user {
@@ -511,6 +533,7 @@ async fn begin_turn(
 
         let mut turn_messages: Vec<hermes_core::Message> = Vec::new();
         let mut session_id_for_log = sid.clone();
+        let mut session_persona_for_log: Option<String> = None;
 
         match result {
             Ok(output) => {
@@ -535,6 +558,7 @@ async fn begin_turn(
                 turn_messages = msgs.clone();
                 if let Some(s) = sessions_arc.lock().await.get_mut(&sid) {
                     session_id_for_log = s.session.meta.id.clone();
+                    session_persona_for_log = s.session.meta.persona.clone();
                     for msg in &msgs {
                         s.session.messages.push(msg.clone());
                         let to_disk = msg.for_persist(persist_thinking);
@@ -608,6 +632,7 @@ async fn begin_turn(
             turn_messages,
             sid.clone(),
             session_id_for_log,
+            session_persona_for_log,
             auto_accept,
             min_confidence,
             live_llm,
@@ -617,6 +642,59 @@ async fn begin_turn(
     });
 
     Ok(())
+}
+
+/// 这一轮系统提示词的来源。人物只从 `session.meta.persona` 取——没绑定或不认识的
+/// id → `None`（容错与 `persona::memory_owner_for` 一致，见 `personas::bound_persona`）。
+///
+/// 单独成函数是为了让「会话身份 → 人物块」这条接线被测试直接盯住：把 `persona`
+/// 写死回 `None`，`a_bound_persona_reaches_the_turn_prompt` 必须红。
+#[allow(clippy::too_many_arguments)]
+fn turn_sources<'a>(
+    active_session: &ActiveSession,
+    roster: &'a [&'a hermes_core::persona::Persona],
+    topic_cards: Option<&'a str>,
+    pinned: &'a [hermes_memory::LoadedMemory],
+    active: &'a [hermes_memory::LoadedMemory],
+    all_skills: &'a [hermes_skills::LoadedSkill],
+    open_work: &'a [hermes_commitments::Commitment],
+    material_hits: &'a [hermes_core::MaterialHit],
+    first_human_today: bool,
+    workspace_root: &'a str,
+    limits: hermes_llm::ContextLimits,
+) -> ContextSources<'a> {
+    ContextSources {
+        base: None,
+        persona: crate::commands::personas::bound_persona(
+            active_session.session.meta.persona.as_deref(),
+        ),
+        roster,
+        topic_cards,
+        pinned,
+        active,
+        all_skills,
+        open_work,
+        material_hits,
+        first_human_today,
+        workspace_root,
+        limits,
+    }
+}
+
+/// 这一轮**看得见**的记忆：`(active, 其中的 pinned)`。
+///
+/// 装配只走 `hermes_memory::views_for` 一处（与 CLI 同一个函数）——GUI 曾经在这里
+/// 直接把全量记忆喂进提示词，于是小谢的会话看得见王海燕的记忆，而主题卡那边却是
+/// 按工位切过的：同一轮里两条轴不一致，是明确的隔离失效。
+/// 单独成函数是为了让「按人物切」这条接线可测：`owner` 写成 `None` 必须变红。
+fn visible_memories(
+    all: &[hermes_memory::LoadedMemory],
+    owner: Option<&str>,
+) -> (
+    Vec<hermes_memory::LoadedMemory>,
+    Vec<hermes_memory::LoadedMemory>,
+) {
+    hermes_memory::views_for(all, owner)
 }
 
 fn parse_zaiban_tool(name: &str, content: &str, is_error: bool) -> Option<ChatStreamEvent> {
@@ -780,7 +858,12 @@ pub async fn respond_confirm(
         "allow" | "y" => ConfirmAction::Allow,
         "alwaysallow" | "always_allow" => {
             if let Some(name) = &tool_name {
-                state.always_allowed_tools.lock().await.insert(name.clone());
+                // Persist so it survives a restart; a write failure only means
+                // the user gets asked again next launch, never that this call
+                // is blocked.
+                if let Err(e) = crate::commands::config::remember_allow_rule(&state, name) {
+                    eprintln!("could not persist allow rule for {name}: {e}");
+                }
             }
             ConfirmAction::AlwaysAllow
         }
@@ -792,4 +875,116 @@ pub async fn respond_confirm(
         let _ = reply.send(parsed);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn draft(persona: Option<&str>) -> ActiveSession {
+        let mut meta = SessionMeta::new("test-model", "test-provider");
+        meta.persona = persona.map(str::to_string);
+        ActiveSession {
+            session: Session::new(meta),
+            writer: None,
+            path: std::path::PathBuf::from("/tmp/lebi-gui-turn-sources.jsonl"),
+        }
+    }
+
+    fn mem(owner: Option<&str>, body: &str, pinned: bool) -> hermes_memory::LoadedMemory {
+        let mut fm = hermes_memory::MemoryFrontmatter::new(
+            hermes_memory::Source::User,
+            hermes_memory::Confidence::High,
+            vec![],
+            "general".into(),
+        )
+        .owned(owner.map(str::to_string));
+        fm.pinned = pinned;
+        hermes_memory::LoadedMemory {
+            frontmatter: fm,
+            body: body.into(),
+            source_path: std::path::PathBuf::from("/nowhere"),
+            scope: hermes_memory::Scope::User,
+        }
+    }
+
+    /// 提示词里那份记忆必须**按工位切过**：只留「全局 + 本人物」。
+    /// 把 `visible_memories` 的 owner 写成 `None`（GUI 曾经就是这样直接把全量喂进去），
+    /// 这条必须红。
+    #[test]
+    fn visible_memories_keeps_globals_and_own_only() {
+        let all = vec![
+            mem(None, "全局：交付一律给 Word 放桌面", true),
+            mem(Some("xiao-xie"), "自己的：林碳报告只引 IEA", false),
+            mem(Some("wang-hai-yan"), "别人的：标题不夸张", true),
+        ];
+
+        let (view, pinned) = visible_memories(&all, Some("xiao-xie"));
+        assert_eq!(
+            view.iter().map(|m| m.body.as_str()).collect::<Vec<_>>(),
+            vec!["全局：交付一律给 Word 放桌面", "自己的：林碳报告只引 IEA"],
+            "人物会话只拿「全局 + 本人物」"
+        );
+        assert!(
+            !view
+                .iter()
+                .any(|m| m.frontmatter.owner.as_deref() == Some("wang-hai-yan")),
+            "别的人物的记忆一条都不许进提示词"
+        );
+        assert_eq!(pinned.len(), 1, "别人的 pinned 不许借「置顶」溜进来");
+        assert_eq!(pinned[0].frontmatter.owner, None);
+
+        let (globals, _) = visible_memories(&all, None);
+        assert_eq!(globals.len(), 1, "无人物 / 自带角色 → 只看全局");
+    }
+
+    fn system_prompt(persona: Option<&str>) -> String {
+        let active = draft(persona);
+        // 名册给两个人，其中一个是「我」——「我」不许出现在自己的名单里。
+        let roster = [
+            hermes_core::persona::get("xiao-xie").unwrap(),
+            hermes_core::persona::get("yu-tian").unwrap(),
+        ];
+        turn_sources(
+            &active,
+            &roster,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            "/tmp/ws",
+            hermes_llm::ContextLimits::default(),
+        )
+        .build_turn_system("你好")
+    }
+
+    #[test]
+    fn a_bound_persona_reaches_the_turn_prompt() {
+        let bound = system_prompt(Some("xiao-xie"));
+        assert!(bound.contains("## 你现在是谁"), "{bound}");
+        assert!(
+            bound.contains("林碳小谢"),
+            "人物块必须带上这位人物的身份：{bound}"
+        );
+        assert!(
+            bound.contains("- 编辑雨天 · 错在哪，我指给你"),
+            "指路名册必须进提示词，且写成侧栏那行的样子：{bound}"
+        );
+        assert!(
+            !bound.contains("- 林碳小谢 · "),
+            "名册是「其他工位」，不该把自己也列进去：{bound}"
+        );
+
+        let free = system_prompt(None);
+        assert!(!free.contains("## 你现在是谁"), "{free}");
+
+        let unknown = system_prompt(Some("who-is-this"));
+        assert!(
+            !unknown.contains("## 你现在是谁"),
+            "不认识的 id 不该凭空长出一个人物块：{unknown}"
+        );
+    }
 }

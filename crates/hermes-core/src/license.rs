@@ -1,10 +1,16 @@
 //! Software license (signed token) + trial window for desktop delivery.
 //!
 //! Format: `LEBI1.<base64url(payload_json)>.<base64url(ed25519_sig)>`
-//! Payload fields: `product`, `exp` (unix secs), optional `iat`, `lic_id`, `plan`.
+//! Payload fields: `product`, `exp` (unix secs), optional `iat`, `lic_id`, `plan`, `personas`.
+//!
+//! `personas` = the persona roster this license unlocks (`docs/spec/personas.md`).
+//! Absent field = legacy token = built-ins only; unknown ids are reported, never silently
+//! dropped. No `deny_unknown_fields` here — a client must always be able to read a newer
+//! token than itself (spec §4.6).
 //!
 //! Spec: `docs/spec/license-ux.md`. Private key never ships in the client.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -95,6 +101,13 @@ pub struct LicenseStatus {
     pub wechat: String,
     pub lic_id: Option<String>,
     pub plan: Option<String>,
+    /// Personas this machine may show, on top of the built-ins (`docs/spec/personas.md`).
+    /// Trial → empty. Licensed **and** Locked → the last valid token's roster: expiry locks
+    /// the main surfaces, it never takes a persona away.
+    pub personas: Vec<String>,
+    /// Ids the token named that this build does not know. Sorted + deduped, never silently
+    /// swallowed — the UI can say "this license names a persona your app doesn't have yet".
+    pub unknown_personas: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +121,9 @@ struct LicensePayload {
     lic_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plan: Option<String>,
+    /// Persona ids unlocked by this license. Omitted = legacy token = built-ins only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    personas: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -132,6 +148,9 @@ pub struct VerifiedLicense {
     pub iat_unix: Option<i64>,
     pub lic_id: Option<String>,
     pub plan: Option<String>,
+    /// Exactly what the token says (unfiltered); [`build_status`] narrows it to this build's
+    /// roster. Empty for legacy tokens.
+    pub personas: Vec<String>,
 }
 
 fn verifying_key() -> VerifyingKey {
@@ -155,6 +174,7 @@ pub fn sign_token_with_seed(
     iat_unix: Option<i64>,
     lic_id: Option<String>,
     plan: Option<String>,
+    personas: Option<Vec<String>>,
 ) -> Result<String, LicenseError> {
     use ed25519_dalek::{Signer, SigningKey};
     let sk = SigningKey::from_bytes(seed);
@@ -164,6 +184,7 @@ pub fn sign_token_with_seed(
         iat: iat_unix,
         lic_id,
         plan,
+        personas,
     };
     let json = serde_json::to_vec(&payload).map_err(|e| LicenseError::Parse(e.to_string()))?;
     let sig = sk.sign(&json);
@@ -203,6 +224,7 @@ pub fn verify_token(token: &str) -> Result<VerifiedLicense, LicenseError> {
         iat_unix: payload.iat,
         lic_id: payload.lic_id,
         plan: payload.plan,
+        personas: payload.personas.unwrap_or_default(),
     })
 }
 
@@ -275,6 +297,28 @@ fn active_verified(file: &LicenseFile, now: i64) -> Option<VerifiedLicense> {
     }
 }
 
+fn fmt_unix(t: i64) -> String {
+    Utc.timestamp_opt(t, 0)
+        .single()
+        .map(|d| d.to_rfc3339())
+        .unwrap_or_default()
+}
+
+/// Token roster → this build's roster: keep what we know (deduped, token order),
+/// report what we don't (sorted, deduped). Never silently drops an id.
+fn split_personas(raw: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut known: Vec<String> = Vec::new();
+    let mut unknown: BTreeSet<String> = BTreeSet::new();
+    for id in raw {
+        if crate::persona::get(id).is_none() {
+            unknown.insert(id.clone());
+        } else if !known.contains(id) {
+            known.push(id.clone());
+        }
+    }
+    (known, unknown.into_iter().collect())
+}
+
 fn build_status(file: &LicenseFile, now: i64) -> LicenseStatus {
     let today = local_date_string();
     let nudged_today = file.last_nudge_date.as_deref() == Some(today.as_str());
@@ -296,24 +340,22 @@ fn build_status(file: &LicenseFile, now: i64) -> LicenseStatus {
         } else {
             LicenseUrgency::Ample
         };
+        let (personas, unknown_personas) = split_personas(&v.personas);
         return LicenseStatus {
             phase: LicensePhase::Licensed,
             urgency,
             can_use_main: true,
             show_full_lock: false,
             should_nudge: expiring && !nudged_today,
-            expires_at: Some(
-                Utc.timestamp_opt(v.exp_unix, 0)
-                    .single()
-                    .map(|d| d.to_rfc3339())
-                    .unwrap_or_default(),
-            ),
+            expires_at: Some(fmt_unix(v.exp_unix)),
             remaining_secs: remaining,
             remaining_ratio: ratio,
             on_trial: false,
             wechat: WECHAT_CONTACT.to_string(),
             lic_id: v.lic_id,
             plan: v.plan,
+            personas,
+            unknown_personas,
         };
     }
 
@@ -340,41 +382,31 @@ fn build_status(file: &LicenseFile, now: i64) -> LicenseStatus {
                 can_use_main: true,
                 show_full_lock: false,
                 should_nudge: expiring && !nudged_today,
-                expires_at: Some(
-                    Utc.timestamp_opt(end, 0)
-                        .single()
-                        .map(|d| d.to_rfc3339())
-                        .unwrap_or_default(),
-                ),
+                expires_at: Some(fmt_unix(end)),
                 remaining_secs: remaining,
                 remaining_ratio: ratio,
                 on_trial: true,
                 wechat: WECHAT_CONTACT.to_string(),
                 lic_id: None,
                 plan: None,
+                // Trial shows the built-ins only — a trial is not a roster.
+                personas: Vec::new(),
+                unknown_personas: Vec::new(),
             };
         }
     }
 
-    // Locked
-    let expires_at = file
-        .token
+    // Locked — the last valid token still says who works here. Expiry locks the main
+    // surfaces; it does not take personas away (spec: 过期人物不消失).
+    let last = file.token.as_ref().and_then(|t| verify_token(t).ok());
+    let (personas, unknown_personas) = last
         .as_ref()
-        .and_then(|t| verify_token(t).ok())
-        .map(|v| {
-            Utc.timestamp_opt(v.exp_unix, 0)
-                .single()
-                .map(|d| d.to_rfc3339())
-                .unwrap_or_default()
-        })
-        .or_else(|| {
-            trial_end.map(|end| {
-                Utc.timestamp_opt(end, 0)
-                    .single()
-                    .map(|d| d.to_rfc3339())
-                    .unwrap_or_default()
-            })
-        });
+        .map(|v| split_personas(&v.personas))
+        .unwrap_or_default();
+    let expires_at = last
+        .as_ref()
+        .map(|v| fmt_unix(v.exp_unix))
+        .or_else(|| trial_end.map(fmt_unix));
 
     LicenseStatus {
         phase: LicensePhase::Locked,
@@ -389,6 +421,8 @@ fn build_status(file: &LicenseFile, now: i64) -> LicenseStatus {
         wechat: WECHAT_CONTACT.to_string(),
         lic_id: None,
         plan: None,
+        personas,
+        unknown_personas,
     }
 }
 
@@ -559,11 +593,98 @@ mod tests {
             Some(Utc::now().timestamp()),
             Some("lic-1".into()),
             Some("month".into()),
+            None,
         )
         .unwrap();
         let v = verify_token(&tok).unwrap();
         assert_eq!(v.exp_unix, exp);
         assert_eq!(v.lic_id.as_deref(), Some("lic-1"));
+        assert!(v.personas.is_empty(), "老码没有名单字段");
+    }
+
+    fn roster(ids: &[&str]) -> Option<Vec<String>> {
+        Some(ids.iter().map(|s| s.to_string()).collect())
+    }
+
+    fn signed_with_roster(days: i64, ids: &[&str]) -> String {
+        sign_token_with_seed(&DEV_SEED, future_exp(days), None, None, None, roster(ids)).unwrap()
+    }
+
+    #[test]
+    fn a_token_carries_its_persona_roster() {
+        let dir = tempdir().unwrap();
+        let st = apply_token_at(
+            &dir.path().join("license.json"),
+            &signed_with_roster(10, &["xiao-xie", "yu-tian"]),
+        )
+        .unwrap();
+        assert_eq!(st.phase, LicensePhase::Licensed);
+        assert_eq!(st.personas, vec!["xiao-xie", "yu-tian"]);
+        assert!(st.unknown_personas.is_empty());
+    }
+
+    #[test]
+    fn a_legacy_token_leaves_the_roster_empty_and_is_byte_compatible() {
+        let dir = tempdir().unwrap();
+        let tok = sign_token_with_seed(&DEV_SEED, future_exp(10), None, None, None, None).unwrap();
+        // No field on the wire: a token minted for an older client is unchanged.
+        let json = b64_decode(tok.split('.').nth(1).unwrap()).unwrap();
+        assert!(!String::from_utf8_lossy(&json).contains("personas"));
+        let st = apply_token_at(&dir.path().join("license.json"), &tok).unwrap();
+        assert_eq!(st.phase, LicensePhase::Licensed);
+        assert!(st.personas.is_empty(), "没写名单 = 只有自带，不是出错");
+        assert!(st.unknown_personas.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_persona_is_reported_not_swallowed() {
+        let dir = tempdir().unwrap();
+        let tok = signed_with_roster(
+            10,
+            &["xiao-xie", "ghost-b", "xiao-xie", "ghost-a", "ghost-b"],
+        );
+        let st = apply_token_at(&dir.path().join("license.json"), &tok).unwrap();
+        assert_eq!(st.personas, vec!["xiao-xie"], "认识的留下，去重");
+        assert_eq!(
+            st.unknown_personas,
+            vec!["ghost-a", "ghost-b"],
+            "不认识的另立一列，排序去重"
+        );
+    }
+
+    #[test]
+    fn a_trial_shows_no_licensed_personas() {
+        let dir = tempdir().unwrap();
+        let st = load_status_at(&dir.path().join("license.json")).unwrap();
+        assert_eq!(st.phase, LicensePhase::Trial);
+        assert!(st.personas.is_empty());
+        assert!(st.unknown_personas.is_empty());
+    }
+
+    #[test]
+    fn personas_survive_expiry() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("license.json");
+        let expired = sign_token_with_seed(
+            &DEV_SEED,
+            Utc::now().timestamp() - 86400,
+            None,
+            None,
+            None,
+            roster(&["xiao-jin", "ghost-x"]),
+        )
+        .unwrap();
+        let file = LicenseFile {
+            token: Some(expired),
+            trial_started_at: Some((Utc::now() - Duration::days(TRIAL_DAYS + 5)).to_rfc3339()),
+            ..Default::default()
+        };
+        save_file(&path, &file).unwrap();
+        let st = load_status_at(&path).unwrap();
+        assert_eq!(st.phase, LicensePhase::Locked, "主能力已锁");
+        assert!(st.show_full_lock);
+        assert_eq!(st.personas, vec!["xiao-jin"], "过期不收回角色");
+        assert_eq!(st.unknown_personas, vec!["ghost-x"]);
     }
 
     #[test]
@@ -587,7 +708,7 @@ mod tests {
     fn apply_and_status_licensed() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("license.json");
-        let tok = sign_token_with_seed(&DEV_SEED, future_exp(10), None, None, None).unwrap();
+        let tok = sign_token_with_seed(&DEV_SEED, future_exp(10), None, None, None, None).unwrap();
         let st = apply_token_at(&path, &tok).unwrap();
         assert_eq!(st.phase, LicensePhase::Licensed);
         assert!(st.can_use_main);
@@ -598,9 +719,9 @@ mod tests {
     fn reject_older_token() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("license.json");
-        let long = sign_token_with_seed(&DEV_SEED, future_exp(30), None, None, None).unwrap();
+        let long = sign_token_with_seed(&DEV_SEED, future_exp(30), None, None, None, None).unwrap();
         apply_token_at(&path, &long).unwrap();
-        let short = sign_token_with_seed(&DEV_SEED, future_exp(5), None, None, None).unwrap();
+        let short = sign_token_with_seed(&DEV_SEED, future_exp(5), None, None, None, None).unwrap();
         let err = apply_token_at(&path, &short).unwrap_err();
         assert!(matches!(err, LicenseError::OlderThanCurrent));
     }
@@ -609,7 +730,7 @@ mod tests {
     fn same_token_error() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("license.json");
-        let tok = sign_token_with_seed(&DEV_SEED, future_exp(10), None, None, None).unwrap();
+        let tok = sign_token_with_seed(&DEV_SEED, future_exp(10), None, None, None, None).unwrap();
         apply_token_at(&path, &tok).unwrap();
         let err = apply_token_at(&path, &tok).unwrap_err();
         assert!(matches!(err, LicenseError::SameAsCurrent));
@@ -625,7 +746,7 @@ mod tests {
     fn bad_signature_rejected() {
         let mut sk_bytes = [0u8; 32];
         sk_bytes[0] = 1;
-        let tok = sign_token_with_seed(&sk_bytes, future_exp(10), None, None, None).unwrap();
+        let tok = sign_token_with_seed(&sk_bytes, future_exp(10), None, None, None, None).unwrap();
         // If random key equals ours (impossible-ish), skip
         if SigningKey::from_bytes(&sk_bytes).verifying_key().to_bytes() == PUBLIC_KEY_BYTES {
             return;

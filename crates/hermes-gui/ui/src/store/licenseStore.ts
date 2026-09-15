@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { useChatStore } from "./chatStore";
 
 export type LicensePhase = "trial" | "licensed" | "locked";
 export type LicenseUrgency = "ample" | "expiring" | "expired";
@@ -17,6 +18,10 @@ export interface LicenseStatus {
   wechat: string;
   licId?: string | null;
   plan?: string | null;
+  /** 本机应显示的角色 id（自带不在码里，由后端补上）。 */
+  personas: string[];
+  /** 码里点名但本版本名册里没有的 id——要显示给用户，不许静默。 */
+  unknownPersonas: string[];
 }
 
 interface LicenseState {
@@ -25,9 +30,18 @@ interface LicenseState {
   /** Increment to scroll/focus settings license block. */
   focusRequestId: number;
   refresh: () => Promise<LicenseStatus | null>;
-  applyToken: (token: string) => Promise<LicenseStatus>;
+  applyToken: (token: string) => Promise<ApplyTokenResult>;
   markNudgeSeen: () => Promise<void>;
   requestLicenseFocus: () => void;
+}
+
+export interface ApplyTokenResult {
+  status: LicenseStatus;
+  /**
+   * 这张码落定后开通的授权角色 id（后端已按名册 + 授权过滤；自带不在其中）。
+   * 老格式码（不带名单）→ 空数组。
+   */
+  enabledPersonas: string[];
 }
 
 function parseApplyError(e: unknown): string {
@@ -55,12 +69,20 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
 
   applyToken: async (token: string) => {
     try {
-      const res = await invoke<{ status: LicenseStatus; message: string }>(
-        "apply_license",
-        { token },
-      );
+      const res = await invoke<{
+        status: LicenseStatus;
+        message: string;
+        enabledPersonas: string[];
+      }>("apply_license", { token });
       set({ status: res.status, loaded: true });
-      return res.status;
+      // 新码可能带来新的角色名单（也可能撤掉）——工位列表必须跟着换，
+      // 否则用户输了码却在侧栏里看不到刚开通的工位。**等它回来**再返回，
+      // 调用方（表单）才能立刻按名字说「已开通哪几个工位」。
+      await useChatStore.getState().fetchPersonas();
+      return {
+        status: res.status,
+        enabledPersonas: res.enabledPersonas ?? [],
+      };
     } catch (e) {
       throw new Error(parseApplyError(e));
     }

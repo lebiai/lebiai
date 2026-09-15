@@ -137,8 +137,11 @@ pub async fn run(opts: &DistillOpts) -> Result<()> {
             confidence: Confidence::High, // merged from multiple corroborated sources
             rationale: format!("distilled from {} overlapping memories", c.members.len()),
             supersedes: superseded.clone(),
+            owner: None,
         };
-        match persist_memory(&store, &candidate) {
+        // 合并天生跨会话：一个簇的成员可能来自不同工位的会话，没有唯一的
+        // 「来源工位」可传 → `None`，落全局（Task 1.8b 报告里点名的取不到处）。
+        match persist_memory(&store, &candidate, None) {
             Ok(path) => {
                 applied += 1;
                 println!("  ✓ wrote {}", path.display());
