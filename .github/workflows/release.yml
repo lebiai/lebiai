@@ -70,10 +70,16 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lebi-ai-macos-dmg
+          # 产物路径跟着 `--target` 走：通用包（TAURI_TARGET=universal-apple-darwin）
+          # 落在 `target/<triple>/release/bundle/`，单架构包落在 `target/release/bundle/`。
+          # 两种都收 —— 只写一种时另一种会撞上 `if-no-files-found: error`。
           path: |
             target/release/bundle/dmg/*.dmg
+            target/*/release/bundle/dmg/*.dmg
             target/release/bundle/macos/*.app.tar.gz
             target/release/bundle/macos/*.app.tar.gz.sig
+            target/*/release/bundle/macos/*.app.tar.gz
+            target/*/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: error
 
   windows-nsis:

@@ -96,10 +96,15 @@ cat > "$OUT/markitdown" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-PY="$ROOT/python/bin/python3.12"
+# 解释器版本**不写死**：uv / python3 -m venv 装的是哪一个 minor（3.12 / 3.13 …）
+# 取决于构建机，写死就会在别的机器上变成 exit 127（CI 上真踩过）。
+PY=""
+for cand in "$ROOT"/python/bin/python3.*; do
+  if [ -x "$cand" ]; then PY="$cand"; break; fi
+done
 SITE="$ROOT/site-packages"
-if [ ! -x "$PY" ] || [ ! -d "$SITE" ]; then
-  echo "markitdown-sidecar: incomplete bundle (need $PY and $SITE)" >&2
+if [ -z "$PY" ] || [ ! -d "$SITE" ]; then
+  echo "markitdown-sidecar: incomplete bundle (need python3.* under $ROOT/python/bin and $SITE)" >&2
   exit 127
 fi
 exec env PYTHONPATH="$SITE${PYTHONPATH:+:$PYTHONPATH}" "$PY" -m markitdown "$@"
