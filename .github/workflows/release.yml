@@ -55,7 +55,28 @@ jobs:
         run: scripts/check-updater-secrets.sh
 
       - name: Add the Intel target (universal build)
-        run: rustup target add x86_64-apple-darwin
+        # rustup 要现下 Intel 那份 std —— CI 上偶发网络抖动（2026-09-22 真踩过一次：
+        # 这步挂掉，后面构建直接被跳过，整轮白等 12 分钟）。所以：已装就跳过，没装重试三次。
+        run: |
+          LOG="$RUNNER_TEMP/rustup-intel.log"
+          if rustup target list --installed | grep -qx x86_64-apple-darwin; then
+            echo "x86_64-apple-darwin already installed"
+            exit 0
+          fi
+          code=1
+          for attempt in 1 2 3; do
+            if rustup target add x86_64-apple-darwin > "$LOG" 2>&1; then
+              code=0
+              break
+            fi
+            code=$?
+            echo "::warning::rustup target add failed (attempt $attempt, exit $code)"
+            sleep 15
+          done
+          if [ "$code" -ne 0 ]; then
+            scripts/ci-annotate-log.sh "$LOG" "$code"
+            exit "$code"
+          fi
 
       - name: Build DMG (universal, Apple Silicon + Intel)
         env:
