@@ -14,8 +14,8 @@ use anyhow::{Context, Result};
 use hermes_core::{LlmProvider, Session};
 use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore, Scope as MemoryScope};
 use hermes_reflect::{
-    deferred_load, reflect, CandidateKind, ConflictCandidate, DeferredCandidate, MemoryCandidate,
-    ReflectionOutput, SkillCandidate,
+    reflect, CandidateKind, ConflictCandidate, EnqueueMark, InboxPayload, InboxSource,
+    MemoryCandidate, ReflectionOutput, SkillCandidate,
 };
 use hermes_skills::{FsSkillStore, Scope as SkillScope, SkillFrontmatter, SkillStore};
 use tokio::io::{AsyncBufReadExt, BufReader, Lines, Stdin};
@@ -92,11 +92,15 @@ pub async fn run_with_min_turns(
         .collect();
 
     // 本会话的工位（没人物 / 自带角色 → `None`）。批准候选时靠它判归属。
-    let session_owner = hermes_core::persona::memory_owner_for(session.meta.persona.as_deref());
+    let session_owner = hermes_core::persona::memory_owner_for(
+        session.meta.persona.as_deref(),
+        session.meta.team.as_deref(),
+    );
 
-    // Re-evaluate deferred candidates from previous sessions before running
+    // Re-evaluate pending candidates from previous sessions before running
     // reflection for this one (P0 第一条: candidates must go through human
-    // approval — a deferred queue with no consumer would never be reviewed).
+    // approval — a queue with no consumer would never be reviewed).
+    absorb_legacy_deferred_queue();
     review_deferred(&session.meta.id, &skill_store, &memory_store).await?;
 
     let output = reflect(provider, session, &active_skills, &active_memories)
@@ -128,7 +132,7 @@ pub async fn run_with_min_turns(
             },
             Some(Action::Reject) => eprintln!("  (rejected)"),
             Some(Action::Defer) => {
-                hermes_reflect::deferred_save(DeferredCandidate::Skill(c.clone()));
+                defer_to_inbox(InboxPayload::Skill(c.clone()), session_owner.clone());
                 eprintln!("  (deferred — will appear next session)");
             }
             None => {
@@ -226,19 +230,17 @@ pub async fn run_with_min_turns(
         match outcome {
             Some(Action::Accept) => {
                 match persist_memory(&memory_store, c, session_owner.as_deref()) {
-                    Ok(path) => {
+                    Ok(Some(path)) => {
                         eprintln!("  ✓ wrote {}", path.display());
                         written_memories += 1;
                     }
+                    Ok(None) => eprintln!("  ↩ already remembered — nothing new written"),
                     Err(e) => eprintln!("  ✗ failed to persist: {e:#}"),
                 }
             }
             Some(Action::Reject) => eprintln!("  (rejected)"),
             Some(Action::Defer) => {
-                hermes_reflect::deferred_save(DeferredCandidate::Memory {
-                    candidate: c.clone(),
-                    session_owner: session_owner.clone(),
-                });
+                defer_to_inbox(InboxPayload::Memory(c.clone()), session_owner.clone());
                 eprintln!("  (deferred — will appear next session)");
             }
             None => {
@@ -490,7 +492,7 @@ fn apply_conflict_action(
             if !c.supersedes.iter().any(|id| id == old_id) {
                 c.supersedes.push(old_id.to_string());
             }
-            persist_memory(store, &c, session_owner).map(Some)
+            persist_memory(store, &c, session_owner)
         }
         ConflictAction::KeepOld => {
             eprintln!("  (old kept; new candidate discarded)");
@@ -520,7 +522,7 @@ fn apply_conflict_action(
                     if !c.supersedes.iter().any(|id| id == old_id) {
                         c.supersedes.push(old_id.to_string());
                     }
-                    persist_memory(store, &c, session_owner).map(Some)
+                    persist_memory(store, &c, session_owner)
                 }
                 None => {
                     eprintln!("  (editor cancelled)");
@@ -538,7 +540,7 @@ fn apply_conflict_action(
             let mut c = new.clone();
             c.scope = new_scope;
             c.supersedes.retain(|id| id != old_id);
-            persist_memory(store, &c, session_owner).map(Some)
+            persist_memory(store, &c, session_owner)
         }
         ConflictAction::Skip => {
             eprintln!("  (skipped — no changes)");
@@ -596,7 +598,7 @@ pub(crate) async fn review_proposed_skill(
         },
         Some(Action::Reject) => eprintln!("  (rejected)"),
         Some(Action::Defer) => {
-            hermes_reflect::deferred_save(DeferredCandidate::Skill(c.clone()));
+            defer_to_inbox(InboxPayload::Skill(c.clone()), None);
             eprintln!("  (deferred — will appear next session)");
         }
         None => eprintln!("  (stdin closed; skipping)"),
@@ -627,53 +629,62 @@ pub(crate) async fn review_proposed_skill(
 /// `session_owner` 是候选来源会话的工位（`SessionMeta.persona` →
 /// `memory_owner_for`）。没有来源会话（跨会话的 distill、取不到会话）传 `None`。
 /// 归属判定只有 `hermes_memory::resolve_owner` 一个地方，这里只传参。
+///
+/// 返回 `Ok(None)` = **库里已经有一条同样的**（查重闸门在 `put` 里，P1-4）：
+/// 没重复写，但这不算失败 —— 用户点头的是「记住这件事」，那件事已经在里面了。
 pub(crate) fn persist_memory(
     store: &FsMemoryStore,
     c: &MemoryCandidate,
     session_owner: Option<&str>,
-) -> Result<PathBuf> {
+) -> Result<Option<PathBuf>> {
     let fm = hermes_reflect::candidate::frontmatter_for(c, session_owner);
-    hermes_reflect::candidate::put_with_fallback(store, c.scope, fm, &c.fact)
-        .map_err(|e| anyhow::anyhow!("{e}"))
+    match hermes_reflect::candidate::put_with_fallback(store, c.scope, fm, &c.fact) {
+        Ok(path) => Ok(Some(path)),
+        Err(hermes_memory::MemoryStoreError::Conflict { .. }) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("{e}")),
+    }
 }
 
-/// Load deferred candidates (from micro-reflection or deferred decisions in
-/// earlier sessions) and present them through the same approval gate. Clears
-/// the queue when the user has reviewed everything (or stdin closed — the
-/// file stays for the next session).
+/// Review the **single** pending queue (`pending-review.json`, P1-5).
+///
+/// 以前 CLI 读的是自己那一份 `deferred.jsonl`，而 GUI/server 的待审长在
+/// `pending-review.json`：同机同一用户两条队列各自长、互相看不见。现在只有一条。
+///
+/// 点头 = 落盘 + 从队列里移除；摇头 = 只移除；推迟 = 留在队列里等下次。
+/// stdin 断了就整体不动 —— 队列原封不动留给下一次。
 async fn review_deferred(
     session_id: &str,
     skill_store: &FsSkillStore,
     memory_store: &FsMemoryStore,
 ) -> Result<()> {
-    let deferred = match deferred_load() {
+    let pending = match hermes_reflect::inbox_list() {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!(error=%e, "loading deferred candidates failed");
+            tracing::warn!(error=%e, "loading the pending queue failed");
             return Ok(());
         }
     };
-    if deferred.is_empty() {
+    if pending.is_empty() {
         return Ok(());
     }
 
     eprintln!();
     eprintln!(
         "{}",
-        crate::commands::style::paint("1;36", "== Deferred candidates from previous sessions ==")
+        crate::commands::style::paint("1;36", "== Pending candidates from previous sessions ==")
     );
-    eprintln!("({} item(s) awaiting your decision)", deferred.len());
+    eprintln!("({} item(s) awaiting your decision)", pending.len());
 
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
 
     let mut skills_done = 0usize;
     let mut memories_done = 0usize;
-    let mut keep: Vec<DeferredCandidate> = Vec::new();
-    for (i, item) in deferred.iter().enumerate() {
-        let (kind, label, action) = match item {
-            DeferredCandidate::Skill(c) => {
-                let outcome = prompt_skill(c, i + 1, deferred.len(), &mut reader).await?;
+    let total = pending.len();
+    for (i, item) in pending.iter().enumerate() {
+        let (kind, label, action) = match &item.payload {
+            InboxPayload::Skill(c) => {
+                let outcome = prompt_skill(c, i + 1, total, &mut reader).await?;
                 let label = c.name.clone();
                 let act = match outcome {
                     Some(Action::Accept) => {
@@ -691,8 +702,7 @@ async fn review_deferred(
                         Some(Action::Reject)
                     }
                     Some(Action::Defer) => {
-                        eprintln!("  (kept deferred)");
-                        keep.push(DeferredCandidate::Skill(c.clone()));
+                        eprintln!("  (kept pending)");
                         Some(Action::Defer)
                     }
                     None => {
@@ -702,18 +712,18 @@ async fn review_deferred(
                 };
                 (CandidateKind::Skill, label, act)
             }
-            DeferredCandidate::Memory {
-                candidate: c,
-                session_owner,
-            } => {
-                let outcome = prompt_memory(c, i + 1, deferred.len(), &mut reader).await?;
+            InboxPayload::Memory(c) => {
+                let outcome = prompt_memory(c, i + 1, total, &mut reader).await?;
                 let label = c.fact.lines().next().unwrap_or("").to_string();
                 let act = match outcome {
                     Some(Action::Accept) => {
-                        match persist_memory(memory_store, c, session_owner.as_deref()) {
-                            Ok(path) => {
+                        match persist_memory(memory_store, c, item.session_owner.as_deref()) {
+                            Ok(Some(path)) => {
                                 eprintln!("  ✓ wrote {}", path.display());
                                 memories_done += 1;
+                            }
+                            Ok(None) => {
+                                eprintln!("  ↩ already remembered — nothing new written")
                             }
                             Err(e) => eprintln!("  ✗ failed to persist: {e:#}"),
                         }
@@ -724,11 +734,7 @@ async fn review_deferred(
                         Some(Action::Reject)
                     }
                     Some(Action::Defer) => {
-                        eprintln!("  (kept deferred)");
-                        keep.push(DeferredCandidate::Memory {
-                            candidate: c.clone(),
-                            session_owner: session_owner.clone(),
-                        });
+                        eprintln!("  (kept pending)");
                         Some(Action::Defer)
                     }
                     None => {
@@ -739,21 +745,104 @@ async fn review_deferred(
                 (CandidateKind::Memory, label, act)
             }
         };
+        // 点头/摇头都离开队列；推迟留着。
+        if matches!(action, Some(Action::Accept) | Some(Action::Reject)) {
+            if let Err(e) = hermes_reflect::inbox_remove(&item.id) {
+                tracing::warn!(error=%e, id=%item.id, "removing a reviewed item failed");
+            }
+        }
         if let Some(a) = action {
             log_action(session_id, kind, &label, map_action(a));
         }
     }
 
-    // Rebuild the queue from items the user deferred again; items that were
-    // accepted/rejected leave the file. (stdin closed → file untouched.)
-    if let Err(e) = hermes_reflect::deferred_clear() {
-        tracing::warn!(error=%e, "clearing deferred queue failed");
-    }
-    for item in keep {
-        hermes_reflect::deferred_save(item);
-    }
-    eprintln!("deferred review done — skills: {skills_done}, memories: {memories_done}");
+    eprintln!("pending review done — skills: {skills_done}, memories: {memories_done}");
     Ok(())
+}
+
+/// 旧的 CLI 私有队列 `deferred.jsonl`：读到就并进唯一的待审队列，然后删掉。
+/// 只做一次；文件不在就是无事发生。
+fn absorb_legacy_deferred_queue() {
+    let root = hermes_core::data_root();
+    let legacy = root.join("deferred.jsonl");
+    if !legacy.exists() {
+        return;
+    }
+    let raw = match std::fs::read_to_string(&legacy) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error=%e, "reading the legacy deferred queue failed");
+            return;
+        }
+    };
+    let mut moved = 0usize;
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // 老格式（`DeferredCandidate`，内部 tag = `kind`，内容都是**平铺**的）：
+        //   {"kind":"skill",  ...SkillCandidate 字段...}
+        //   {"kind":"memory", ...MemoryCandidate 字段..., "session_owner":"..."}
+        let payload = match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(mut v) => {
+                let kind = v
+                    .get("kind")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let owner = v
+                    .get("session_owner")
+                    .and_then(|o| o.as_str())
+                    .map(str::to_string);
+                if let Some(obj) = v.as_object_mut() {
+                    // 这两个键只属于队列外壳，不属于候选本身。
+                    obj.remove("kind");
+                    obj.remove("session_owner");
+                }
+                let parsed = if kind == "memory" {
+                    serde_json::from_value::<MemoryCandidate>(v).map(InboxPayload::Memory)
+                } else {
+                    serde_json::from_value::<SkillCandidate>(v).map(InboxPayload::Skill)
+                };
+                match parsed {
+                    Ok(p) => Some((p, owner)),
+                    Err(e) => {
+                        tracing::warn!(error=%e, "skipping an unreadable legacy deferred line");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error=%e, "skipping a malformed legacy deferred line");
+                None
+            }
+        };
+        if let Some((p, owner)) = payload {
+            let mark = EnqueueMark::append_only(owner);
+            if let Ok(n) = hermes_reflect::enqueue_candidate(p, InboxSource::ManualReflect, mark) {
+                moved += n;
+            }
+        }
+    }
+    match std::fs::remove_file(&legacy) {
+        Ok(()) => eprintln!("(merged {moved} item(s) from the old deferred queue)"),
+        Err(e) => tracing::warn!(error=%e, "removing the legacy deferred queue failed"),
+    }
+}
+
+/// 把一条候选放进**唯一**的待审队列（P1-5：以前 CLI 另写 `deferred.jsonl`）。
+///
+/// 用 `append_only`：CLI 是在候选**当场**被推迟时入队，队列里已有的条目
+/// （含 GUI 那边排的）不该被这一条顶掉。
+fn defer_to_inbox(payload: InboxPayload, session_owner: Option<String>) {
+    let mark = EnqueueMark::append_only(session_owner);
+    match hermes_reflect::enqueue_candidate(payload, InboxSource::ManualReflect, mark) {
+        Ok(n) if n > 0 => {}
+        // 0 条 = 质量门槛没过（噪声 / 太短 / 重复）。不打扰用户，也不算失败。
+        Ok(_) => eprintln!("  (deferred — 没过待审门槛，未入队)"),
+        Err(e) => eprintln!("  (deferred — 写入待审队列失败: {e:#})"),
+    }
 }
 
 fn map_action(a: Action) -> hermes_reflect::ActionTaken {

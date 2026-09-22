@@ -2,8 +2,7 @@
  * 空会话的首页：**只有一句问候**。
  *
  * 产品决定（2026-09-15）：首页原先那套（场景卡、大标题、标语、底部提示语）
- * 已经不适用，全部撤掉。首页是一句问候，不是一张菜单——要干什么，用户说出来
- * 就行，不用我们先摆四个选项替他决定。
+ * 已经不适用，全部撤掉。首页是一句问候，不是一张菜单——要干活，点左边的人。
  *
  * **美感只能从这一句话来**（见 `index.css` 的 `.greet-*`）：
  * 逐字浮入（模糊→实）、前后两段层次、破折号收小当分隔。
@@ -44,7 +43,11 @@ function Chars({
   );
 }
 
-export function WelcomeScenes() {
+/**
+ * `hint` 是这一段的第二行小字（目前只有项目组会话用：还没开工时，
+ * 用户得知道这个组靠什么活起来）。不传就是原来那句问候，一字不多。
+ */
+export function WelcomeScenes({ hint }: { hint?: string } = {}) {
   const t = useUiStore((s) => s.t);
   const greetingKey = returnGreetingKey();
   if (!greetingKey) return null;
@@ -57,7 +60,7 @@ export function WelcomeScenes() {
   const charCount = head.length + sep.length + tail.length;
 
   return (
-    <div className="flex items-center justify-center px-4 min-h-[66vh]">
+    <div className="flex flex-col items-center justify-center px-4 min-h-[66vh]">
       <div
         className="greet-block"
         style={{ "--greet-chars": charCount } as CSSProperties}
@@ -84,6 +87,11 @@ export function WelcomeScenes() {
         </p>
         <span className="greet-rule" aria-hidden="true" />
       </div>
+      {hint && (
+        <p className="mt-4 text-center text-app-sub leading-relaxed text-app-fg-secondary dark:text-slate-400 fade-up-in">
+          {hint}
+        </p>
+      )}
     </div>
   );
 }

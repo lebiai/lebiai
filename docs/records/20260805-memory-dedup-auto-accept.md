@@ -4,7 +4,7 @@
 |------|------|
 | **编号** | `20260805-memory-dedup-auto-accept` |
 | **日期** | 2026-08-05 |
-| **状态** | 测试通过（单测）· 待真机手测 auto-accept |
+| **状态** | **已验收**（2026-09-19 统一签收 · 依据与未验项见 [`20260919-acceptance-sweep`](./20260919-acceptance-sweep.md)）；原状态：测试通过（单测）· 待真机手测 auto-accept |
 | **负责人** | agent |
 | **关联** | G1 / G4（FsMemoryStore · auto-accept 深挖） |
 

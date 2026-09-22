@@ -257,6 +257,8 @@ mod tests {
                 zone: zone.into(),
                 supersedes: vec![],
                 owner: None,
+                because: None,
+                intentional: false,
                 extra: Default::default(),
             },
             body: body.into(),

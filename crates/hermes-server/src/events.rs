@@ -71,6 +71,14 @@ pub enum ChatStreamEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         reflection: Option<MicroReflectionPayload>,
     },
+    /// 较早的上下文已被整理成摘要（本轮发送时触发）。客户端可忽略；
+    /// Flutter 侧落在 `UnknownEvent` 之前是安全的（它有 `_ =>` 兜底）。
+    #[serde(rename_all = "camelCase")]
+    ContextCompacted {
+        replaced: usize,
+        before_tokens: usize,
+        after_tokens: usize,
+    },
     Done,
 }
 

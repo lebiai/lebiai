@@ -40,7 +40,7 @@ export function DueChips({
             setCustom(true);
             if (preset || !value) onChange("");
           }}
-          className="px-2.5 py-1 text-[12px] text-app-primary dark:text-blue-300"
+          className="px-2.5 py-1 text-xs text-app-primary dark:text-blue-300"
         >
           {t("zaiban.duePick")}
         </button>
@@ -50,7 +50,7 @@ export function DueChips({
           type="date"
           value={/^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ""}
           onChange={(e) => onChange(e.target.value)}
-          className={`${ui.input} py-1.5 text-[12px]`}
+          className={`${ui.input} py-1.5 text-xs`}
         />
       )}
     </div>

@@ -5,10 +5,15 @@ import {
   useMemo,
   useRef,
   useState,
+  type RefObject,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Sparkles, X, ListTodo } from "lucide-react";
-import { useChatStore } from "../../store/chatStore";
+import {
+  ListTodo,
+  Sparkles,
+  X,
+} from "lucide-react";
+import { dayKey, speakerNameOf, useChatStore } from "../../store/chatStore";
 import { useUiStore } from "../../store/uiStore";
 import { useNavStore } from "../../store/navStore";
 import { isDefaultTitle } from "../../utils/sessionTitle";
@@ -16,12 +21,16 @@ import {
   coalesceMessagesForDisplay,
   hasVisibleAssistantContent,
 } from "../../utils/displayMessages";
+import { useThrottledValue } from "../../utils/useThrottledValue";
 import { Button, ui } from "../common/ui";
 import { MessageBubble } from "./MessageBubble";
 import { InputArea } from "./InputArea";
 import { StreamingBubble } from "./StreamingBubble";
-import { ConfirmModal } from "./ConfirmModal";
+
 import { WelcomeScenes } from "./WelcomeScenes";
+import { TeamRoster } from "./TeamRoster";
+import { PendingNod } from "./PendingNod";
+import { DayFold } from "./DayFold";
 import { ZaibanCue } from "../zaiban/ZaibanCue";
 import { WorkDrawer } from "../work/WorkDrawer";
 import { useWorkDrawerStore } from "../../store/workDrawerStore";
@@ -65,12 +74,17 @@ export function ChatView() {
     sessions,
     messages,
     isStreaming,
+    contextCompacted,
     lastReflection,
     clearReflection,
     regenerateLast,
     editAndResend,
     personas,
     personaId,
+    teams,
+    teamId,
+    episode,
+    fetchEpisode,
   } = useChatStore();
   const t = useUiStore((s) => s.t);
   const drawerOpen = useWorkDrawerStore((s) => s.open);
@@ -78,13 +92,14 @@ export function ChatView() {
   const closeDrawer = useWorkDrawerStore((s) => s.close);
   const owedCount = useZaibanStore((s) => s.list?.owedCount ?? 0);
   const overdueCount = useZaibanStore((s) => s.list?.overdueCount ?? 0);
-  const pendingConfirm = useChatStore((s) => s.pendingConfirm);
+
 
   const parentRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   /** Keys already present when session loaded / previously rendered — no re-enter. */
   const knownMsgKeys = useRef<Set<string>>(new Set());
   const seededSessionId = useRef<string | null>(null);
+  const seenDays = useRef<Set<string>>(new Set());
   /** Keys currently playing enter animation (new turns only). */
   const [enteringKeys, setEnteringKeys] = useState<Record<string, true>>({});
 
@@ -106,6 +121,15 @@ export function ChatView() {
     [personas, personaId]
   );
 
+  /** 项目组会话：头部写组名，写说话人的人是消息标签（规格 §2.2）。 */
+  const team = useMemo(
+    () => teams.find((t) => t.id === teamId) ?? null,
+    [teams, teamId]
+  );
+
+  /** 组里这一轮开口的人；别的会话为 null（不标）。 */
+  const speaker = useChatStore(speakerNameOf);
+
   /**
    * 兜底：**没有工位**的会话（persona 落地之前的老会话、别的渠道进来的会话）
    * 退回「这是哪一段」。没有正经标题时给产品名，**不回「新对话」**——
@@ -115,6 +139,13 @@ export function ChatView() {
     const s = sessions.find((x) => x.id === activeSessionId);
     return s && !isDefaultTitle(s.title) ? s.title : null;
   }, [activeSessionId, sessions]);
+
+  /** 更早的日子 + 已经翻开的旧账（旧账只读）。 */
+  const days = useChatStore((s) => s.days);
+  const expandedDays = useChatStore((s) => s.expandedDays);
+  const dayLoading = useChatStore((s) => s.dayLoading);
+  const dayError = useChatStore((s) => s.dayError);
+  const toggleDay = useChatStore((s) => s.toggleDay);
 
   const displayMessages = useMemo(
     () =>
@@ -140,6 +171,7 @@ export function ChatView() {
     if (seededSessionId.current !== activeSessionId) {
       seededSessionId.current = activeSessionId;
       knownMsgKeys.current = new Set(messageKeys);
+      seenDays.current = new Set();
       setEnteringKeys({});
       return;
     }
@@ -155,6 +187,14 @@ export function ChatView() {
     }
   }, [activeSessionId, messageKeys]);
 
+  useLayoutEffect(() => {
+    const keys = Object.keys(expandedDays);
+    const fresh = keys.find((k) => !seenDays.current.has(k));
+    seenDays.current = new Set(keys);
+    if (!fresh) return;
+    document.getElementById(`day-${fresh}`)?.scrollIntoView({ block: "start" });
+  }, [expandedDays]);
+
   const markEntered = useCallback((key: string) => {
     setEnteringKeys((prev) => {
       if (!prev[key]) return prev;
@@ -167,7 +207,9 @@ export function ChatView() {
   const showWelcome =
     !!activeSessionId && displayMessages.length === 0 && !isStreaming;
 
-  const useVirtual = displayMessages.length >= VIRTUAL_THRESHOLD;
+  /** 流式时不用虚拟列表：实时块在列表外会滚丢。 */
+  const useVirtual =
+    displayMessages.length >= VIRTUAL_THRESHOLD && !isStreaming;
 
   const virtualizer = useVirtualizer({
     count: useVirtual ? displayMessages.length : 0,
@@ -198,6 +240,42 @@ export function ChatView() {
     return -1;
   }, [displayMessages]);
 
+  /** 人物 id → 名字。引擎在消息上盖的是 id，界面要的是名字。 */
+  const speakerNames = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of teams) {
+      for (const m of t.members) if (!map.has(m.id)) map.set(m.id, m.name);
+    }
+    for (const p of personas) map.set(p.id, p.name);
+    return map;
+  }, [teams, personas]);
+
+  /**
+   * 每一行 assistant 该标谁。**换人了就标** —— 组会话里棒跟着产物走
+   * （海燕 → 吕老师 → 小宋），不标的话后一个人说的话会被并进前一个人的气泡里
+   * （用户原话：「吕老师消息被埋」）。
+   *
+   * 没有 `speaker` 的（人物 id 落地之前的老 transcript）这里给 null，
+   * 由 `speakerForRow` 走老的兜底规则，行为与过去一致。
+   */
+  const speakerLabels = useMemo(() => {
+    const labels: (string | null)[] = [];
+    let prev: string | null = null;
+    for (const m of displayMessages) {
+      if (m.role !== "assistant") {
+        // 用户开口 = 新的一轮：下一句该重新署名。
+        prev = null;
+        labels.push(null);
+        continue;
+      }
+      const id = m.speaker ?? null;
+      const changed = !!id && id !== prev;
+      labels.push(changed ? speakerNames.get(id) ?? id : null);
+      prev = id;
+    }
+    return labels;
+  }, [displayMessages, speakerNames]);
+
   const onEditUser = useCallback((rawStart: number, currentText: string) => {
     setEditDraft({ rawStart, text: currentText });
   }, []);
@@ -209,20 +287,32 @@ export function ChatView() {
     void editAndResend(rawStart, text);
   };
 
+  /** 今天有没有待点头的选题：换桌子 / 换会话就回来读一次。 */
+  useEffect(() => {
+    void fetchEpisode();
+  }, [fetchEpisode, teamId, activeSessionId]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && drawerOpen && !pendingConfirm) {
+      if (e.key === "Escape" && drawerOpen) {
         e.preventDefault();
         closeDrawer();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [drawerOpen, closeDrawer, pendingConfirm]);
+  }, [drawerOpen, closeDrawer]);
 
   const renderMessage = (msg: (typeof displayMessages)[0], i: number) => {
     const key = messageKeys[i] ?? messageKey(msg, i);
     const enter = !!enteringKeys[key];
+    // 组会话才署名（工位会话头部已经写着这是谁）；老 transcript 没盖过章，
+    // 退回过去那条规则：最后一条 + 已停流。
+    const rowSpeaker =
+      teamId === null
+        ? null
+        : speakerLabels[i] ??
+          (i === lastAssistantIdx && !isStreaming ? speaker : null);
     return (
       <div
         key={key}
@@ -233,6 +323,7 @@ export function ChatView() {
       >
         <MessageBubble
           message={msg}
+          speaker={rowSpeaker}
           canRegenerate={i === lastAssistantIdx && !isStreaming && !readOnly}
           onRegenerate={() => void regenerateLast()}
           onEditUser={readOnly ? undefined : onEditUser}
@@ -242,22 +333,31 @@ export function ChatView() {
     );
   };
 
-  const headerNode = (
+  const headerNode = (withWork: boolean) => (
       <header className={ui.header}>
         <div className="min-w-0 flex-1 flex items-baseline gap-2">
           <h1 className="text-sm font-semibold text-app-fg dark:text-slate-100 truncate min-w-0">
-            {station ? station.name : (orphanTopic ?? t("chat.header"))}
+            {team
+              ? team.name
+              : station
+                ? station.name
+                : (orphanTopic ?? t("chat.header"))}
           </h1>
-          {station && (
-            <span className="shrink-0 text-[11px] text-app-fg-tertiary dark:text-slate-500 whitespace-nowrap">
+          {team ? (
+            <span className="shrink-0 text-app-sub text-app-fg-secondary dark:text-slate-400 whitespace-nowrap">
+              {team.hint}
+            </span>
+          ) : station ? (
+            <span className="shrink-0 text-app-sub text-app-fg-secondary dark:text-slate-400 whitespace-nowrap">
               {station.role}
             </span>
-          )}
+          ) : null}
         </div>
+        {withWork && (
         <button
           type="button"
           onClick={() => void toggleDrawer()}
-          className={`shrink-0 inline-flex items-center gap-1.5 pl-2.5 pr-2 py-1 rounded-full text-[12px] border transition-colors ${
+          className={`shrink-0 inline-flex items-center gap-1.5 pl-2.5 pr-2 py-1 rounded-full text-xs border transition-colors ${
             drawerOpen
               ? "border-app-primary/30 bg-app-primary-soft text-app-primary dark:bg-blue-950/50 dark:text-blue-300"
               : "border-app-border dark:border-slate-700 bg-app-surface dark:bg-slate-800/80 text-app-fg-secondary hover:text-app-fg hover:border-app-fg/20"
@@ -268,7 +368,7 @@ export function ChatView() {
           <span>{t("zaiban.title")}</span>
           {owedCount > 0 && (
             <span
-              className={`min-w-[1.15rem] h-4 px-1 rounded-full text-[10px] font-semibold flex items-center justify-center ${
+              className={`min-w-[1.15rem] h-4 px-1 rounded-full text-xs font-semibold flex items-center justify-center ${
                 drawerOpen
                   ? "bg-white/20 text-white dark:bg-slate-900/20 dark:text-slate-900"
                   : overdueCount > 0
@@ -280,6 +380,7 @@ export function ChatView() {
             </span>
           )}
         </button>
+        )}
       </header>
   );
 
@@ -287,7 +388,7 @@ export function ChatView() {
     return (
       <div className={`flex h-full min-w-0 ${ui.page}`}>
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
-          {headerNode}
+          {headerNode(false)}
           <div className="flex-1 overflow-y-auto px-4 py-4">
             <div className="max-w-3xl mx-auto">
               <WelcomeScenes />
@@ -301,7 +402,11 @@ export function ChatView() {
   return (
     <div className={`flex h-full min-w-0 ${ui.page}`}>
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
-      {headerNode}
+      {headerNode(true)}
+
+      {team && <TeamRoster team={team} />}
+
+      {team && episode && <PendingNod episode={episode} />}
 
       <ZaibanCue />
 
@@ -312,8 +417,51 @@ export function ChatView() {
         className="flex-1 overflow-y-auto px-4 py-4 session-enter"
       >
         <div className="max-w-3xl mx-auto">
+          {/* 时间轴：更早的日子在上，当前窗口在下。点开某一天，气泡插在这条缝上，往上翻。 */}
+          {days.map((d) => {
+            const key = dayKey(d.day);
+            const expanded = expandedDays[key];
+            if (expanded) {
+              const old = coalesceMessagesForDisplay(expanded).filter(
+                (m) => m.role === "user" || hasVisibleAssistantContent(m)
+              );
+              return (
+                <div key={key} id={`day-${key}`} className="mb-6 space-y-5">
+                  <button
+                    type="button"
+                    onClick={() => void toggleDay(d.day)}
+                    className="w-full flex items-center gap-2 py-1 text-left"
+                  >
+                    <span className="h-px flex-1 bg-app-border dark:bg-slate-800" />
+                    <span className="text-app-sub text-app-fg-tertiary whitespace-nowrap">
+                      {d.label}
+                    </span>
+                    <span className="h-px flex-1 bg-app-border dark:bg-slate-800" />
+                  </button>
+                  {old.map((m, i) => (
+                    <MessageBubble
+                      key={`${key}-${i}`}
+                      message={m}
+                      isStreaming={false}
+                    />
+                  ))}
+                </div>
+              );
+            }
+            return (
+              <DayFold
+                key={key}
+                label={d.label}
+                turns={d.turns}
+                open={false}
+                loading={dayLoading === key}
+                failed={dayError === key}
+                onToggle={() => void toggleDay(d.day)}
+              />
+            );
+          })}
           {showWelcome ? (
-            <WelcomeScenes />
+            <WelcomeScenes hint={team ? t("team.empty") : undefined} />
           ) : useVirtual ? (
             <div
               className="relative w-full"
@@ -341,12 +489,22 @@ export function ChatView() {
             </div>
           )}
 
+          {contextCompacted && (
+            <div
+              key="context-compacted"
+              className={`${useVirtual ? "pt-4" : "mt-4"} flex justify-center`}
+            >
+              <span className="text-xs leading-none text-app-fg-tertiary dark:text-zinc-500 px-3 py-1 rounded-full bg-app-surface/60 dark:bg-zinc-900/40">
+                {t("chat.contextCompacted")}
+              </span>
+            </div>
+          )}
           {isStreaming && (
             <div
               key="stream-turn"
               className={`${useVirtual ? "pt-5" : "mt-5"} stream-enter`}
             >
-              <LiveStream />
+              <LiveStream scrollRef={parentRef} />
             </div>
           )}
           <div ref={bottomRef} />
@@ -398,7 +556,6 @@ export function ChatView() {
       )}
 
       <InputArea />
-      <ConfirmModal />
 
       {editDraft && (
         <div className={`${ui.overlay} z-50 p-4`}>
@@ -444,9 +601,58 @@ export function ChatView() {
   );
 }
 
-function LiveStream() {
-  const text = useChatStore((s) => s.streamingText);
-  const thinking = useChatStore((s) => s.streamingThinking);
+/**
+ * 实时块只订阅流式三件套：它每来一帧就重渲染，**其余对话不该跟着重渲染**
+ * （以前整条 transcript 都挂在同一个全量订阅上，每个 token 重建一遍全部气泡）。
+ *
+ * 跟随视口也放在这里。上面 ChatView 的效应只在「消息条数 / 流式开关」变化时滚动一次，
+ * 而实时流长在虚拟列表**之后**——于是 isStreaming 刚变 true 时那一次 scrollToIndex 恰好
+ * 在正文出现之前执行，把正在写的字推到视口下方；token 继续长，视口却不动。用户看到的
+ * 就是「卡住 → 然后一整段跳出来」。
+ *
+ * 判据：只有用户本来就在底部（离底 < 160px）才跟随——他上滑去看旧内容时不要把他拽
+ * 回来；节流 100ms，且**先过闸再读 scrollHeight**：读它是一次强制同步布局，不能每个
+ * token 都做一次。
+ */
+/**
+ * 实时块每渲一次都要重解析整段 markdown（实测 20k 字约 9ms）。攒到 80ms 渲一次：
+ * 肉眼仍是「在长字」，主线程回落到约 11%（9ms × 12/s）。详见 `useThrottledValue`。
+ *
+ * 不做「只渲染尾部窗口」：实测 8k 窗口只把 9ms 压到 4.1ms，却要**藏掉用户已经看到
+ * 的字**——不划算（2026-09-21 量过才定）。
+ */
+const LIVE_RENDER_MS = 80;
+
+function LiveStream({
+  scrollRef,
+}: {
+  scrollRef: RefObject<HTMLDivElement>;
+}) {
+  const rawText = useChatStore((s) => s.streamingText);
+  const rawThinking = useChatStore((s) => s.streamingThinking);
   const toolCalls = useChatStore((s) => s.activeToolCalls);
-  return <StreamingBubble text={text} thinking={thinking} toolCalls={toolCalls} />;
+  const speaker = useChatStore(speakerNameOf);
+  const text = useThrottledValue(rawText, LIVE_RENDER_MS);
+  const thinking = useThrottledValue(rawThinking, LIVE_RENDER_MS);
+
+  const lastFollowAt = useRef(0);
+  const streamingLen = text.length + thinking.length + toolCalls.length;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const now = Date.now();
+    if (now - lastFollowAt.current < 100) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > 160) return;
+    lastFollowAt.current = now;
+    el.scrollTop = el.scrollHeight;
+  }, [streamingLen, scrollRef]);
+
+  return (
+    <StreamingBubble
+      text={text}
+      thinking={thinking}
+      toolCalls={toolCalls}
+      speaker={speaker}
+    />
+  );
 }

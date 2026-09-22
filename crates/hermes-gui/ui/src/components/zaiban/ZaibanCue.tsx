@@ -478,7 +478,7 @@ function RedueForm({ onPick }: { onPick: (phrase: string) => void }) {
 
 function Cue({ children }: { children: ReactNode }) {
   return (
-    <div className="shrink-0 mx-4 mt-2 mb-1 px-3 py-2 rounded-xl border border-app-border dark:border-slate-700 bg-app-surface/90 dark:bg-slate-900/80 text-[12px] text-app-fg-secondary dark:text-slate-300 flex flex-wrap items-center gap-2">
+    <div className="shrink-0 mx-4 mt-2 mb-1 px-3 py-2 rounded-xl border border-app-border dark:border-slate-700 bg-app-surface/90 dark:bg-slate-900/80 text-xs text-app-fg-secondary dark:text-slate-300 flex flex-wrap items-center gap-2">
       {children}
     </div>
   );

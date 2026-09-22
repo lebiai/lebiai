@@ -19,6 +19,26 @@ use hermes_core::LlmProvider;
 /// Default cache TTL when no context is configured.
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 900;
 
+/// `max_tokens` budget for `web_fetch` prompt-extraction answers.
+///
+/// 2048 was too small once the configured模型开始输出推理：预算会被看不见的
+/// `reasoning_content` 整段吃掉，正文回空串、`finish_reason=length`，工具于是
+/// 静默退回「整页 20 000 字原文」。2026-09-20 实测（新华财经首页，正文 48 000 字
+/// 截断喂入）：2048 → 正文 0 字（2048 tokens 全是推理）；8192 → 正文 6 620 字。
+pub const DEFAULT_EXTRACT_MAX_TOKENS: u32 = 8192;
+
+/// 抽取回空串后的重试倍率：预算 ×2（8192 → 16384），**只重试一次**。
+///
+/// 2026-09-21 一轮实跑：上证报 / 证券时报 / e公司 / 券商中国 / 第一财经 / 财新
+/// 六个站当轮全栽在「首页抽取预算被推理吃光、正文回空串」上，翻到 16384 就把
+/// 正文拿回来了。同一条规矩在主循环里已经立过，见
+/// `docs/records/20260920-reasoning-visible-and-budget.md`。
+pub const EXTRACT_RETRY_FACTOR: u32 = 2;
+
+/// 抽取重试预算的封顶。重试只有一次，这条线只防「配置里写了个离谱的大数还往上
+/// 翻」—— 推理吃掉的那点预算是有上限的，翻过 32 768 只是烧钱。
+pub const EXTRACT_RETRY_MAX_TOKENS: u32 = 32_768;
+
 /// Which backend `web_search` uses first (failures cascade to free fallbacks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchBackend {

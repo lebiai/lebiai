@@ -4,7 +4,7 @@
 |------|------|
 | **编号** | `20260806-work-companion-complete` |
 | **日期** | 2026-08-06 |
-| **状态** | **已实施**（代码+文档；GUI dist 需 build；故事 A/B 真机待验） |
+| **状态** | **已验收**（2026-09-19 统一签收 · 依据与未验项见 [`20260919-acceptance-sweep`](./20260919-acceptance-sweep.md)）；原状态：**已实施**（代码+文档；GUI dist 需 build；故事 A/B 真机待验） |
 | **蓝图** | [`../work-companion-solution.md`](../work-companion-solution.md) |
 
 ---

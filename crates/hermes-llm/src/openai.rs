@@ -250,6 +250,7 @@ fn translate_outbound(m: &Message) -> Vec<ChatMessage> {
                         out.push(ChatMessage {
                             role: "tool".into(),
                             content: Some(body),
+                            reasoning_content: None,
                             tool_call_id: Some(tool_use_id.clone()),
                             tool_calls: None,
                             name: None,
@@ -278,6 +279,7 @@ fn translate_outbound(m: &Message) -> Vec<ChatMessage> {
                 out.push(ChatMessage {
                     role: "user".into(),
                     content: Some(text_parts.join("\n")),
+                    reasoning_content: None,
                     tool_call_id: None,
                     tool_calls: None,
                     name: None,
@@ -286,6 +288,12 @@ fn translate_outbound(m: &Message) -> Vec<ChatMessage> {
             out
         }
         Role::Assistant => {
+            // 空 assistant 不上线：线格式里它会退化成 `{"role":"assistant"}`，端点直接 400。
+            // 修复历史时会丢（`sanitize_history_for_provider`），但 CLI 等入口不走那一步，
+            // 这里是最后一道闸——判据仍只有 `Message::has_sendable_content` 一处。
+            if !m.has_sendable_content() {
+                return Vec::new();
+            }
             let mut text_parts: Vec<String> = Vec::new();
             let mut tool_calls: Vec<ChatToolCall> = Vec::new();
             for block in &m.content {
@@ -326,6 +334,7 @@ fn translate_outbound(m: &Message) -> Vec<ChatMessage> {
             vec![ChatMessage {
                 role: "assistant".into(),
                 content,
+                reasoning_content: None,
                 tool_call_id: None,
                 tool_calls: tc,
                 name: None,
@@ -354,6 +363,14 @@ struct ChatMessage {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     content: Option<String>,
+    /// 推理模型的思考正文（DeepSeek 等 OpenAI 兼容端点放在这里）。
+    ///
+    /// **只读不写**：发出去的请求里永远没有这个字段（`skip_serializing_if` +
+    /// 所有出站构造点都显式填 `None`）。2026-09-20 之前这里根本没解析，于是
+    /// 推理模型的思考整段被丢掉——用户看到的「一句话不说卡了八分钟」，
+    /// 那一轮 16384 tokens 里约四成是多出来的、看不见的推理。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -367,6 +384,7 @@ impl ChatMessage {
         Self {
             role: "system".into(),
             content: Some(text),
+            reasoning_content: None,
             tool_call_id: None,
             tool_calls: None,
             name: None,
@@ -428,6 +446,31 @@ struct ChatUsage {
     prompt_tokens: u32,
     #[serde(default)]
     completion_tokens: u32,
+    /// OpenAI 标准：`{"prompt_tokens_details": {"cached_tokens": N}}`。
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+    /// DeepSeek 自家：`"prompt_cache_hit_tokens": N`。
+    #[serde(default)]
+    prompt_cache_hit_tokens: Option<u32>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: u32,
+}
+
+impl ChatUsage {
+    /// 命中缓存的那部分输入（两种线格式取先有的那个）。夹到 `prompt_tokens`
+    /// 以内，免得端点给了离谱的数导致下面减法下溢。
+    fn cached_input(&self) -> u32 {
+        self.prompt_tokens_details
+            .as_ref()
+            .map(|d| d.cached_tokens)
+            .or(self.prompt_cache_hit_tokens)
+            .unwrap_or(0)
+            .min(self.prompt_tokens)
+    }
 }
 
 impl ChatResponse {
@@ -447,6 +490,19 @@ impl ChatResponse {
                     content.push(ContentBlock::Text { text });
                 }
             }
+            // 思考块排在最前（与 Anthropic 线一致）：`has_sendable_content` 认它
+            // 不算内容，界面认它是一段可折叠的「思考中」。
+            if let Some(think) = choice.message.reasoning_content {
+                if !think.trim().is_empty() {
+                    content.insert(
+                        0,
+                        ContentBlock::Thinking {
+                            thinking: think,
+                            signature: None,
+                        },
+                    );
+                }
+            }
             if let Some(calls) = choice.message.tool_calls {
                 for call in calls {
                     let input = serde_json::from_str(&call.function.arguments)
@@ -461,11 +517,15 @@ impl ChatResponse {
         }
         let usage = self
             .usage
-            .map(|u| Usage {
-                input_tokens: u.prompt_tokens,
-                output_tokens: u.completion_tokens,
-                cache_read_tokens: 0,
-                cache_creation_tokens: 0,
+            .map(|u| {
+                let (input_tokens, cache_read_tokens) =
+                    split_input(u.prompt_tokens, u.cached_input());
+                Usage {
+                    input_tokens,
+                    output_tokens: u.completion_tokens,
+                    cache_read_tokens,
+                    cache_creation_tokens: 0,
+                }
             })
             .unwrap_or_default();
         CompletionResponse {
@@ -491,6 +551,7 @@ fn parse_openai_stream(
         pending: std::collections::VecDeque::new(),
         finished: false,
         text_buf: String::new(),
+        thinking_buf: String::new(),
         tool_calls: Vec::new(),
         stop_reason: StopReason::Other,
         usage: Usage::default(),
@@ -592,11 +653,23 @@ fn handle_line(line: &str, s: &mut StreamState) {
         return;
     };
 
+    // 推理正文：块下标 0，文本跟在它后面（见 `finalise` 的编号）。
+    if let Some(think) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+        if !think.is_empty() {
+            s.thinking_buf.push_str(think);
+            s.pending.push_back(Ok(StreamEvent::ThinkingDelta {
+                index: 0,
+                text: think.to_string(),
+            }));
+        }
+    }
+
     if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
         if !text.is_empty() {
             s.text_buf.push_str(text);
             s.pending.push_back(Ok(StreamEvent::TextDelta {
-                index: 0,
+                // 思考块占了 0 号，文本就顺延到 1 号；没有思考时文本仍是 0 号。
+                index: usize::from(!s.thinking_buf.is_empty()),
                 text: text.to_string(),
             }));
         }
@@ -647,6 +720,9 @@ struct State {
     pending: std::collections::VecDeque<Result<StreamEvent>>,
     finished: bool,
     text_buf: String,
+    /// 推理正文的累积缓冲。它单占一个内容块，排在文本之前，所以下面算块下标
+    /// 时先看它有没有东西——空的时候一切照旧（文本仍是 0 号块）。
+    thinking_buf: String,
     tool_calls: Vec<PartialToolCall>,
     stop_reason: StopReason,
     usage: Usage,
@@ -656,16 +732,29 @@ struct State {
 fn finalise(s: &mut StreamState) {
     let mut content: Vec<ContentBlock> = Vec::new();
     let mut truncated_tool_ids = Vec::new();
+    // 块下标就是这里数出来的：思考（有才有）→ 文本（有才有）→ 工具。底下三处
+    // 发 `BlockStop` 的顺序必须和 `content` 的顺序一致，否则前端会拿错块。
+    let mut next_index = 0usize;
+    if !s.thinking_buf.trim().is_empty() {
+        content.push(ContentBlock::Thinking {
+            thinking: std::mem::take(&mut s.thinking_buf),
+            signature: None,
+        });
+        s.pending
+            .push_back(Ok(StreamEvent::BlockStop { index: next_index }));
+        next_index += 1;
+    }
     if !s.text_buf.is_empty() {
         content.push(ContentBlock::Text {
             text: std::mem::take(&mut s.text_buf),
         });
-        // Text occupies block index 0 (see `handle_line`).
-        s.pending.push_back(Ok(StreamEvent::BlockStop { index: 0 }));
+        s.pending
+            .push_back(Ok(StreamEvent::BlockStop { index: next_index }));
+        next_index += 1;
     }
-    for (i, c) in s.tool_calls.drain(..).enumerate() {
-        // Tool blocks are streamed at `idx + 1` (shifted past the text block).
-        let block_index = i + 1;
+    for c in s.tool_calls.drain(..) {
+        let block_index = next_index;
+        next_index += 1;
         s.pending
             .push_back(Ok(StreamEvent::BlockStop { index: block_index }));
         let input = if c.arguments.trim().is_empty() {
@@ -701,12 +790,34 @@ fn parse_usage(v: &serde_json::Value) -> Option<Usage> {
     if prompt == 0 && completion == 0 {
         return None;
     }
+    // 缓存命中：OpenAI 标准放在 `prompt_tokens_details.cached_tokens`，
+    // DeepSeek 另有自家的 `prompt_cache_hit_tokens`。两条都读——没有这个数，
+    // 「每轮重发整段历史到底花了多少」就只能靠猜（原来这里写死 0）。
+    let cached = v
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|n| n.as_u64())
+        .or_else(|| v.get("prompt_cache_hit_tokens").and_then(|n| n.as_u64()))
+        .unwrap_or(0) as u32;
+    let (input_tokens, cache_read_tokens) = split_input(prompt, cached);
     Some(Usage {
-        input_tokens: prompt,
+        input_tokens,
         output_tokens: completion,
-        cache_read_tokens: 0,
+        cache_read_tokens,
         cache_creation_tokens: 0,
     })
+}
+
+/// 唯一的换算点：把线上的「输入总数 + 其中命中缓存的数」拆成
+/// [`Usage::input_tokens`]（新读进来的）与 [`Usage::cache_read_tokens`]（命中）。
+///
+/// 为什么要拆：`Usage` 的口径与 Anthropic 线对齐——那边 `input_tokens` 本来就不含
+/// 缓存命中。OpenAI 兼容线的 `prompt_tokens` 是**含缓存**的总数，不减就会出现
+/// 「输入翻了十倍、缓存命中 0」这种谁也读不懂的账。流式与非流式两条路都走这里，
+/// 免得只有一条路算对。
+fn split_input(prompt_tokens: u32, cached: u32) -> (u32, u32) {
+    let cached = cached.min(prompt_tokens);
+    (prompt_tokens - cached, cached)
 }
 
 #[cfg(test)]
@@ -740,6 +851,7 @@ mod tests {
                     is_error: true,
                 },
             ],
+            speaker: None,
         };
         let out = translate_outbound(&m);
         assert_eq!(out.len(), 2);
@@ -766,6 +878,7 @@ mod tests {
                     input: serde_json::json!({"q":"rust"}),
                 },
             ],
+            speaker: None,
         };
         let out = translate_outbound(&m);
         assert_eq!(out.len(), 1);
@@ -794,10 +907,37 @@ mod tests {
                     text: "hello".into(),
                 },
             ],
+            speaker: None,
         };
         let out = translate_outbound(&m);
         assert_eq!(out[0].content.as_deref(), Some("hello"));
         assert!(out[0].tool_calls.is_none());
+    }
+
+    /// 空 assistant 不上线：线格式里它只剩 `{"role":"assistant"}`，端点 400。
+    #[test]
+    fn an_empty_assistant_message_never_reaches_the_wire() {
+        let empty = Message {
+            role: Role::Assistant,
+            at: None,
+            content: Vec::new(),
+            speaker: None,
+        };
+        assert!(translate_outbound(&empty).is_empty());
+
+        let thinking_only = Message {
+            role: Role::Assistant,
+            at: None,
+            content: vec![ContentBlock::Thinking {
+                thinking: "想".into(),
+                signature: None,
+            }],
+            speaker: None,
+        };
+        assert!(
+            translate_outbound(&thinking_only).is_empty(),
+            "思考块落线时被丢掉，整条就没有内容了"
+        );
     }
 
     #[test]
@@ -831,6 +971,38 @@ mod tests {
         assert_eq!(comp.usage.output_tokens, 4);
     }
 
+    /// 缓存命中必须被读出来：没有这个数，「每轮重发整段历史到底贵不贵」只能靠猜
+    /// （这里原来写死 0，于是命中率永远是 0%，谁也看不见缓存有没有生效）。
+    #[test]
+    fn cache_hits_are_read_from_both_wire_shapes() {
+        // OpenAI 标准：prompt_tokens 含缓存，input 要减掉。
+        let raw = r#"{"choices":[{"message":{"role":"assistant","content":"x"}}],
+            "usage":{"prompt_tokens":1000,"completion_tokens":20,
+            "prompt_tokens_details":{"cached_tokens":900}}}"#;
+        let parsed: ChatResponse = serde_json::from_str(raw).unwrap();
+        let u = parsed.into_completion().usage;
+        assert_eq!(u.cache_read_tokens, 900);
+        assert_eq!(u.input_tokens, 100, "input_tokens 是新读进来的那部分");
+        assert_eq!(u.output_tokens, 20);
+
+        // DeepSeek 自家字段，且没有 prompt_tokens_details。
+        let raw = r#"{"choices":[{"message":{"role":"assistant","content":"x"}}],
+            "usage":{"prompt_tokens":1000,"completion_tokens":20,
+            "prompt_cache_hit_tokens":750,"prompt_cache_miss_tokens":250}}"#;
+        let parsed: ChatResponse = serde_json::from_str(raw).unwrap();
+        let u = parsed.into_completion().usage;
+        assert_eq!(u.cache_read_tokens, 750);
+        assert_eq!(u.input_tokens, 250);
+
+        // 没有缓存字段（老端点）→ 命中 0，输入就是全部，不许出现下溢。
+        let raw = r#"{"choices":[{"message":{"role":"assistant","content":"x"}}],
+            "usage":{"prompt_tokens":1000,"completion_tokens":20}}"#;
+        let parsed: ChatResponse = serde_json::from_str(raw).unwrap();
+        let u = parsed.into_completion().usage;
+        assert_eq!(u.cache_read_tokens, 0);
+        assert_eq!(u.input_tokens, 1000);
+    }
+
     #[test]
     fn response_finish_reason_mapping() {
         for (raw_reason, expected) in [
@@ -846,5 +1018,156 @@ mod tests {
             let comp = parsed.into_completion();
             assert_eq!(comp.stop_reason, expected);
         }
+    }
+
+    /// 推理模型的思考放在 `reasoning_content` 里。2026-09-20 之前这里根本不解析，
+    /// 于是「一句话不说卡了八分钟」的那一轮，推理整段被丢掉：用户既看不到它在想
+    /// 什么，也看不到它在干活，只有一个不动的界面。
+    #[test]
+    fn reasoning_content_decodes_to_a_thinking_block_ahead_of_the_text() {
+        let raw = r#"{
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "先看窗口，再定板块……",
+                    "content": "【A】新华财经｜2026-09-20 09:27｜LPR 不变"
+                },
+                "finish_reason": "stop"
+            }]
+        }"#;
+        let parsed: ChatResponse = serde_json::from_str(raw).unwrap();
+        let comp = parsed.into_completion();
+        assert_eq!(comp.content.len(), 2, "{:?}", comp.content);
+        assert!(
+            matches!(&comp.content[0], ContentBlock::Thinking { thinking, .. }
+                if thinking == "先看窗口，再定板块……")
+        );
+        assert!(
+            matches!(&comp.content[1], ContentBlock::Text { text } if text.starts_with("【A】"))
+        );
+        let msg = Message {
+            role: Role::Assistant,
+            at: None,
+            content: comp.content,
+            speaker: None,
+        };
+        assert!(msg.has_sendable_content(), "有正文就算能发");
+        assert_eq!(
+            translate_outbound(&msg)[0].content.as_deref(),
+            Some("【A】新华财经｜2026-09-20 09:27｜LPR 不变"),
+            "思考块不许上线"
+        );
+    }
+
+    /// 只有推理、一个字正文都没有（推理把预算吃光）——这条**不算内容**：
+    /// 放上线端点就 400，留在历史里会让整个会话之后每次请求都 400。
+    #[test]
+    fn a_reasoning_only_response_is_not_sendable_content() {
+        let raw = r#"{"choices":[{"message":{"role":"assistant",
+            "reasoning_content":"想了很久很久"},"finish_reason":"length"}]}"#;
+        let parsed: ChatResponse = serde_json::from_str(raw).unwrap();
+        let comp = parsed.into_completion();
+        assert_eq!(comp.stop_reason, StopReason::MaxTokens);
+        let msg = Message {
+            role: Role::Assistant,
+            at: None,
+            content: comp.content,
+            speaker: None,
+        };
+        assert!(!msg.has_sendable_content());
+        assert!(translate_outbound(&msg).is_empty());
+    }
+
+    async fn collect_stream(sse: &'static str) -> Vec<StreamEvent> {
+        use futures::StreamExt;
+        let bytes: futures::stream::BoxStream<
+            'static,
+            std::result::Result<bytes::Bytes, reqwest::Error>,
+        > = Box::pin(futures::stream::iter(vec![Ok(bytes::Bytes::from_static(
+            sse.as_bytes(),
+        ))]));
+        let mut s = Box::pin(parse_openai_stream(bytes));
+        let mut out = Vec::new();
+        while let Some(ev) = s.next().await {
+            out.push(ev.expect("stream event"));
+        }
+        out
+    }
+
+    /// 流式里的 `delta.reasoning_content` 要变成 ThinkingDelta，正文块下标顺延。
+    #[tokio::test]
+    async fn streaming_reasoning_becomes_thinking_deltas() {
+        let events = collect_stream(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想一\"}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想二\"}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"content\":\"答案\"}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+             data: [DONE]\n\n",
+        )
+        .await;
+
+        let thinking: Vec<&StreamEvent> = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::ThinkingDelta { .. }))
+            .collect();
+        assert_eq!(thinking.len(), 2, "{events:?}");
+
+        let text_index = events.iter().find_map(|e| match e {
+            StreamEvent::TextDelta { index, .. } => Some(*index),
+            _ => None,
+        });
+        assert_eq!(
+            text_index,
+            Some(1),
+            "思考占用 0 号块，文本要顺延到 1 号：{events:?}"
+        );
+
+        let final_resp = events.iter().find_map(|e| match e {
+            StreamEvent::Final(r) => Some(r),
+            _ => None,
+        });
+        let content = &final_resp.expect("Final").content;
+        assert_eq!(content.len(), 2, "{content:?}");
+        assert!(
+            matches!(&content[0], ContentBlock::Thinking { thinking, .. } if thinking == "想一想二")
+        );
+        assert!(matches!(&content[1], ContentBlock::Text { text } if text == "答案"));
+    }
+
+    /// 没有推理的普通流不该被这条改动碰到：文本仍是 0 号块，工具还是跟在它后面。
+    #[tokio::test]
+    async fn a_stream_without_reasoning_keeps_its_old_numbering() {
+        let events = collect_stream(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"答案\"}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\
+             \"function\":{\"name\":\"web_fetch\",\"arguments\":\"{}\"}}]}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        )
+        .await;
+
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ThinkingDelta { .. })),
+            "没有 reasoning_content 就不该冒思考块"
+        );
+        let text_index = events.iter().find_map(|e| match e {
+            StreamEvent::TextDelta { index, .. } => Some(*index),
+            _ => None,
+        });
+        assert_eq!(text_index, Some(0));
+        let final_resp = events.iter().find_map(|e| match e {
+            StreamEvent::Final(r) => Some(r),
+            _ => None,
+        });
+        let content = &final_resp.expect("Final").content;
+        assert!(
+            matches!(&content[0], ContentBlock::Text { .. }),
+            "{content:?}"
+        );
+        assert!(
+            matches!(&content[1], ContentBlock::ToolUse { .. }),
+            "{content:?}"
+        );
     }
 }

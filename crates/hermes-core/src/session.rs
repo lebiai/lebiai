@@ -23,6 +23,12 @@ pub struct SessionMeta {
     /// 人物（工位）id。`None` = 无人物（旧会话 / 未指定）。见 `persona` 模块。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persona: Option<String>,
+    /// 项目组 id。`None` = 不属于任何项目组。见 `team` 模块。
+    ///
+    /// **与 `persona` 互斥**：一条会话要么属于某个人物、要么属于某个项目组——
+    /// 两个都写会让「这段记忆归谁」失去唯一答案。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
 }
 
 impl SessionMeta {
@@ -34,6 +40,7 @@ impl SessionMeta {
             provider: provider.into(),
             title: None,
             persona: None,
+            team: None,
         }
     }
 }
@@ -160,6 +167,63 @@ pub enum SessionEvent {
     Meta(SessionMeta),
     Message(Message),
     Usage(Usage),
+    /// 上下文压缩：把**当时**消息列表最前面的 `replaced` 条换成 `summary`。
+    ///
+    /// 回放是顺序的，所以连续压多次也能逐条重放出同样的内存状态：
+    /// 每次都在上一次的结果之上再换一次前缀。
+    Compaction(CompactionRecord),
+    /// 接力：这一棒交到了谁手上（`docs/spec/projects.md` §5）。
+    ///
+    /// 回放是顺序的，所以**最后一棒就是现在谁在手上**——不另存「当前持有人」，
+    /// 否则文件与内存总有一天对不上（关掉 App 再打开就把活忘了）。
+    Handoff(HandoffRecord),
+}
+
+/// 一次上下文压缩的落盘记录。见 [`SessionEvent::Compaction`]。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionRecord {
+    /// 被摘要取代的消息条数（压缩那一刻消息列表最前面的 `replaced` 条）。
+    pub replaced: usize,
+    /// 取代它们的摘要正文（纯文本）。
+    pub summary: String,
+    pub at: chrono::DateTime<chrono::Utc>,
+}
+
+/// 一次接力的落盘记录。见 [`SessionEvent::Handoff`]。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandoffRecord {
+    /// 交出来的人（人物 id）；`None` = 你亲手交出去的（你不在名册里）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// 接棒的人（人物 id）；必须是在册成员——校验在 `persona::speaker_for` 与命令层。
+    pub to: String,
+    pub at: chrono::DateTime<chrono::Utc>,
+    /// 交的是什么（一句话，可不写）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// 一条会话的「活走到哪了」。目前只有接力一件事——**回放出来的，不是存下来的**。
+#[derive(Debug, Clone, Default)]
+pub struct Flow {
+    handoffs: Vec<HandoffRecord>,
+}
+
+impl Flow {
+    /// 这一棒现在在谁手上：最后一次接力的接棒人。
+    /// 一次都没交过 → `None`（组会话里这个 `None` 由
+    /// [`crate::persona::speaker_for`] 解释：第一棒接）。
+    pub fn holder(&self) -> Option<&str> {
+        self.handoffs.last().map(|h| h.to.as_str())
+    }
+
+    pub fn handoffs(&self) -> &[HandoffRecord] {
+        &self.handoffs
+    }
+
+    pub fn push(&mut self, rec: HandoffRecord) {
+        self.handoffs.push(rec);
+    }
 }
 
 /// In-memory view of a session. Persistence is decoupled (see hermes-store).
@@ -169,6 +233,8 @@ pub struct Session {
     pub messages: Vec<Message>,
     pub total_input_tokens: u32,
     pub total_output_tokens: u32,
+    /// 活走到哪了（接力）。空 = 从没交过。
+    pub flow: Flow,
 }
 
 impl Session {
@@ -178,21 +244,12 @@ impl Session {
             messages: Vec::new(),
             total_input_tokens: 0,
             total_output_tokens: 0,
+            flow: Flow::default(),
         }
     }
 
     pub fn push_user(&mut self, text: impl Into<String>) -> &Message {
         self.messages.push(Message::user_sent(text));
-        self.messages.last().unwrap()
-    }
-
-    pub fn push_assistant(&mut self, content: Vec<crate::ContentBlock>) -> &Message {
-        use crate::Role;
-        self.messages.push(Message {
-            role: Role::Assistant,
-            content,
-            at: None,
-        });
         self.messages.last().unwrap()
     }
 
@@ -265,6 +322,7 @@ mod title_tests {
                     is_error: false,
                 }],
                 at: None,
+                speaker: None,
             },
             Message::user_text(crate::companion::care_after_tools_nudge()),
         ];

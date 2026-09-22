@@ -11,16 +11,24 @@ import {
   ChevronDown,
   ChevronRight,
   Layers,
+  FolderTree,
+  Undo2,
 } from "lucide-react";
 import { useUiStore } from "../../store/uiStore";
 import { useNavStore } from "../../store/navStore";
 import { Button, EmptyState, ui } from "../common/ui";
 import { Pager, PAGE_SIZE, pageCount, pageSlice } from "../common/Pager";
 import { Select } from "../common/Select";
+import {
+  companionGroup,
+  memoryGroupLabel,
+  type CompanionGroup,
+} from "../../utils/memoryGroup";
 import { ConfirmPopover } from "../common/ConfirmPopover";
 import { toast } from "../../utils/toast";
 import { notifyRemembered } from "../../utils/remembered";
 import { PendingReviewSection } from "./PendingReviewSection";
+import { errorText } from "../../utils/errorText";
 
 interface MemoryItem {
   id: string;
@@ -32,6 +40,16 @@ interface MemoryItem {
   zone: string;
   createdAt: string;
   source: string;
+  /** 归属：null = 全局；有值 = 一个人物或一个项目组。 */
+  owner?: string | null;
+  /** 归属给人看的样子（组名 / 人名 / 「全局」/「旧版角色」）。 */
+  ownerName: string;
+  /** 因为什么（当初教它的那句话）。老记忆没有。 */
+  because?: string | null;
+  /** 它取代了谁。非空 = 可以「退回上一版」。 */
+  supersedes: string[];
+  /** 第几版（沿取代链数出来的）。 */
+  version: number;
 }
 
 interface TopicCardItem {
@@ -50,35 +68,10 @@ interface TopicCardsView {
 }
 
 const ALL = "__all__";
+/** 归属筛选里「只看全局」那一档（没有归属的记忆）。 */
+const GLOBAL_ONLY = "__global__";
 const PINNED = "__pinned__";
 const PENDING = "__pending__";
-
-type CompanionGroup = "preferences" | "standards" | "work" | "other";
-
-function companionGroup(mem: MemoryItem): CompanionGroup {
-  const z = (mem.zone || "").toLowerCase();
-  const tags = mem.tags.map((tag) => tag.toLowerCase());
-  if (
-    z === "preferences" ||
-    z === "preference" ||
-    z === "core" ||
-    tags.includes("preference")
-  ) {
-    return "preferences";
-  }
-  if (z === "standards" || z === "standard" || tags.includes("standard")) {
-    return "standards";
-  }
-  if (
-    z === "work" ||
-    z === "episode" ||
-    z === "work-episode" ||
-    tags.includes("work-episode")
-  ) {
-    return "work";
-  }
-  return "other";
-}
 
 export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
   const t = useUiStore((state) => state.t);
@@ -88,13 +81,18 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
   const [pendingCount, setPendingCount] = useState(0);
   const [activeZone, setActiveZone] = useState<string>(ALL);
   const [query, setQuery] = useState("");
+  /** 归属筛选：ALL = 全部；GLOBAL_ONLY = 只看全局；其余 = 那个归属的 id。 */
+  const [ownerFilter, setOwnerFilter] = useState<string>(ALL);
   const [showCreate, setShowCreate] = useState(false);
   const [newBody, setNewBody] = useState("");
   const [newTags, setNewTags] = useState("");
   const [newZone, setNewZone] = useState("general");
   const [newScope, setNewScope] = useState("User");
   const [newPinned, setNewPinned] = useState(false);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  /** 同一个确认弹层服务两个动作；`revert` 决定文案与后果，不决定按钮位置。 */
+  const [confirmAction, setConfirmAction] = useState<{ id: string; revert: boolean } | null>(
+    null,
+  );
   const [page, setPage] = useState(1);
   const [view, setView] = useState<"list" | "topics">("list");
   const highlightRef = useRef<HTMLDivElement | null>(null);
@@ -171,13 +169,23 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
       ) {
         return false;
       }
+      // 归属筛选：全局 / 某一个人物 / 某一个项目组。**只筛，不改**——
+      // 归属只由 `resolve_owner` 决定，这一页不许改它（要改得说清楚，那是另一件事）。
+      if (ownerFilter !== ALL) {
+        const mine = m.owner ?? null;
+        if (ownerFilter === GLOBAL_ONLY) {
+          if (mine !== null) return false;
+        } else if (mine !== ownerFilter) {
+          return false;
+        }
+      }
       if (!q) return true;
       return (
         m.body.toLowerCase().includes(q) ||
         m.tags.some((tag) => tag.toLowerCase().includes(q))
       );
     });
-  }, [memories, activeZone, query]);
+  }, [memories, activeZone, query, ownerFilter]);
 
   // Newest first (the command sorts by when it was learned), 10 per page.
   // Clamp: deleting the last row of the last page must not leave a blank page.
@@ -187,7 +195,7 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
   // A new zone or a new search starts at the top.
   useEffect(() => {
     setPage(1);
-  }, [activeZone, query]);
+  }, [activeZone, query, ownerFilter]);
 
   // Highlighted from the dialogue: turn to the page that holds it.
   useEffect(() => {
@@ -196,15 +204,21 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
     if (idx >= 0) setPage(Math.floor(idx / PAGE_SIZE) + 1);
   }, [highlightMemoryId, filtered]);
 
+  /** 数据里真出现过的归属（排序后），用来生成筛选项——不摆没有的选项。 */
+  const ownerChoices = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const m of memories) {
+      if (m.owner) seen.set(m.owner, m.ownerName);
+    }
+    return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1], "zh-CN"));
+  }, [memories]);
+
+  /** 三个虚拟筛选不是「分类」，先答它们，再问 `utils/memoryGroup`。 */
   const groupLabel = (id: string) => {
     if (id === ALL) return t("memory.all");
     if (id === PINNED) return t("memory.pinned");
     if (id === PENDING) return t("memory.pendingZone");
-    if (id === "preferences") return t("memory.groupPreferences");
-    if (id === "standards") return t("memory.groupStandards");
-    if (id === "work") return t("memory.groupWork");
-    if (id === "other") return t("memory.groupOther");
-    return id;
+    return memoryGroupLabel(t, id);
   };
 
   const handleCreate = async () => {
@@ -226,18 +240,18 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
       notifyRemembered(item.id);
       await fetchMemories();
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorText(e));
     }
   };
 
   const handleDelete = async (id: string, scope: string) => {
     try {
       await invoke("delete_memory", { id, scope });
-      setConfirmDeleteId(null);
+      setConfirmAction(null);
       await fetchMemories();
       toast.success(t("toast.memoryDeleted"));
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorText(e));
     }
   };
 
@@ -246,7 +260,7 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
       await invoke("toggle_pin_memory", { id });
       await fetchMemories();
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorText(e));
     }
   };
 
@@ -276,7 +290,7 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
       }`}
     >
       <div className="flex items-start justify-between gap-2">
-        <p className="text-sm flex-1 whitespace-pre-wrap text-app-fg dark:text-slate-100">
+        <p className="text-app-body flex-1 whitespace-pre-wrap text-app-fg dark:text-slate-100">
           {mem.body}
         </p>
         <div className="flex items-center gap-1 shrink-0 relative">
@@ -290,25 +304,69 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
           </button>
           <button
             type="button"
-            onClick={() => setConfirmDeleteId(mem.id)}
+            onClick={() => setConfirmAction({ id: mem.id, revert: false })}
             className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40 text-app-fg-secondary hover:text-app-danger"
             title={t("memory.delete")}
           >
             <Trash2 size={14} />
           </button>
           <ConfirmPopover
-            open={confirmDeleteId === mem.id}
-            message={t("memory.deleteConfirm")}
-            onCancel={() => setConfirmDeleteId(null)}
+            open={confirmAction?.id === mem.id}
+            message={
+              confirmAction?.revert
+                ? t("memory.revertConfirm")
+                : t("memory.deleteConfirm")
+            }
+            onCancel={() => setConfirmAction(null)}
             onConfirm={() => void handleDelete(mem.id, mem.scope)}
+            // 按的是「退回上一版」，按钮就不许写「删除」——两件事用户会当成一件。
+            confirmLabel={
+              confirmAction?.revert ? t("memory.revert") : t("common.delete")
+            }
           />
         </div>
       </div>
+      {mem.because && (
+        <p className="text-app-sub leading-relaxed text-app-fg-secondary">
+          {t("memory.because", { why: mem.because })}
+        </p>
+      )}
       <div className="flex items-center gap-2 flex-wrap">
         {mem.pinned && (
           <span className="text-xs px-1.5 py-0.5 rounded-md bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300">
             {t("memory.pinnedBadge")}
           </span>
+        )}
+        {/* 归属带图标：它和旁边的分组标签不是一回事（一个是「在哪儿算数」，一个是「哪一类」）。 */}
+        <span
+          className={`inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-md ${
+            mem.owner
+              ? "bg-app-primary-soft dark:bg-blue-950/50 text-app-primary dark:text-blue-300"
+              : "bg-app-muted dark:bg-slate-800 text-app-fg-secondary"
+          }`}
+          title={t("memory.ownerHint")}
+        >
+          <FolderTree size={11} strokeWidth={2} className="shrink-0" />
+          {mem.ownerName}
+        </span>
+        {mem.version > 1 && (
+          <span className="text-xs px-1.5 py-0.5 rounded-md bg-app-muted dark:bg-slate-800 text-app-fg-secondary">
+            {t("memory.versionBadge", { n: mem.version })}
+          </span>
+        )}
+        {/*
+          「退回上一版」以前只在垃圾桶图标的 `title` 里——鼠标不悬停就不知道有这个动作。
+          它是第 3 期验收要走的一步（规格 §9 第 4 条），就得写成字。
+        */}
+        {mem.supersedes.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setConfirmAction({ id: mem.id, revert: true })}
+            className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-md border border-app-border dark:border-slate-700 text-app-fg-secondary hover:text-app-primary hover:border-app-primary/40 transition-colors duration-[var(--motion-fast)]"
+          >
+            <Undo2 size={12} strokeWidth={1.75} />
+            {t("memory.revert")}
+          </button>
         )}
         <span className="text-xs text-app-fg-tertiary">
           {groupLabel(companionGroup(mem))}
@@ -380,7 +438,7 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
             </h2>
             {view === "list" && (activeZone === PENDING ? (
               pendingCount > 0 ? (
-                <span className="text-[10px] font-semibold min-w-[1.15rem] h-5 px-1.5 rounded-full bg-amber-500 text-white flex items-center justify-center tabular-nums">
+                <span className="text-xs font-semibold min-w-[1.15rem] h-5 px-1.5 rounded-full bg-amber-500 text-white flex items-center justify-center tabular-nums">
                   {pendingCount > 99 ? "99+" : pendingCount}
                 </span>
               ) : (
@@ -409,6 +467,21 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
                 className="pl-7 pr-2.5 py-1.5 text-xs rounded-lg border border-app-border dark:border-slate-600 bg-app-surface dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-app-primary/30 w-40"
               />
             </div>
+            {/* 归属筛选（§5.4 管理可见）：教的那句话落在谁名下，得能挑出来看 */}
+            <select
+              value={ownerFilter}
+              onChange={(e) => setOwnerFilter(e.target.value)}
+              className="py-1.5 pl-2 pr-1.5 text-xs rounded-lg border border-app-border dark:border-slate-600 bg-app-surface dark:bg-slate-800 text-app-fg-secondary focus:outline-none focus:ring-2 focus:ring-app-primary/30"
+              title={t("memory.ownerFilter")}
+            >
+              <option value={ALL}>{t("memory.ownerAll")}</option>
+              <option value={GLOBAL_ONLY}>{t("memory.ownerGlobal")}</option>
+              {ownerChoices.map(([id, name]) => (
+                <option key={id} value={id}>
+                  {name}
+                </option>
+              ))}
+            </select>
             <Button size="sm" onClick={() => setShowCreate(!showCreate)}>
               <Plus size={14} />
               {t("memory.new")}
@@ -448,7 +521,7 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
             <div className="space-y-1.5">
               <div className="flex items-center gap-4 flex-wrap">
                 <div className="space-y-1">
-                  <label className="block text-[10px] uppercase tracking-wide text-app-fg-tertiary">
+                  <label className="block text-xs uppercase tracking-wide text-app-fg-tertiary">
                     {t("memory.scopeLabel")}
                   </label>
                   <Select
@@ -479,10 +552,10 @@ export function MemoryPanel({ embedded = false }: { embedded?: boolean }) {
                   </Button>
                 </div>
               </div>
-              <p className="text-[11px] text-app-fg-tertiary leading-snug max-w-2xl">
+              <p className="text-app-sub text-app-fg-secondary leading-snug max-w-2xl">
                 {t("memory.scopeHint")}
               </p>
-              <p className="text-[11px] text-app-fg-tertiary">
+              <p className="text-app-sub text-app-fg-secondary">
                 {newScope === "Project" ? t("scope.projectHint") : t("scope.userHint")}
               </p>
             </div>
@@ -677,7 +750,7 @@ function TopicCardsSection({
                 ) : (
                   <ChevronRight size={14} className="shrink-0 text-app-fg-tertiary" />
                 )}
-                <span className="text-sm font-medium truncate text-app-fg dark:text-slate-100">
+                <span className="text-app-body font-medium truncate text-app-fg dark:text-slate-100">
                   {card.title}
                 </span>
               </span>
@@ -740,11 +813,11 @@ function ZoneRow({
         {label}
       </span>
       {badge && count > 0 ? (
-        <span className="ml-2 text-[10px] font-semibold min-w-[1.15rem] h-4 px-1 rounded-full bg-amber-500 text-white flex items-center justify-center tabular-nums shrink-0">
+        <span className="ml-2 text-xs font-semibold min-w-[1.15rem] h-4 px-1 rounded-full bg-amber-500 text-white flex items-center justify-center tabular-nums shrink-0">
           {count > 99 ? "99+" : count}
         </span>
       ) : (
-        <span className="text-[11px] text-app-fg-tertiary ml-2 tabular-nums">{count}</span>
+        <span className="text-xs text-app-fg-tertiary ml-2 tabular-nums">{count}</span>
       )}
     </div>
   );

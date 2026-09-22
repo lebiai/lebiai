@@ -32,7 +32,8 @@ hermes-server auth token fingerprint: 3f9a…ab12 (full value: ~/.lebi-ai/server
 `flutter_secure_storage`（Keychain/Keystore）保存；REST 自动带
 `Authorization: Bearer <token>`。**WS 优先** `POST /api/v1/ws-ticket` 拿到 60 秒
 单次 `ticket`，再以 `?ticket=` 升级（避免长 token 进 access log）；失败时才回退
-`?token=`。公网务必 TLS。
+`?token=`。注意：`?token=` **只在 WebSocket 握手上被接受**，普通 REST 请求带
+`?token=` 一律 401（否则长 token 会写进每一行 access log）。公网务必 TLS。
 
 **轮换 token**:删掉 `~/.lebi-ai/server.token` 重启 server,会生成新的;
 记得在所有客户端更新。

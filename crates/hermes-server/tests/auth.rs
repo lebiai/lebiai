@@ -87,27 +87,22 @@ async fn correct_header_is_ok() {
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
 }
 
+/// The long-lived token in a query string is only for the WebSocket handshake.
+/// On plain REST it must be refused even when correct — otherwise the secret
+/// lands in every proxy access log.
 #[tokio::test]
-async fn correct_query_token_is_ok() {
+async fn query_token_on_plain_rest_is_unauthorized_even_when_correct() {
     let (base, _, _) = start().await;
-    let resp = reqwest::Client::new()
-        .get(format!("{base}/api/v1/health?token={TOKEN}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), reqwest::StatusCode::OK);
-}
-
-#[tokio::test]
-async fn wrong_query_token_is_unauthorized() {
-    let (base, _, _) = start().await;
-    let status = reqwest::Client::new()
-        .get(format!("{base}/api/v1/health?token=nope"))
-        .send()
-        .await
-        .unwrap()
-        .status();
-    assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+    let client = reqwest::Client::new();
+    for token in [TOKEN, "nope"] {
+        let status = client
+            .get(format!("{base}/api/v1/health?token={token}"))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED, "token={token}");
+    }
 }
 
 #[tokio::test]

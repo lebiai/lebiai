@@ -213,36 +213,39 @@ where
             }
         }
 
-        // Context compaction between turns.
+        // Context compaction between turns — same entry point as every other
+        // surface. `run_agent` works on a bare `Vec<Message>`, so wrap it in a
+        // throwaway `Session` (the shared helper is written against `Session`).
         let mut session = Session {
             meta: SessionMeta::new(&turn_config.model, "agent"),
             messages: messages.clone(),
             total_input_tokens: 0,
             total_output_tokens: 0,
+            flow: Default::default(),
         };
-        let tools_approx =
-            compaction::estimate_tokens(&serde_json::to_string(&tools).unwrap_or_default());
-        if compaction::should_compact(
+        let tools_json = serde_json::to_string(&tools).unwrap_or_default();
+        match compaction::maybe_compact(
+            provider,
+            &mut session,
             &agent_system,
-            &session,
-            tools_approx,
-            agent_config.context_model_limit,
-            agent_config.context_headroom,
-        ) {
-            match compaction::compact_session(
-                provider,
-                &mut session,
-                agent_config.context_keep_recent_turns,
-            )
-            .await
-            {
-                Ok(n) => {
-                    on_event(AgentEvent::Compacted { removed: n });
-                    messages = session.messages;
-                }
-                Err(e) => {
-                    tracing::warn!(error=%e, "context compaction failed in agent loop");
-                }
+            &tools_json,
+            compaction::CompactionPolicy {
+                model_limit: agent_config.context_model_limit,
+                headroom: agent_config.context_headroom,
+                keep_recent_turns: agent_config.context_keep_recent_turns,
+            },
+        )
+        .await
+        {
+            Ok(Some(done)) => {
+                on_event(AgentEvent::Compacted {
+                    removed: done.replaced,
+                });
+                messages = session.messages;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(error=%e, "context compaction failed in agent loop");
             }
         }
 

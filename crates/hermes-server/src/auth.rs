@@ -4,8 +4,10 @@
 //! `Authorization: Bearer <token>`. WebSocket clients should prefer a
 //! **short-lived ticket** from `POST /api/v1/ws-ticket` then
 //! `?ticket=<hex>` (single-use, 60s) so proxy access logs do not retain the
-//! long-lived server token. Legacy `?token=<long-lived>` remains accepted for
-//! older clients.
+//! long-lived server token. Legacy `?token=<long-lived>` is accepted **only on
+//! a WebSocket upgrade** (browsers cannot set headers on `new WebSocket(...)`);
+//! on plain REST it is rejected, otherwise the long-lived secret would end up
+//! in proxy access logs.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -112,7 +114,8 @@ pub struct AuthState {
     pub tickets: Arc<crate::tickets::TicketStore>,
 }
 
-/// axum middleware: accept Bearer, short-lived `?ticket=`, or legacy `?token=`.
+/// axum middleware: accept Bearer, short-lived `?ticket=`, or — on a WebSocket
+/// upgrade only — the legacy long-lived `?token=`.
 pub async fn auth_middleware(State(auth): State<AuthState>, req: Request, next: Next) -> Response {
     if let Some(p) = bearer_from_headers(req.headers()) {
         if ct_eq(&p, auth.token.as_str()) {
@@ -126,12 +129,31 @@ pub async fn auth_middleware(State(auth): State<AuthState>, req: Request, next: 
         }
         return (StatusCode::UNAUTHORIZED, "invalid or expired ticket").into_response();
     }
-    if let Some(p) = query_param(req.uri(), "token") {
-        if ct_eq(&p, auth.token.as_str()) {
-            return next.run(req).await;
+    // Only the WebSocket handshake may carry the long-lived secret in the URL:
+    // `new WebSocket(...)` cannot set an Authorization header. Everywhere else
+    // a query-string secret is written verbatim into access logs.
+    if is_websocket_upgrade(req.headers()) {
+        if let Some(p) = query_param(req.uri(), "token") {
+            if ct_eq(&p, auth.token.as_str()) {
+                return next.run(req).await;
+            }
         }
     }
     (StatusCode::UNAUTHORIZED, "unauthorized").into_response()
+}
+
+/// True when this request is a WebSocket handshake (`Upgrade: websocket`
+/// together with `Connection: upgrade`).
+fn is_websocket_upgrade(headers: &axum::http::HeaderMap) -> bool {
+    let upgrade = headers
+        .get(header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    let connection = headers
+        .get(header::CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("upgrade"));
+    upgrade && connection
 }
 
 /// Pull `Bearer <token>` from the Authorization header.

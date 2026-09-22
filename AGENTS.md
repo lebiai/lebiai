@@ -11,14 +11,14 @@
 Slogan：**越用越像你的手感。**  
 一句话：**接得住你的想法，推得动你的事，必要时敢顶你——第二次更准。**
 
-- 完整定义卡：[`PRODUCT_PRINCIPLES.md`](./PRODUCT_PRINCIPLES.md) 文首（**P0 v0.11**）
+- 完整定义卡：[`PRODUCT_PRINCIPLES.md`](./PRODUCT_PRINCIPLES.md) 文首（**P0 v0.13**）
 - **用户默认路径：** 下载桌面 GUI → 试用期内配置 API Key → **对话**（禁用「聊天」作主词）→ 共事 / 谋划 → 批准进化候选
 - **不是**闲聊玩具、讨好机器、律师垂直、写代码专用产品
 - **不是**「生活陪伴 / 情感陪聊」主叙事；主场在**工作**（谋划·表达·决策·复盘·推进）
 - 关系用词：中文**搭子**，英文 **work companion**。禁止搭档 / 下属 / 工作伴侣
 - 四环 Do × Continuity × Care × Evolve；爱上瞬间 ①～⑤ 见 P0 定义卡
 - 进化是手段；对外主词是**越用越像你的手感 / 第二次更准**
-- 授权是产品事实：试用 3 天 / 过期锁主能力 / 本机验签
+- 授权是产品事实：试用 3 天 / 过期锁所有入口的主能力 / 贴码在桌面 / 本机验签
 
 **第一性原理（P0 第零条）。** 不准靠类比。方案必须写全：拒绝了什么类比 → 拆出的真 → 如何从真推出。写不出 → 不准开工。  
 **一切站在用户角度。** 功能答不出「强化爱上①～⑤哪一条」→ 不做。
@@ -112,6 +112,7 @@ Slogan：**越用越像你的手感。**
 
 ```
 crates/hermes-core     → 核心抽象（Session / LlmProvider / ToolHost / 压缩）
+crates/hermes-core/src/team.rs + teams/ → 项目组定义（工位名册 · 组流程 · 授权点名）
 crates/hermes-llm/turn/tools/mcp → 引擎能力（provider、工具循环、内置工具、MCP）
 crates/hermes-store/skills/memory/reflect → 明文存储 + 进化管线
 crates/hermes-cli      → 引擎装配 / 调试入口（全量子命令）
@@ -168,7 +169,8 @@ cd crates/hermes-gui/ui && npm install && npm run build && cd - && cargo run -p 
 15. **lint / test 是否全绿？** `cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo test --workspace` 是否通过？
 16. **若动 GUI：** 默认是否仍走 `ui/dist`？是否未把 `devUrl`/5173 写回默认？打开方式是否 `scripts/run-gui.sh` 或「先 npm build 再 cargo run」？
 17. **文案：** 中文主词是否为「对话」而非「聊天」？关系是否仍是「搭子」而非「搭档/工作伴侣」？是否无锚假装记得、无交付强迫打磨？
-18. **权威：** 是否未另立品类/口号/主路径？P1/本文文首是否对齐 P0 **v0.11**？权威正文是否只写现行规则？新 docs 是否已标明种类 B–H？
+18. **权威：** 是否未另立品类/口号/主路径？P1/本文文首是否对齐 P0 **v0.13**？权威正文是否只写现行规则？新 docs 是否已标明种类 B–H？
+19. **团队：** 若动人物 / 项目组，身份·职责边界·归属是否写全？越界是否硬拦并给「一键切过去」的出口？名单是否仍由授权码点名、过期只锁能力？
 
 任一「否」→ 停手。
 
@@ -181,4 +183,4 @@ Flutter（经 `hermes-server`）/ 微信 / 飞书 / Telegram 是同等引擎的�
 共享同一引擎与同一份数据，**不是**平行产品。禁止某一入口独占引擎逻辑。
 产品身份协议的**唯一源码**：`crates/hermes-core/src/companion.rs`（必须与 P0 定义卡同词）。
 
-*对齐 PRODUCT_PRINCIPLES **v0.11** / DEVELOPMENT_RULES **v0.6** · 2026-08-14*
+*对齐 PRODUCT_PRINCIPLES **v0.13** / DEVELOPMENT_RULES **v0.6** · 2026-09-19*

@@ -74,12 +74,15 @@ pub trait MemoryStore: Send + Sync {
 
     fn get(&self, id: &str) -> Result<Option<LoadedMemory>>;
 
-    /// Persist a new memory. Refuses if the id already exists in either
-    /// scope. Does **not** reject near-duplicate *bodies* — callers that
-    /// write without a `supersedes` link should call
-    /// [`check_near_duplicate`](Self::check_near_duplicate) first (auto-accept,
-    /// plain `memory_save`). Writes that intentionally replace via
-    /// `supersedes` skip that check.
+    /// Persist a new memory.
+    ///
+    /// Refuses if the id already exists in either scope, and refuses
+    /// near-duplicate *bodies* of active memories — **unless** the caller
+    /// says `supersedes` (that is an intentional replace/merge).
+    ///
+    /// 闸门在实现里，不在调用方：任何落盘路径都从这一处过（P1-4）。
+    /// [`check_near_duplicate`](Self::check_near_duplicate) 仍然可用，但只作为
+    /// 「写之前先问一声」的预检（用于给模型/用户一句更好的话），不是安全边界。
     fn put(&self, scope: Scope, frontmatter: MemoryFrontmatter, body: &str) -> Result<PathBuf>;
 
     fn delete(&self, scope: Scope, id: &str) -> Result<bool>;
@@ -96,6 +99,10 @@ pub trait MemoryStore: Send + Sync {
 pub struct FsMemoryStore {
     user_root: PathBuf,
     project_root: Option<PathBuf>,
+    /// 写入时的查重阈值。**闸门长在 `put` 上**，所以阈值必须跟着 store 走，
+    /// 而不是跟着某一个调用方走 —— 否则「谁忘了检查」就又是一条绕过路径（P1-4）。
+    /// `<= 0.0` = 显式关掉查重（测试与「用户坚持要记」的场景）。
+    dedup_threshold: f64,
     #[cfg(feature = "embed")]
     embed_index: Option<std::sync::Mutex<crate::embed::EmbedIndex>>,
 }
@@ -107,6 +114,7 @@ impl Clone for FsMemoryStore {
         Self {
             user_root: self.user_root.clone(),
             project_root: self.project_root.clone(),
+            dedup_threshold: self.dedup_threshold,
             #[cfg(feature = "embed")]
             embed_index: None,
         }
@@ -118,9 +126,16 @@ impl FsMemoryStore {
         Self {
             user_root,
             project_root,
+            dedup_threshold: DEFAULT_DEDUP_THRESHOLD,
             #[cfg(feature = "embed")]
             embed_index: None,
         }
+    }
+
+    /// 改写入查重阈值。`<= 0.0` 显式关掉查重（只有明确的调用方才该这么做）。
+    pub fn with_dedup_threshold(mut self, threshold: f64) -> Self {
+        self.dedup_threshold = threshold;
+        self
     }
 
     /// Enable semantic search via local embeddings. Must be called before
@@ -210,6 +225,18 @@ impl FsMemoryStore {
     }
 
     fn near_duplicate_impl(&self, body: &str, threshold: f64) -> Result<()> {
+        // 首行判据先跑：它是**精确**的（同一件事的再次誊写），余弦只是兜底。
+        // 余弦会被长度稀释——三条「新闻选材标准」同日入库（2026-09-18 实测），
+        // 每条 1890–3668 字、措辞不同，TF-IDF 全落在阈值以下，于是同一套标准存了三份。
+        // `threshold <= 0.0` 是调用方**显式关掉查重**的信号，照旧尊重。
+        if threshold > 0.0 {
+            if let Some(existing_id) = self.same_leading_line(body)? {
+                return Err(MemoryStoreError::Conflict {
+                    existing_id,
+                    similarity: 1.0,
+                });
+            }
+        }
         #[cfg(feature = "embed")]
         if self.embed_index.is_some() {
             match self.check_conflict(body, threshold) {
@@ -223,6 +250,22 @@ impl FsMemoryStore {
             }
         }
         self.check_conflict_tfidf(body, threshold)
+    }
+
+    /// 同一「首行」= 同一件事的又一次誊写，返回已在库的那条 id。
+    ///
+    /// 首行是这条记忆的**标题**；标题相同就该合并（用 `supersedes`），而不是再存一份。
+    /// 判据只此一处——工具写入、反思自动入库、CLI 都走同一个 `check_near_duplicate`。
+    fn same_leading_line(&self, body: &str) -> Result<Option<String>> {
+        let Some(lead) = leading_line(body) else {
+            return Ok(None);
+        };
+        for m in self.list_active()? {
+            if leading_line(&m.body).as_deref() == Some(lead.as_str()) {
+                return Ok(Some(m.id().to_string()));
+            }
+        }
+        Ok(None)
     }
 
     /// `~/.lebi-ai/memories` + (optional) `./.lebi-ai/memories`.
@@ -337,6 +380,14 @@ impl MemoryStore for FsMemoryStore {
                 "project scope requested but no project root configured".into(),
             )
         })?;
+        // 查重闸门就长在落盘这一处：inbox 批准、GUI/server 反思、CLI 反思、
+        // memory_save 工具、micro 自动入库 —— 全都从这里过，谁也绕不过去（P1-4）。
+        // 两种「有意写入」放行：带 `supersedes`（我知道我在替换谁），或调用方
+        // 显式声明了 `intentional`（视图把看不见的 supersedes id 丢掉之后，
+        // 意图不该跟着一起消失）。那正是**该**写下去的时候。
+        if frontmatter.supersedes.is_empty() && !frontmatter.intentional {
+            self.near_duplicate_impl(body, self.dedup_threshold)?;
+        }
         let path = root.join(Self::filename_for(&frontmatter));
         let doc = FrontmatterDoc {
             frontmatter,
@@ -407,6 +458,16 @@ impl MemoryStore for FsMemoryStore {
     fn check_near_duplicate(&self, body: &str, threshold: f64) -> Result<()> {
         self.near_duplicate_impl(body, threshold)
     }
+}
+
+/// 记忆的「标题」= 正文第一行非空内容，折叠空白后**至少 8 个字**才算数。
+///
+/// 太短的一行（`好的`、`注意`）不足以判定「同一件事」，那些交给余弦那条判据；
+/// 返回 `None` = 这条记忆没有可比对的标题。
+fn leading_line(body: &str) -> Option<String> {
+    let line = body.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    (collapsed.chars().count() >= 8).then_some(collapsed)
 }
 
 fn validate_id(id: &str) -> Result<()> {
@@ -684,6 +745,137 @@ mod tests {
                 "The user prefers vim as their primary editor",
                 DEFAULT_DEDUP_THRESHOLD,
             )
+            .unwrap();
+    }
+
+    /// 2026-09-18 实测：同一套「新闻选材标准」在同一天里被存了三份（1890 / 3099 /
+    /// 3668 字，措辞不同），余弦被长度稀释、三条全部通过旧闸门。首行相同即同一件事。
+    #[test]
+    fn check_near_duplicate_rejects_the_same_leading_line_even_when_text_differs() {
+        let user = tempfile::tempdir().unwrap();
+        let store = FsMemoryStore::new(user.path().to_path_buf(), None);
+        let head = "新闻选材标准（2026-09-17 用户明确「这是我选择新闻的标准」）";
+        store
+            .put(
+                Scope::User,
+                fm(vec!["standard"]),
+                &format!("{head}\n一、市值低于 30 亿的不看。\n"),
+            )
+            .unwrap();
+
+        let restated = format!(
+            "{head}\n换成完全不同的说法，把同一套标准逐条重述一遍，\n\
+             并且补上更多前后文，让字数与用词都不一样，\n\
+             好让余弦相似度被稀释到阈值以下。\n"
+        );
+        let err = store
+            .check_near_duplicate(&restated, DEFAULT_DEDUP_THRESHOLD)
+            .unwrap_err();
+        assert!(
+            matches!(err, MemoryStoreError::Conflict { similarity, .. } if similarity >= 1.0),
+            "同首行必须被拦下，got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_near_duplicate_allows_different_leading_lines() {
+        let user = tempfile::tempdir().unwrap();
+        let store = FsMemoryStore::new(user.path().to_path_buf(), None);
+        store
+            .put(
+                Scope::User,
+                fm(vec![]),
+                "新闻选材标准（2026-09-17 用户明确）：市值低于 30 亿的不看。\n",
+            )
+            .unwrap();
+        store
+            .check_near_duplicate(
+                "视频口播口径（2026-09-15 用户明确）：两分钟，先结论后依据。\n",
+                DEFAULT_DEDUP_THRESHOLD,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_short_first_line_is_not_a_title() {
+        assert_eq!(leading_line(""), None);
+        assert_eq!(leading_line("   \n\n"), None);
+        assert_eq!(leading_line("好的\n下面才是正文"), None);
+        assert_eq!(
+            leading_line("  新闻选材标准（2026-09-17）  \n正文"),
+            Some("新闻选材标准（2026-09-17）".to_string())
+        );
+    }
+
+    /// P1-4 的核心断言：闸门长在 `put` 上，**任何**落盘路径都绕不过去。
+    #[test]
+    fn put_itself_refuses_a_near_duplicate() {
+        let user = tempfile::tempdir().unwrap();
+        let store = FsMemoryStore::new(user.path().to_path_buf(), None);
+        store
+            .put(
+                Scope::User,
+                fm(vec![]),
+                "The user prefers vim as their primary editor\n",
+            )
+            .unwrap();
+        // 同一个意思换一种说法 —— 以前只有 memory_save / micro 两条路会拦，
+        // inbox 批准与 GUI/server 反思直接落盘就漏过去了。
+        let err = store
+            .put(
+                Scope::User,
+                fm(vec![]),
+                "User prefers vim as the primary editor\n",
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, MemoryStoreError::Conflict { .. }),
+            "expected Conflict, got {err:?}"
+        );
+        assert_eq!(store.list_active().unwrap().len(), 1);
+    }
+
+    /// `supersedes` 是「我知道我在替换谁」的显式意图（改稿 / 蒸馏合并 / 解冲突），
+    /// 有它就该写得下去。
+    #[test]
+    fn put_with_supersedes_writes_even_when_the_body_repeats() {
+        let user = tempfile::tempdir().unwrap();
+        let store = FsMemoryStore::new(user.path().to_path_buf(), None);
+        store
+            .put(
+                Scope::User,
+                fm(vec![]),
+                "The user prefers vim as their primary editor\n",
+            )
+            .unwrap();
+        let old_id = store.list_active().unwrap()[0].id().to_string();
+
+        let mut replacing = fm(vec![]);
+        replacing.supersedes = vec![old_id];
+        store
+            .put(
+                Scope::User,
+                replacing,
+                "The user prefers vim as their primary editor\n",
+            )
+            .expect("supersedes 必须能写下去");
+
+        // 旧的那条被标成 superseded，所以「在册」只有新的一条，盘上共两条。
+        assert_eq!(store.list_active().unwrap().len(), 1);
+        assert_eq!(store.list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_zero_threshold_still_means_no_dedup_at_all() {
+        let user = tempfile::tempdir().unwrap();
+        let store = FsMemoryStore::new(user.path().to_path_buf(), None);
+        let head = "新闻选材标准（2026-09-17 用户明确「这是我选择新闻的标准」）";
+        store
+            .put(Scope::User, fm(vec![]), &format!("{head}\n第一版\n"))
+            .unwrap();
+        // 显式关掉查重的调用方（threshold = 0）不该被首行判据拦住。
+        store
+            .check_near_duplicate(&format!("{head}\n第二版\n"), 0.0)
             .unwrap();
     }
 }

@@ -129,7 +129,6 @@ fn default_reason_for_tool(name: &str) -> String {
         "memory_delete" => {
             "Permanently deletes a saved memory (affects future conversations).".into()
         }
-        "subagent" => "Starts a nested agent that can run multiple tools on your behalf.".into(),
         "propose_skill" => "Proposes a new skill candidate for your review.".into(),
         "skill_create" => "Writes a new skill into your skill store.".into(),
         "memory_save" => "Writes a lasting memory that future chats may load.".into(),

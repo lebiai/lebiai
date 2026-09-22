@@ -4,4 +4,4 @@
 //! All surfaces that need the GUI-style turn system prompt must use this
 //! re-export so Continuity/Care nudges stay identical to hermes-server.
 
-pub use hermes_channel::CompanionContextSources as ContextSources;
+pub use hermes_channel::{CompanionContextSources as ContextSources, TeamContext};

@@ -139,7 +139,7 @@ export function OnboardingRitual({ onDone }: { onDone: () => void }) {
       <div className="relative z-[1] w-full max-w-[30rem] px-5 sm:px-6 py-8 fade-up-in">
         <div className="rounded-3xl border border-app-border/90 dark:border-slate-700/80 bg-app-surface/85 dark:bg-slate-900/80 backdrop-blur-md shadow-[0_20px_50px_-20px_rgb(15_23_42/0.28),var(--shadow-app-card)] dark:shadow-[0_24px_60px_-16px_rgb(0_0_0/0.55)] px-6 sm:px-8 pt-7 pb-6 max-h-[94vh] overflow-y-auto">
           <div className="flex flex-col items-center text-center">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-app-accent dark:text-violet-300 mb-2.5">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-app-accent dark:text-violet-300 mb-2.5">
               {t("onboarding.kicker")}
             </p>
             <h1
@@ -181,7 +181,7 @@ export function OnboardingRitual({ onDone }: { onDone: () => void }) {
             {step === 0 && (
               <div className="space-y-5 fade-up-in">
                 <div className="rounded-2xl border border-app-border/80 dark:border-slate-700/70 bg-app-bg/60 dark:bg-slate-950/50 p-4">
-                  <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-app-fg-tertiary mb-2.5">
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-app-fg-tertiary mb-2.5">
                     <MessageCircle size={13} className="text-app-accent dark:text-violet-300" />
                     {t("onboarding.demoLabel")}
                   </div>
@@ -228,7 +228,7 @@ export function OnboardingRitual({ onDone }: { onDone: () => void }) {
                     );
                   })}
                 </div>
-                <p className="text-[11px] text-app-fg-tertiary dark:text-slate-500 text-center">
+                <p className="text-app-sub text-app-fg-secondary dark:text-slate-400 text-center">
                   {t("onboarding.scenesHint")}
                 </p>
 

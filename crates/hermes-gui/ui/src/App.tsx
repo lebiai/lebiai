@@ -64,6 +64,7 @@ async function markLeaveThenClose(sessionId: string) {
 export default function App() {
   const fetchSessions = useChatStore((s) => s.fetchSessions);
   const fetchPersonas = useChatStore((s) => s.fetchPersonas);
+  const fetchTeams = useChatStore((s) => s.fetchTeams);
   const { activePanel } = useNavStore();
   const setLanguage = useUiStore((s) => s.setLanguage);
   const setTheme = useUiStore((s) => s.setTheme);
@@ -81,7 +82,7 @@ export default function App() {
   useEffect(() => {
     applyTheme(useUiStore.getState().theme);
     void (async () => {
-      await Promise.all([fetchSessions(), fetchPersonas()]);
+      await Promise.all([fetchSessions(), fetchPersonas(), fetchTeams()]);
       // 冷启动不自动开会话：每个会话都绑一个人物，谁开由用户点侧栏决定。
       // 没有会话时对话区是一句问候（`ChatView` 的空态），不是「正在开启…」。
     })();
@@ -109,6 +110,7 @@ export default function App() {
   }, [
     fetchSessions,
     fetchPersonas,
+    fetchTeams,
     setLanguage,
     setTheme,
     setHasApiKey,

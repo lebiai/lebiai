@@ -9,7 +9,7 @@ pub mod review;
 pub mod store;
 
 pub use due::{is_content_deliverable, parse_due, DueError};
-pub use near::{score_near, NearHit, NEAR_ASK, NEAR_FOLD};
+
 pub use residue::{
     looks_like_owe_language, scan_merge_pairs, scan_residue, session_has_owe_language, ResidueItem,
 };

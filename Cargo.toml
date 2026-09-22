@@ -19,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 rust-version = "1.78"
 authors = ["老码小张 <1595819400@qq.com>"]
@@ -84,7 +84,7 @@ hermes-server = { path = "crates/hermes-server" }
 
 # HTTP/WebSocket server (hermes-server)
 axum = { version = "0.8", features = ["ws", "macros"] }
-tower-http = { version = "0.6", features = ["cors", "fs"] }
+tower-http = { version = "0.6", features = ["fs"] }
 toml_edit = "0.22"
 rand = "0.8"
 

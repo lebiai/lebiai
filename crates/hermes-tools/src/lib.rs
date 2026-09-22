@@ -6,12 +6,14 @@
 pub mod bash;
 pub mod bash_sandbox;
 pub mod commitment;
+pub mod decision;
 pub mod document_import;
 pub mod edit;
 pub mod git;
 pub mod glob;
 pub mod grep;
 pub mod http_defaults;
+pub mod material;
 pub mod memory;
 pub mod office_export;
 pub mod open;
@@ -19,6 +21,7 @@ pub mod palace;
 pub mod persona_scope;
 pub mod read;
 pub mod safety;
+pub mod session_recall;
 pub mod skill;
 pub mod skill_propose;
 pub mod source;
@@ -47,13 +50,37 @@ use hermes_memory::MemoryStore;
 use hermes_skills::SkillStore;
 use hermes_sources::SourceStore;
 
+/// 会向模型吐正文的**每一个**工具，各自的**单次返回上限**（字符）。
+///
+/// 这不是清单，是**绳子**：引擎侧 `hermes_core::compaction::RequestFold::recent_chars`
+/// 必须 ≥ 这里最大的一个（下面 `the_request_fold_never_under_cuts_a_tool_promise`
+/// 断言这件事）。低于它，工具刚给模型的东西会在**装配请求体时被悄悄砍掉**，
+/// 模型只能重取一次 —— 同样的字节走两趟，还要多一次模型往返。
+///
+/// 历史：这条绳子原来只拴着 `web_fetch` 一个工具（P1-14），于是 `read`（整份文件）
+/// 与 `bash`（30,000）都在绳子外面，天天被砍。2026-09-21 改成登记制。
+///
+/// **新工具只要会吐正文，就在这里登记一行**；吐得比引擎上限还多，就先把上限调对
+/// （或者在工具里按 `read` 的做法带「继续读的把手」分页），不要靠少登记一行蒙过去。
+pub const TOOL_RESULT_CEILINGS: &[(&str, usize)] = &[
+    // 整份文件，超了在行边界切开并给 `offset=`（见 `read::MAX_READ_CHARS`）。
+    ("read", read::MAX_READ_CHARS),
+    ("bash", bash::MAX_OUTPUT_CHARS),
+    ("web_fetch", web_fetch::default_max_chars()),
+    ("source_read", source::MAX_SOURCE_CHARS),
+];
+
+pub use decision::{spec as decision_spec, Stamp, StampedHost};
 pub use skill_propose::{ProposeContext, SessionMessages, SkillProposeQueue};
-pub use subagent::SubagentContext;
+pub use subagent::{SubagentContext, SubagentHost};
 pub use web::{SearchBackend, WebToolsContext};
 
 const BASIC_TOOLS: &[&str] = &[
     "read", "write", "edit", "bash", "glob", "grep", "git", "open",
 ];
+
+/// Workspace-relative, always available (no store to wire) — like `read`/`grep`.
+const WORKSPACE_TOOLS: &[&str] = &["material_read"];
 
 /// 本 crate 的测试专用夹具（`#[cfg(test)]`）。
 ///
@@ -168,7 +195,9 @@ impl BuiltinToolHost {
 
     pub fn handles(&self, name: &str) -> bool {
         BASIC_TOOLS.contains(&name)
+            || WORKSPACE_TOOLS.contains(&name)
             || todo::handles(name)
+            || decision::handles(name)
             || memory::handles(name)
             || matches!(
                 name,
@@ -206,6 +235,8 @@ impl ToolHost for BuiltinToolHost {
             think::spec(),
         ];
         tools.extend(todo::specs());
+        // 按 ID 取料：库是工作区里那两个文件，不需要任何 store——所以一直有。
+        tools.push(material::spec());
         if self.memory_store.is_some() {
             tools.push(memory::spec());
             tools.push(memory::save_spec());
@@ -223,6 +254,7 @@ impl ToolHost for BuiltinToolHost {
             tools.push(skill::install_spec());
             tools.push(skill::delete_spec());
         }
+        tools.push(decision::spec());
         if self.commitment_store.is_some() {
             tools.push(commitment::list_spec());
             tools.push(commitment::save_spec());
@@ -257,6 +289,7 @@ impl ToolHost for BuiltinToolHost {
             "web_fetch" => web_fetch::run(&self.workspace, args, self.web_ctx.as_deref()).await,
             "web_search" => web_search::run(&self.workspace, args, self.web_ctx.as_deref()).await,
             "think" => think::run(args).await,
+            n if material::handles(n) => material::run(&self.workspace, args).await,
             // `session_owner = None`：内置宿主不认人物，写入一律落全局 = 今天的行为。
             // 人物会话走 `PersonaToolHost`（persona_scope.rs），那里才带上归属。
             _ if memory::handles(name) => {
@@ -315,6 +348,7 @@ impl ToolHost for BuiltinToolHost {
                 })?;
                 subagent::run(ctx, args).await
             }
+            n if decision::handles(n) => decision::run(&self.workspace, args).await,
             n if commitment::handles(n) => {
                 let store = self.commitment_store.as_ref().ok_or_else(|| {
                     Error::ToolHost(format!("{n}: no commitment store configured"))
@@ -372,6 +406,38 @@ impl ToolHost for CompositeToolHost {
 
 #[cfg(test)]
 mod tests {
+    /// **跨 crate 的绳子**：引擎装配请求体时给「最近窗口」的上限，必须盖得住
+    /// **每一个**会吐正文的工具自己的承诺。盖不住 → 工具刚给模型的东西，
+    /// 下一轮（连当轮都是）被悄悄砍掉，模型只能重取（2026-09-21 实测：
+    /// 吕老师整读 37,428 字的成品，被砍到 20,000 字，于是又读了一次后半段）。
+    #[test]
+    fn the_request_fold_never_under_cuts_a_tool_promise() {
+        let allowed = hermes_core::compaction::RequestFold::default().recent_chars;
+        for (name, promised) in crate::TOOL_RESULT_CEILINGS {
+            assert!(
+                *promised <= allowed,
+                "{name} 承诺一次给 {promised} 字，而请求体折叠最近窗口只放 {allowed} 字 —— \
+                 工具刚给的东西会被砍。二选一：把 {name} 的上限降到 ≤ {allowed}（并给它 \
+                 「继续读的把手」分页），或把 hermes_core::compaction::MAX_TOOL_RESULT_CHARS 调上去。"
+            );
+        }
+        // 工具名不许重复 —— 重复了就是把绳子拴了两次，其中一个必然是笔误。
+        let mut names: Vec<&str> = crate::TOOL_RESULT_CEILINGS
+            .iter()
+            .map(|(n, _)| *n)
+            .collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(before, names.len(), "TOOL_RESULT_CEILINGS 里有重名工具");
+        assert!(
+            !crate::TOOL_RESULT_CEILINGS
+                .iter()
+                .any(|(n, _)| n.is_empty()),
+            "TOOL_RESULT_CEILINGS 里不许有空工具名"
+        );
+    }
+
     use super::*;
     use hermes_memory::FsMemoryStore;
     use tempfile::tempdir;

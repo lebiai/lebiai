@@ -41,7 +41,7 @@ export function AttachmentChip({
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 max-w-[16rem] rounded-xl border px-2.5 py-1.5 text-[11px] ${base}`}
+      className={`inline-flex items-center gap-1.5 max-w-[16rem] rounded-xl border px-2.5 py-1.5 text-app-sub ${base}`}
       title={mdRelPath ?? originalName}
     >
       <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${statusDot}`} />

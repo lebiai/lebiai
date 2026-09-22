@@ -26,6 +26,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::chat::send_message,
@@ -33,10 +34,10 @@ fn main() {
             commands::chat::truncate_after_last_user,
             commands::chat::truncate_session,
             commands::chat::cancel_stream,
-            commands::chat::respond_confirm,
             commands::session::list_sessions,
             commands::session::new_session,
             commands::session::load_session,
+            commands::session::load_session_day,
             commands::session::delete_session,
             commands::commitment::list_commitments,
             commands::commitment::create_commitment,
@@ -55,10 +56,10 @@ fn main() {
             commands::memory::build_topic_cards,
             commands::personas::list_personas,
             commands::personas::set_personas,
-            commands::skills::list_skills,
-            commands::skills::get_skill,
-            commands::skills::save_skill,
-            commands::skills::delete_skill,
+            commands::teams::list_teams,
+            commands::episode::list_episode,
+            commands::episode::hand_off,
+            commands::episode::answer_decision,
             commands::onboarding::onboarding_seed_set,
             commands::onboarding::onboarding_seed_get,
             commands::config::get_config,

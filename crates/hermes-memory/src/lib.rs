@@ -20,8 +20,9 @@ pub mod topics;
 #[cfg(feature = "embed")]
 pub use embed::EmbedIndex;
 pub use memory::{
-    filter_visible, views_for, visible_owned, visible_to, Confidence, LoadedMemory,
-    MemoryFrontmatter, Scope, Source,
+    filter_visible, filter_visible_any, version_of, views_for_any, visible_owned,
+    visible_owned_any, visible_to, visible_to_any, Confidence, LoadedMemory, MemoryFrontmatter,
+    Scope, Source,
 };
 pub use palace::{get_zone, group_by_zone};
 pub use profile::{load_profile, profile_path, save_profile};
@@ -29,7 +30,7 @@ pub use relevance::{
     search_memories, search_memories_effective, search_memories_scored,
     search_memories_with_effectiveness,
 };
-pub use scoped::{resolve_owner, OwnerDefault, ScopedMemoryStore};
+pub use scoped::{resolve_owner, team_owner, OwnerDefault, ScopedMemoryStore};
 pub use slot::{infer_slot, is_worthless_for_living, living_rules, same_slot_ids, WorkSlot};
 pub use stats::{
     load_effectiveness, record as record_memory_stat, MemoryEffectiveness, MemoryEvent,

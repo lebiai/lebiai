@@ -40,19 +40,23 @@ pub async fn run(
 
     // Wire up `subagent` so an autonomous goal can spawn child contexts (skill
     // evaluation, blind comparison, grader subagents — see skill-creator).
-    let subagent_ctx = Arc::new(SubagentContext::new(
-        provider.clone(),
-        provider_cfg.model.clone(),
-        provider_cfg.max_tokens,
-        cfg.limits.max_tool_rounds,
-        hermes_turn::PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
-        workspace_root.clone(),
-        Some(memory_store_arc.clone()),
-        // `hermes agent` 没有人物这层（无 `--persona`）：父未被收窄，
-        // child 也不收窄。
-        MemoryView::Unscoped,
-        Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
-    ));
+    let web_ctx = build_web_ctx(&cfg, provider.clone());
+    let subagent_ctx = Arc::new(
+        SubagentContext::new(
+            provider.clone(),
+            provider_cfg.model.clone(),
+            provider_cfg.max_tokens,
+            cfg.limits.max_tool_rounds,
+            hermes_turn::PermissionChecker::new(&cfg.permissions.allow, &cfg.permissions.deny),
+            workspace_root.clone(),
+            Some(memory_store_arc.clone()),
+            // `hermes agent` 没有人物这层（无 `--persona`）：父未被收窄，
+            // child 也不收窄。
+            MemoryView::Unscoped,
+            Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
+        )
+        .with_web_ctx(web_ctx.clone()),
+    );
 
     let host = load_tool_host(
         &workspace_root,
@@ -60,7 +64,7 @@ pub async fn run(
         Some(skill_store_arc.clone() as Arc<dyn SkillStore>),
         None,
         Some(subagent_ctx),
-        Some(build_web_ctx(&cfg, provider.clone())),
+        Some(web_ctx),
     )
     .await?;
     let tools = host

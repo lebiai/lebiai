@@ -34,14 +34,6 @@ pub enum ChatStreamEvent {
         is_error: bool,
     },
     #[serde(rename_all = "camelCase")]
-    ConfirmRequired {
-        id: String,
-        tool_name: String,
-        summary: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reason: Option<String>,
-    },
-    #[serde(rename_all = "camelCase")]
     UsageUpdate {
         input_tokens: u32,
         output_tokens: u32,
@@ -67,6 +59,14 @@ pub enum ChatStreamEvent {
     },
     /// User said remember this standard — waiting in 它记得的.
     RememberQueued,
+    /// 较早的上下文已被整理成摘要（本轮发送时触发）。UI 用一行安静的文字说明，
+    /// 不是错误、不需要用户做任何事。
+    #[serde(rename_all = "camelCase")]
+    ContextCompacted {
+        replaced: usize,
+        before_tokens: usize,
+        after_tokens: usize,
+    },
     Done,
 }
 

@@ -33,6 +33,16 @@
   --color-app-success: #16a34a;
   --color-app-user-bubble: #2563eb;
 
+  /*
+   * 字号层级（**唯一来源**）——见 docs/spec/gui-typography.md。
+   * 正文 15 / 二级 13 / 三级 12（= Tailwind `text-xs`）；控件面用 `text-sm`。
+   * 组件不得自写任意值字号（Tailwind 方括号像素写法一律不许）。
+   */
+  --text-app-body: 0.9375rem;
+  --text-app-body--line-height: 1.65;
+  --text-app-sub: 0.8125rem;
+  --text-app-sub--line-height: 1.6;
+
   --radius-app: 0.75rem;
   --shadow-app-card: 0 1px 2px rgb(15 23 42 / 0.04), 0 4px 16px rgb(15 23 42 / 0.04);
   --shadow-app-composer: 0 4px 24px -4px rgb(15 23 42 / 0.14), 0 2px 8px rgb(15 23 42 / 0.06);
@@ -79,17 +89,86 @@
   --tw-prose-links: var(--color-app-primary);
   --tw-prose-code: var(--color-app-fg);
   --tw-prose-pre-bg: #0f172a;
-  font-size: 0.875rem;
-  line-height: 1.65;
+  /* 消息正文 = 正文档（`--text-app-body`）。 */
+  font-size: var(--text-app-body);
+  line-height: var(--text-app-body--line-height);
+}
+
+/*
+ * 暗色下的正文配色。**这里必须自己写**：`.prose-chat` 在同一元素上覆盖了
+ * `dark:prose-invert` 设的那批 `--tw-prose-*`（同优先级 → 看源码顺序，结果浅色值赢），
+ * 于是暗色下正文是 #0f172a 深藏青压在近黑底上 —— 用户「几乎看不见字」。
+ * 用 `html.dark .prose-chat`（0,2,0）明确压过单类选择器。
+ */
+html.dark .prose-chat {
+  --tw-prose-body: #e2e8f0;
+  --tw-prose-headings: #f1f5f9;
+  --tw-prose-lead: #cbd5e1;
+  --tw-prose-links: #93c5fd;
+  --tw-prose-bold: #f1f5f9;
+  --tw-prose-counters: #94a3b8;
+  --tw-prose-bullets: #64748b;
+  --tw-prose-hr: #334155;
+  --tw-prose-quotes: #cbd5e1;
+  --tw-prose-quote-borders: #334155;
+  --tw-prose-captions: #94a3b8;
+  --tw-prose-code: #e2e8f0;
+  --tw-prose-th-borders: #334155;
+  --tw-prose-td-borders: #1e293b;
 }
 
 .prose-chat pre {
   border-radius: 0.5rem;
-  font-size: 0.8rem;
+  font-size: 0.8125rem;
 }
 
 .prose-chat code {
   font-size: 0.85em;
+}
+
+/* 来源小标签。正文里的链接（模型按格式写的「原文链接」「来源」）不是一行裸链，
+   而是一枚看得见、点得开的小标签：点它开系统浏览器（见 MarkdownContent 的 a 渲染器）。
+   选择器带上 `.prose-chat` 是为了盖过 typography 插件的下划线/主色。 */
+.prose-chat a.source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0 0.08rem;
+  padding: 0.06rem 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid var(--color-app-border);
+  background: var(--color-app-primary-soft);
+  color: var(--color-app-primary);
+  font-size: 0.8em;
+  font-weight: 500;
+  line-height: 1.5;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color var(--motion-fast) var(--ease-out-soft),
+    border-color var(--motion-fast) var(--ease-out-soft);
+}
+
+.prose-chat a.source-chip .source-chip-label {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prose-chat a.source-chip:hover {
+  border-color: var(--color-app-primary);
+  background: var(--color-app-surface);
+}
+
+html.dark .prose-chat a.source-chip {
+  border-color: rgb(37 99 235 / 0.45);
+  background: rgb(30 58 138 / 0.35);
+  color: #93c5fd;
+}
+
+html.dark .prose-chat a.source-chip:hover {
+  border-color: #60a5fa;
+  background: rgb(30 58 138 / 0.55);
 }
 
 .work-drawer {

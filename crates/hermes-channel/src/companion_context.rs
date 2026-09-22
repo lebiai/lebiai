@@ -16,6 +16,19 @@ use hermes_llm::ContextLimits;
 use hermes_memory::LoadedMemory;
 use hermes_skills::LoadedSkill;
 
+/// 组会话要写进提示词的三样东西：**哪张桌子、桌上还开着谁、这一轮谁接**。
+///
+/// 与 `persona` 一样，这里只放**事实**，不合并任何人的职责——每个人物仍然是它自己
+/// （规格 §2.2「多说话人会话不许把硬拦搞松」）。
+#[derive(Clone, Copy)]
+pub struct TeamContext<'a> {
+    pub team: &'a hermes_core::team::Team,
+    /// 这台机器上**开着**的成员 id（授权 + 勾选，见 `personas.md` §4）。
+    pub present: &'a [&'a str],
+    /// 这一轮由谁接。接棒的；没交过棒 → **第一棒采集**（`pipeline::fallback_holder`）。
+    pub speaker: &'a str,
+}
+
 pub struct ContextSources<'a> {
     /// 这里的 `base` 是**附加说明**，不是搭子协议：协议由
     /// `companion::companion_protocol()` 在 `build_turn_system` 开头写入，
@@ -25,14 +38,26 @@ pub struct ContextSources<'a> {
     /// 人物（工位）。`None` = 无人物——提示词与没有这层时逐字节相同。
     /// 位置：`companion_protocol()` 与工具条款之后、在办与 `base` 之前。
     pub persona: Option<&'a hermes_core::persona::Persona>,
+    /// 项目组：组会话才有值（`docs/spec/projects.md` §2.2）。位置在人物块之后、
+    /// 在办之前——「你是谁」先说完，再说「你在哪张桌子上」。
+    /// `None` = 不在任何组里：提示词与没有这层时**逐字节相同**。
+    pub team: Option<TeamContext<'a>>,
     /// 本机**开着的**其他工位（[`hermes_core::persona::open`]）。指路只能用这份
     /// 名单（规格 §2.3）：指到一个用户根本没有的工位 = 没指。
     /// `persona` 有值而这里是空 → 提示词里会写「本机只有你这一个工位」，
     /// 模型只能拒绝、不会编名字——**空 ≠ 万事大吉**，接线时别漏。
     pub roster: &'a [&'a hermes_core::persona::Persona],
     /// Rendered topic-card index (see `hermes_memory::topics`). `None` falls
-    /// back to a flat index of the living memories.
+    /// back to the compiled profile, then to a flat index of living memories.
     pub topic_cards: Option<&'a str>,
+    /// 编译好的 `profile.md`（`hermes_memory::load_profile`）。与 CLI/IM
+    /// （[`crate::context::ContextSources`]）**同一套三层顺序**：
+    /// 主题卡 → 编译档案 → 平的记忆索引。
+    ///
+    /// P1-2：桌面端以前**从不注入**它 —— 文件写了、磁盘上有，但对话里的模型
+    /// 看不到：同一条记忆，CLI 里记得、GUI 里不记得。两个入口共享同一个引擎，
+    /// 这种「一边有一边没有」就是分叉。
+    pub compiled_profile: Option<&'a str>,
     pub pinned: &'a [LoadedMemory],
     pub active: &'a [LoadedMemory],
     pub all_skills: &'a [LoadedSkill],
@@ -75,6 +100,13 @@ impl<'a> ContextSources<'a> {
             buf.push('\n');
         }
 
+        // 组块：先说「你是谁」（人物块），再说「你在哪张桌子上」（组块）。
+        // 顺序即断言：`the_team_block_sits_after_the_persona_block_and_before_memory`。
+        if let Some(tc) = self.team {
+            buf.push_str(&hermes_core::team::block(tc.team, tc.present, tc.speaker));
+            buf.push('\n');
+        }
+
         self.append_open_work(&mut buf, user_query);
 
         if !self.material_hits.is_empty() {
@@ -90,9 +122,36 @@ impl<'a> ContextSources<'a> {
 
         if !self.pinned.is_empty() {
             buf.push_str("## Pinned memories (notes — verify before asserting identity)\n");
+            // 组里那几条标准要**看得出是哪一版**：`docs/spec/projects.md` §5.1 规矩 3/4
+            // ——按当版干、出活时说清按哪一版。判据就在 frontmatter 里：日期 + 「取代了
+            // 上一版」这个标记（链挂在新版上，所以有新标记的那条就是当版）。
+            let show_version = self.team.is_some();
             for m in self.pinned {
                 let body = m.body.trim();
-                buf.push_str(&format!("- [{}] {}\n", m.frontmatter.id, body));
+                if show_version {
+                    let day = m
+                        .frontmatter
+                        .created
+                        .with_timezone(&chrono::Local)
+                        .date_naive();
+                    let newer = if m.frontmatter.supersedes.is_empty() {
+                        ""
+                    } else {
+                        " · 取代了上一版"
+                    };
+                    let why = m
+                        .frontmatter
+                        .because
+                        .as_deref()
+                        .map(|b| format!(" · 因为：{b}"))
+                        .unwrap_or_default();
+                    buf.push_str(&format!(
+                        "- [{} · {}{}{}] {}\n",
+                        m.frontmatter.id, day, newer, why, body
+                    ));
+                } else {
+                    buf.push_str(&format!("- [{}] {}\n", m.frontmatter.id, body));
+                }
             }
             buf.push('\n');
         }
@@ -101,6 +160,11 @@ impl<'a> ContextSources<'a> {
             hermes_memory::living_rules(self.active.to_vec());
         if let Some(cards) = self.topic_cards {
             buf.push_str(cards.trim());
+            buf.push_str("\n\n");
+        } else if let Some(profile) = self.compiled_profile {
+            // 编译档案已经装下了所有在册记忆，别再叠一份索引（与 CLI 同判据）。
+            buf.push_str("## User Profile (notes — verify before asserting identity)\n\n");
+            buf.push_str(profile.trim());
             buf.push_str("\n\n");
         } else {
             let episodic: Vec<&LoadedMemory> =
@@ -308,7 +372,9 @@ mod tests {
             base: None,
             persona: None,
             roster: &[],
+            team: None,
             topic_cards: None,
+            compiled_profile: None,
             pinned: &[],
             active: &[],
             all_skills: &[],
@@ -322,6 +388,64 @@ mod tests {
         assert!(s.contains("work companion"));
         assert!(!s.contains("work partner"));
         assert!(!s.contains("helpful local AI assistant"));
+    }
+
+    /// P1-2：桌面端 / 手机这条表面上，编译档案以前**从不**注入 —— 文件写了、
+    /// 磁盘上有，模型却看不到。现在与 CLI 同一条里：没卡就用档案。
+    #[test]
+    fn the_compiled_profile_reaches_the_desktop_prompt() {
+        let sources = ContextSources {
+            base: None,
+            persona: None,
+            roster: &[],
+            team: None,
+            topic_cards: None,
+            compiled_profile: Some("## User\n- 建筑设计师，用 Mac\n\n## Habits\n- 先结论后细节"),
+            pinned: &[],
+            active: &[mem("mem_a", "这条索引不该出现", false)],
+            all_skills: &[],
+            open_work: &[],
+            material_hits: &[],
+            first_human_today: false,
+            workspace_root: "/tmp/ws",
+            limits: ContextLimits::default(),
+        };
+        let s = sources.build_turn_system("hello");
+        assert!(s.contains("User Profile"), "档案段落必须在: {s}");
+        assert!(s.contains("建筑设计师"), "档案内容必须在: {s}");
+        assert!(
+            !s.contains("Active memory index"),
+            "有档案时不该再叠一份平索引: {s}"
+        );
+    }
+
+    /// 没有档案、也没有卡时才退回平索引 —— 三层顺序与 CLI 一致。
+    #[test]
+    fn without_a_profile_the_plain_index_is_still_there() {
+        let sources = ContextSources {
+            base: None,
+            persona: None,
+            roster: &[],
+            team: None,
+            topic_cards: None,
+            compiled_profile: None,
+            pinned: &[],
+            active: &[mem_in(
+                "mem_a",
+                "general",
+                &[],
+                "用户偏好：文档先结论后细节",
+            )],
+            all_skills: &[],
+            open_work: &[],
+            material_hits: &[],
+            first_human_today: false,
+            workspace_root: "/tmp/ws",
+            limits: ContextLimits::default(),
+        };
+        let s = sources.build_turn_system("hello");
+        assert!(s.contains("Active memory index"), "{s}");
+        assert!(s.contains("用户偏好：文档先结论后细节"), "{s}");
     }
 
     /// 「工作情节」的判定读**唯一**词表（`companion::tags::is_episode_tag`，自带 trim）
@@ -354,7 +478,9 @@ mod tests {
             base: None,
             persona: None,
             roster: &[],
+            team: None,
             topic_cards: None,
+            compiled_profile: None,
             pinned: &[],
             active: &active,
             all_skills: &[],
@@ -395,7 +521,9 @@ mod tests {
             base: None,
             persona: None,
             roster: &[],
+            team: None,
             topic_cards: Some("## Topic cards (index — NOT the wording)\n- 财经内容 (3): sum"),
+            compiled_profile: None,
             pinned: std::slice::from_ref(&pin),
             active: &notes,
             all_skills: &[],
@@ -423,7 +551,9 @@ mod tests {
             base: None,
             persona: None,
             roster: &[],
+            team: None,
             topic_cards: None,
+            compiled_profile: None,
             pinned: &[],
             active: &[],
             all_skills: &[],
@@ -448,7 +578,9 @@ mod tests {
             base: None,
             persona: None,
             roster: &[],
+            team: None,
             topic_cards: None,
+            compiled_profile: None,
             pinned: &[],
             active: &[],
             all_skills: &[],
@@ -477,7 +609,9 @@ mod tests {
             base: None,
             persona: Some(me),
             roster: &roster,
+            team: None,
             topic_cards: None,
+            compiled_profile: None,
             pinned: &[],
             active: &[],
             all_skills: &skills,
@@ -490,7 +624,7 @@ mod tests {
         let s = sources.build_turn_system("帮我采今天的情报");
 
         assert!(
-            s.contains("- 情报王海燕 · 今天的事，今天给你"),
+            s.contains("- 情报王海燕 · 窗口内的资讯，按名单采全、按格式交"),
             "名册要按侧栏那行写，用户按这个才找得到人：\n{s}"
         );
         assert!(
@@ -520,7 +654,9 @@ mod tests {
             base: None,
             persona: None,
             roster: &[],
+            team: None,
             topic_cards: None,
+            compiled_profile: None,
             pinned: &[],
             active: std::slice::from_ref(&ep),
             all_skills: std::slice::from_ref(&sk),
@@ -548,12 +684,14 @@ mod tests {
         let sources = ContextSources {
             base: None,
             topic_cards: None,
+            compiled_profile: None,
             pinned: &[],
             active: &[],
             all_skills: &[],
             open_work: std::slice::from_ref(&item),
             persona: None,
             roster: &[],
+            team: None,
             material_hits: &[],
             first_human_today: false,
             workspace_root: "/tmp/ws",
@@ -577,7 +715,9 @@ mod tests {
             base: None,
             persona: None,
             roster: &[],
+            team: None,
             topic_cards: None,
+            compiled_profile: None,
             pinned: &[],
             active: &[],
             all_skills: &[],
@@ -607,7 +747,9 @@ mod tests {
             base: None,
             persona: None,
             roster: &[],
+            team: None,
             topic_cards: None,
+            compiled_profile: None,
             pinned: &[],
             active: &[],
             all_skills: std::slice::from_ref(&active),
@@ -624,7 +766,7 @@ mod tests {
 
     #[test]
     fn the_persona_block_sits_after_the_companion_protocol_and_before_memory() {
-        let p = hermes_core::persona::get("xiao-xie").unwrap();
+        let p = hermes_core::persona::get("sao-di-seng").unwrap();
         let mut item =
             hermes_commitments::Commitment::new("周五交改稿", hermes_commitments::Source::User)
                 .unwrap();
@@ -634,7 +776,9 @@ mod tests {
             base: Some("BASE"),
             persona: Some(p),
             roster: &[],
+            team: None,
             topic_cards: Some("## Topic cards (index — NOT the wording)\n- 林碳 (1): sum"),
+            compiled_profile: None,
             pinned: std::slice::from_ref(&pinned),
             active: &[],
             all_skills: &[],
@@ -664,19 +808,21 @@ mod tests {
             mine < zaiban && zaiban < base && base < pinned_at && pinned_at < cards,
             "顺序：人物块 → 在办 → base → 记忆与卡"
         );
-        assert!(s.contains("没依据的话，我不说"));
+        assert!(s.contains("热闹我不看，我看门道"));
     }
 
     #[test]
     fn the_persona_block_appears_exactly_once_without_a_session_layer() {
         // 这条路径**没有**独立的会话层：`build_turn_system` 就是整份提示词。
         // 所以人物块必须在这里落一次、且只落一次。
-        let p = hermes_core::persona::get("xiao-xie").unwrap();
+        let p = hermes_core::persona::get("sao-di-seng").unwrap();
         let sources = ContextSources {
             base: None,
             persona: Some(p),
             roster: &[],
+            team: None,
             topic_cards: None,
+            compiled_profile: None,
             pinned: &[],
             active: &[],
             all_skills: &[],
@@ -705,7 +851,9 @@ mod tests {
             base: Some("BASE"),
             persona: None,
             roster: &[],
+            team: None,
             topic_cards: None,
+            compiled_profile: None,
             pinned: std::slice::from_ref(&pinned),
             active: &[],
             all_skills: &[],
@@ -718,10 +866,11 @@ mod tests {
         let without = plain.build_turn_system("你好");
         assert!(!without.contains("你现在是谁"), "{without}");
 
-        let p = hermes_core::persona::get("xiao-xie").unwrap();
+        let p = hermes_core::persona::get("sao-di-seng").unwrap();
         let with = ContextSources {
             persona: Some(p),
             roster: &[],
+            team: None,
             ..plain
         }
         .build_turn_system("你好");
@@ -729,6 +878,162 @@ mod tests {
             with.replace(&format!("{}\n", hermes_core::persona::block(p, &[])), ""),
             without,
             "有/无人物之间只差人物块那一段"
+        );
+    }
+
+    /// 组块的位置：**人物块之后、记忆之前**——先把「你是谁」说完，再说
+    /// 「你在哪张桌子上」（规格 §2.2）。顺序即断言。
+    #[test]
+    fn the_team_block_sits_after_the_persona_block_and_before_memory() {
+        let t = hermes_core::team::get("caifu-zaozhidao").unwrap();
+        let present: Vec<&str> = t
+            .members
+            .iter()
+            .map(|m| m.id.as_str())
+            .filter(|id| *id != "xiao-song")
+            .collect();
+        let pinned = mem("mem_p", "pinned body", true);
+        let sources = ContextSources {
+            base: Some("BASE"),
+            persona: Some(t.interface_persona()),
+            team: Some(TeamContext {
+                team: t,
+                present: &present,
+                speaker: t.interface.as_str(),
+            }),
+            roster: &[],
+            topic_cards: None,
+            compiled_profile: None,
+            pinned: std::slice::from_ref(&pinned),
+            active: &[],
+            all_skills: &[],
+            open_work: &[],
+            material_hits: &[],
+            first_human_today: false,
+            workspace_root: "/tmp/ws",
+            limits: ContextLimits::default(),
+        };
+        let s = sources.build_turn_system("今天开工");
+
+        let mine = s.find("## 你现在是谁").expect("人物块必须在");
+        let table = s.find("## 你在哪张桌子上").expect("组块必须在");
+        let pinned_at = s.find("## Pinned memories").expect("记忆必须在");
+        assert!(mine < table, "组块只能在人物块之后（先说自己是谁）");
+        assert!(table < pinned_at, "组块只能在记忆之前");
+        assert!(
+            s.contains("财富早知道") && s.contains("主编吕老师"),
+            "组块要写出桌子和这一轮接棒的人：\n{s}"
+        );
+        assert!(
+            s.contains("今天不在的人") && s.contains("记者小宋"),
+            "缺席的人必须写在纸面上——不许假装他在：\n{s}"
+        );
+    }
+
+    /// 零迁移：`team: None` 就是今天的提示词——pinned 行原样 `- [id] body`，
+    /// 没有日期、没有版本、没有出处。组会话只在两处不同：组块，以及 pinned 行
+    /// 多出的「哪一版」（规格 §5.1 规矩 3/4）。
+    #[test]
+    fn no_team_leaves_the_companion_prompt_byte_identical() {
+        let pinned = mem("mem_p", "pinned body", true);
+        let plain = ContextSources {
+            base: Some("BASE"),
+            persona: None,
+            team: None,
+            roster: &[],
+            topic_cards: None,
+            compiled_profile: None,
+            pinned: std::slice::from_ref(&pinned),
+            active: &[],
+            all_skills: &[],
+            open_work: &[],
+            material_hits: &[],
+            first_human_today: false,
+            workspace_root: "/tmp/ws",
+            limits: ContextLimits::default(),
+        };
+        let without = plain.build_turn_system("你好");
+        assert!(!without.contains("你在哪张桌子上"), "{without}");
+        let plain_line = format!("- [{}] pinned body", pinned.frontmatter.id);
+        assert!(
+            without.lines().any(|l| l == plain_line),
+            "工位会话的 pinned 行必须原样：\n{without}"
+        );
+        assert!(
+            !without.contains("取代了上一版") && !without.contains("· 因为："),
+            "工位会话不许出现版本/出处标记：\n{without}"
+        );
+
+        let t = hermes_core::team::get("caifu-zaozhidao").unwrap();
+        let present: Vec<&str> = t.members.iter().map(|m| m.id.as_str()).collect();
+        let with = ContextSources {
+            team: Some(TeamContext {
+                team: t,
+                present: &present,
+                speaker: t.interface.as_str(),
+            }),
+            ..plain
+        }
+        .build_turn_system("你好");
+        let day = chrono::Local::now().date_naive();
+        let team_line = format!("- [{} · {}] pinned body", pinned.frontmatter.id, day);
+        let stripped = with.replace(
+            &format!("{}\n", hermes_core::team::block(t, &present, &t.interface)),
+            "",
+        );
+        let left: Vec<&str> = stripped.lines().collect();
+        let right: Vec<&str> = without.lines().collect();
+        assert_eq!(left.len(), right.len(), "组块之外行数不变");
+        let diff: Vec<(&str, &str)> = left
+            .iter()
+            .zip(&right)
+            .filter(|(a, b)| a != b)
+            .map(|(a, b)| (*a, *b))
+            .collect();
+        assert_eq!(
+            diff,
+            vec![(team_line.as_str(), plain_line.as_str())],
+            "有/无项目组只差组块与 pinned 版本行"
+        );
+    }
+
+    /// 组里那几条标准要**看得出是哪一版**：日期 + 「取代了上一版」+「因为：」。
+    /// 判据就在 frontmatter 里——链挂在新版上，所以带标记的那条就是当版。
+    #[test]
+    fn a_team_pinned_memory_shows_the_round_it_replaced_and_why() {
+        let mut current = mem("mem_new", "月度口径以含税为准", true);
+        current.frontmatter.supersedes = vec!["mem_old".into()];
+        current.frontmatter.because = Some("第 2 期改口径".into());
+        let t = hermes_core::team::get("caifu-zaozhidao").unwrap();
+        let present: Vec<&str> = t.members.iter().map(|m| m.id.as_str()).collect();
+        let s = ContextSources {
+            base: Some("BASE"),
+            persona: Some(t.interface_persona()),
+            team: Some(TeamContext {
+                team: t,
+                present: &present,
+                speaker: t.interface.as_str(),
+            }),
+            roster: &[],
+            topic_cards: None,
+            compiled_profile: None,
+            pinned: std::slice::from_ref(&current),
+            active: &[],
+            all_skills: &[],
+            open_work: &[],
+            material_hits: &[],
+            first_human_today: false,
+            workspace_root: "/tmp/ws",
+            limits: ContextLimits::default(),
+        }
+        .build_turn_system("今天开工");
+
+        let day = chrono::Local::now().date_naive();
+        let line =
+            format!("- [mem_new · {day} · 取代了上一版 · 因为：第 2 期改口径] 月度口径以含税为准");
+        assert!(
+            s.contains(&line),
+            "组里的标准要看得出是哪一版、为什么：\n{s}"
         );
     }
 }

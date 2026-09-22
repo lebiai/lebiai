@@ -4,7 +4,7 @@ use hermes_commitments::{
     load_prefs, parse_review_json, reviewed_span, save_prefs, span_range, today_local,
     write_review_file, CommitmentStore, REVIEW_SYSTEM,
 };
-use hermes_core::{can_use_main, CompletionRequest, ContentBlock, Message};
+use hermes_core::{can_use_main_readonly, CompletionRequest, ContentBlock, Message};
 use serde::Serialize;
 use tauri::State;
 
@@ -100,7 +100,7 @@ pub async fn run_period_review(
     from: String,
     to: String,
 ) -> Result<ReviewResultView, GuiError> {
-    if !can_use_main() {
+    if !can_use_main_readonly() {
         return Err(GuiError::Config("license_locked".into()));
     }
     let from = NaiveDate::parse_from_str(&from, "%Y-%m-%d")

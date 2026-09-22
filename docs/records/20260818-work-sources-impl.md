@@ -4,7 +4,7 @@
 |------|------|
 | **编号** | `20260818-work-sources-impl` |
 | **日期** | 2026-08-18 |
-| **状态** | **工程通过** · 待目视（1–6 补洞） |
+| **状态** | **已验收**（2026-09-19 统一签收 · 依据与未验项见 [`20260919-acceptance-sweep`](./20260919-acceptance-sweep.md)）；原状态：**工程通过** · 待目视（1–6 补洞） |
 | **型** | 产品 |
 | **关联** | [`../spec/work-sources.md`](../spec/work-sources.md) · [`../explore/work-sources.md`](../explore/work-sources.md) |
 

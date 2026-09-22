@@ -4,9 +4,13 @@
 //! **产出的**结果（`workspace/outputs/…`）。两条线互不相认是有意的：产出不进
 //! grounding 索引，否则搭子会把自己的草稿当成依据。
 //!
-//! 展示层兼容两代形态（见 `docs/records/20260913-quiet-failures-and-visible-outputs.md`）：
-//! `outputs/<YYYY-MM-DD>/…`（2026-09-13 起的默认）与旧的平铺 `outputs/`、`output/`。
-//! 不迁移、不改名、不删除任何文件。
+//! 展示层兼容两种形态（见 `docs/records/20260913-quiet-failures-and-visible-outputs.md`）：
+//! `outputs/<YYYY-MM-DD>/…`（2026-09-13 起的默认）与平铺在 `outputs/` 里的老文件。
+//! 另外把**工作区根目录**的交付物也算进来 —— 搭子常常把成品直接写在根上，
+//! 以前这些文件在面板里永远看不见（`docs/records/20260918-reaudit.md` P1-11）。
+//!
+//! 不再收录旧的 `output/`：那里留的是上一代（律师版）的产物，混进来就是串味。
+//! 不迁移、不改名、不删除任何文件 —— 只是不再把它当成本产品的产出展示。
 
 use hermes_core::companion::looks_like_code_file;
 
@@ -18,9 +22,9 @@ use tauri::State;
 use crate::error::GuiError;
 use crate::state::AppState;
 
-/// Output roots shown in the panel. `outputs` is the product default;
-/// `output` is a pre-2026-08-03 leftover, shown read-only.
-const OUTPUT_ROOTS: &[&str] = &["outputs", "output"];
+/// Output roots shown in the panel. `outputs` is the product default; the legacy
+/// `output/` of the previous product is deliberately **not** listed.
+const OUTPUT_ROOTS: &[&str] = &["outputs"];
 /// Recursion cap — a stray deep tree must not stall the panel.
 const MAX_DEPTH: usize = 4;
 /// Newest-first cap on rows returned.
@@ -58,12 +62,41 @@ pub fn open_output(state: State<'_, AppState>, path: String) -> Result<(), GuiEr
 }
 
 /// Walk every output root and group by day (newest day first, 「更早」 last).
-fn collect_outputs(workspace: &Path) -> Vec<OutputGroup> {
+pub(crate) fn collect_outputs(workspace: &Path) -> Vec<OutputGroup> {
     let mut rows = Vec::new();
     for root in OUTPUT_ROOTS {
         walk_outputs(&workspace.join(root), workspace, 0, &mut rows);
     }
+    collect_root_deliverables(workspace, &mut rows);
     group_outputs(rows)
+}
+
+/// Files sitting **directly** in the workspace root. No recursion: the root also
+/// holds the agent's own working dirs, and a deliverable is a file, not a tree.
+fn collect_root_deliverables(workspace: &Path, out: &mut Vec<(Option<String>, OutputItem)>) {
+    let Ok(entries) = std::fs::read_dir(workspace) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if out.len() >= MAX_ITEMS {
+            return;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if !kind.is_file() || looks_like_code_file(&name) {
+            continue;
+        }
+        let Some(item) = output_item(&entry.path(), workspace) else {
+            continue;
+        };
+        let day = day_of(&item.rel_path).or_else(|| date_of(&item.modified));
+        out.push((day, item));
+    }
 }
 
 fn walk_outputs(
@@ -192,7 +225,7 @@ fn group_outputs(mut rows: Vec<(Option<String>, OutputItem)>) -> Vec<OutputGroup
 ///
 /// The export-folder exemption (`~/Desktop` and friends) that `write` has does
 /// **not** apply here — this opens only what the panel already listed.
-fn resolve_workspace_file(workspace: &Path, rel: &str) -> Result<PathBuf, GuiError> {
+pub(crate) fn resolve_workspace_file(workspace: &Path, rel: &str) -> Result<PathBuf, GuiError> {
     let rel = rel.trim();
     let refuse = |why: &str| GuiError::NotFound(format!("{why}: {rel}"));
     let mut normalized = PathBuf::new();
@@ -308,16 +341,17 @@ mod tests {
     }
 
     #[test]
-    fn collects_dated_flat_and_legacy_files() {
+    fn collects_dated_flat_and_root_files_but_not_the_previous_products_output_folder() {
         let ws = tempdir().unwrap();
         write_file(&ws.path().join("outputs/1999-01-01/filed.md"));
         write_file(&ws.path().join("outputs/flat.md"));
         write_file(&ws.path().join("output/legacy/report.md"));
         write_file(&ws.path().join("outputs/.hidden.md"));
+        write_file(&ws.path().join("交付.md"));
         let groups = collect_outputs(ws.path());
         let total: usize = groups.iter().map(|g| g.items.len()).sum();
         assert_eq!(total, 3, "hidden files are skipped: {groups:?}");
-        // The day folder wins; the flat and legacy files group by their own
+        // The day folder wins; the flat and root files group by their own
         // timestamp — which for a fresh temp file is today.
         assert_eq!(groups[0].day.as_deref(), Some(today().as_str()));
         let today: Vec<&str> = groups[0]
@@ -326,13 +360,34 @@ mod tests {
             .map(|i| i.rel_path.as_str())
             .collect();
         assert!(today.contains(&"outputs/flat.md"));
-        assert!(today.contains(&"output/legacy/report.md"));
+        assert!(today.contains(&"交付.md"), "工作区根的交付物必须可见");
+        assert!(
+            !today.contains(&"output/legacy/report.md"),
+            "上一代产品的 output/ 不该再当产出展示"
+        );
         let filed: Vec<&str> = groups
             .iter()
             .find(|g| g.day.as_deref() == Some("1999-01-01"))
             .map(|g| g.items.iter().map(|i| i.rel_path.as_str()).collect())
             .unwrap();
         assert_eq!(filed, vec!["outputs/1999-01-01/filed.md"]);
+    }
+
+    #[test]
+    fn root_level_scripts_and_dirs_stay_out_of_the_deliverable_list() {
+        let ws = tempdir().unwrap();
+        write_file(&ws.path().join("workspace.md"));
+        write_file(&ws.path().join("make_report.py"));
+        write_file(&ws.path().join("nested/hidden.md"));
+        let listed: Vec<String> = collect_outputs(ws.path())
+            .iter()
+            .flat_map(|g| g.items.iter().map(|i| i.rel_path.clone()))
+            .collect();
+        assert_eq!(
+            listed,
+            vec!["workspace.md".to_string()],
+            "根上只认文件、不认脚本、不下钻"
+        );
     }
 
     #[test]

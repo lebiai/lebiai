@@ -20,9 +20,11 @@ use anyhow::Result;
 use axum::Router;
 
 /// Initialize state, build the router behind the bearer-token auth layer, and
-/// serve on `host:port`. `token` gates every `/api/v1/*` request (REST header
-/// or `?token=` on the WS upgrade). Default `host` should be `127.0.0.1` —
-/// expose on the LAN/internet with `--host 0.0.0.0` (token still required).
+/// serve on `host:port`. `token` gates every `/api/v1/*` request (REST via
+/// `Authorization: Bearer`; the WS handshake may use a short-lived `?ticket=`,
+/// or the legacy `?token=` since browsers cannot set WS headers). Default
+/// `host` should be `127.0.0.1` — expose on the LAN/internet with
+/// `--host 0.0.0.0` (token still required, and put TLS in front).
 ///
 /// Tracing is left to the caller (`main.rs` or `hermes-cli`), which already
 /// installs a subscriber before reaching here.

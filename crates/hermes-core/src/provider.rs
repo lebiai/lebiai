@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::message::{ContentBlock, Message};
 use crate::Result;
@@ -75,8 +76,14 @@ pub enum StopReason {
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Usage {
+    /// 这一轮**真正新读进来**的输入 token —— 不含缓存命中的那部分。
+    /// 各家线的口径在这里统一：Anthropic 的 `input_tokens` 本来就不含缓存；
+    /// OpenAI 兼容线的 `prompt_tokens` 是含缓存的总数，provider 负责先减掉
+    /// （见 `hermes-llm/src/openai.rs::parse_usage`）。
     pub input_tokens: u32,
     pub output_tokens: u32,
+    /// 命中提示词缓存、没重新计费的那部分输入。用来算命中率，
+    /// 也是「每轮重发整段历史到底贵不贵」唯一可核的数。
     #[serde(default)]
     pub cache_read_tokens: u32,
     #[serde(default)]
@@ -117,6 +124,68 @@ pub trait LlmProvider: Send + Sync {
     fn name(&self) -> &str;
 }
 
+/// Refuses to send anything once the license is locked.
+///
+/// Wrapped on by the single provider assembly point (`hermes_llm::Config::
+/// build_active_provider`), so GUI / server / CLI / IM all inherit the same
+/// gate: an expired license cannot buy a single token from any surface, and
+/// no new surface can forget to add the check.
+///
+/// The check is read-only (see [`crate::license::can_use_main_readonly`]) —
+/// this runs on every request, and must never write `license.json`.
+pub struct LicenseGatedProvider {
+    inner: Arc<dyn LlmProvider>,
+    check: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+type LicenseCheck = Arc<dyn Fn() -> bool + Send + Sync>;
+
+impl LicenseGatedProvider {
+    pub fn new(inner: Arc<dyn LlmProvider>) -> Self {
+        Self::with_check(inner, Arc::new(crate::license::can_use_main_readonly))
+    }
+
+    /// Same gate with an injected check — only so tests can prove both
+    /// directions without poking the global license file.
+    pub fn with_check(inner: Arc<dyn LlmProvider>, check: LicenseCheck) -> Self {
+        Self { inner, check }
+    }
+
+    fn allowed(&self) -> Result<()> {
+        if (self.check)() {
+            Ok(())
+        } else {
+            Err(crate::Error::Config(crate::license::LOCKED_MESSAGE.into()))
+        }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for LicenseGatedProvider {
+    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse> {
+        self.allowed()?;
+        self.inner.complete(req).await
+    }
+
+    async fn stream(
+        &self,
+        req: CompletionRequest,
+    ) -> Result<BoxStream<'static, Result<StreamEvent>>> {
+        self.allowed()?;
+        self.inner.stream(req).await
+    }
+
+    // Capabilities and name describe the provider, not the permission — the
+    // UI still needs them to render the model picker while locked.
+    fn capabilities(&self) -> Capabilities {
+        self.inner.capabilities()
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+}
+
 /// Events emitted by [`LlmProvider::stream`].
 ///
 /// The stream's contract:
@@ -153,4 +222,92 @@ pub enum StreamEvent {
         index: usize,
     },
     Final(CompletionResponse),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Records whether the inner provider was actually reached.
+    struct CountingProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for CountingProvider {
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(CompletionResponse {
+                content: vec![ContentBlock::Text {
+                    text: "sent".into(),
+                }],
+                stop_reason: StopReason::EndTurn,
+                usage: Usage::default(),
+                truncated_tool_ids: Vec::new(),
+            })
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                tool_use: true,
+                prompt_caching: false,
+                streaming: true,
+            }
+        }
+
+        fn name(&self) -> &str {
+            "counting"
+        }
+    }
+
+    fn req() -> CompletionRequest {
+        CompletionRequest {
+            model: "m".into(),
+            system: None,
+            messages: vec![Message::user_text("hi")],
+            tools: Vec::new(),
+            max_tokens: 16,
+            temperature: None,
+            enable_caching: false,
+        }
+    }
+
+    fn gated(licensed: bool) -> (LicenseGatedProvider, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner = Arc::new(CountingProvider {
+            calls: calls.clone(),
+        });
+        let check: LicenseCheck = Arc::new(move || licensed);
+        (LicenseGatedProvider::with_check(inner, check), calls)
+    }
+
+    #[tokio::test]
+    async fn locked_license_never_reaches_the_provider() {
+        let (p, calls) = gated(false);
+
+        let err = p.complete(req()).await.unwrap_err();
+
+        assert!(
+            err.to_string().contains(crate::license::LOCKED_MESSAGE),
+            "锁定时必须抛出可与前端对齐的授权错误，实际：{err}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "锁定还发请求 = 门禁是假的");
+
+        // stream 也必须被拦（默认实现会调 complete，但守卫不能用默认实现兜底）
+        assert!(p.stream(req()).await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "stream 绕过了门禁");
+    }
+
+    #[tokio::test]
+    async fn licensed_license_passes_through_untouched() {
+        let (p, calls) = gated(true);
+
+        let resp = p.complete(req()).await.unwrap();
+
+        assert_eq!(resp.text(), "sent");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(p.name(), "counting");
+        assert!(p.capabilities().tool_use);
+    }
 }

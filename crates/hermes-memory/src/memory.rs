@@ -5,6 +5,7 @@
 //! statement. Aggregation, summarisation, and conflict resolution happen at
 //! the curation layer (later), not by stuffing many points into one file.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -86,10 +87,26 @@ pub struct MemoryFrontmatter {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supersedes: Vec<String>,
 
-    /// 记忆归属（人物 id）。`None` = 全局：关于用户本人的偏好与标准。
-    /// 有值 = 这顶帽子的专业口径。见 `docs/spec/personas.md` §5。
+    /// 记忆归属（人物 id / 项目组 id）。`None` = 全局：关于用户本人的偏好与标准。
+    /// 有值 = 这顶帽子的专业口径，或这个栏目的标准。见 `docs/spec/personas.md` §5、
+    /// `docs/spec/projects.md` §4.2。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+
+    /// **因为什么**（`docs/spec/projects.md` §5.1 规矩 2：每条标准要能说出谁说的、
+    /// 什么时候、因为什么）。写侧只有候选那一路填它；旧文件没有这一栏 → `None`，
+    /// 不补、不猜。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub because: Option<String>,
+
+    /// **这一次写入的意图**：调用方明确在改稿 / 合并 / 解冲突，不是随手记一条。
+    ///
+    /// 它描述的是「这次调用」，不是「这条记忆」，所以**不落盘**
+    /// （`serde(skip)`）—— 从文件里读回来的永远是从零开始的普通写入。
+    /// 查重闸门看它（`store::FsMemoryStore::put`）：有意替换时放行，
+    /// 因为那正是**该**写下去的时候。
+    #[serde(skip)]
+    pub intentional: bool,
 
     /// Forward-compat for fields we don't model yet.
     #[serde(flatten)]
@@ -113,6 +130,8 @@ impl MemoryFrontmatter {
             zone: hermes_core::companion::zones::normalize(&zone).to_string(),
             supersedes: Vec::new(),
             owner: None,
+            because: None,
+            intentional: false,
             extra: serde_yaml::Mapping::new(),
         }
     }
@@ -123,6 +142,12 @@ impl MemoryFrontmatter {
     /// 自己拼字符串。
     pub fn owned(mut self, owner: Option<String>) -> Self {
         self.owner = owner;
+        self
+    }
+
+    /// 声明「这一条是有意写下去的」（改稿 / 合并 / 解冲突）。见 [`Self::intentional`]。
+    pub fn intentional(mut self) -> Self {
+        self.intentional = true;
         self
     }
 }
@@ -179,6 +204,48 @@ pub fn filter_visible<'a>(items: &'a [LoadedMemory], owner: Option<&str>) -> Vec
     items.iter().filter(|m| visible_to(m, owner)).collect()
 }
 
+/// 这是第几版：沿 `supersedes` 链往前数（1 = 没见过更早的那一版）。
+///
+/// 版本**不是**一个状态字段，就是链本身（`docs/spec/projects.md` §5.1 规矩 2）。
+/// 所以删掉新版，上一版自己回到 active——「退回上一版」不需要第二个机制。
+/// 链断了（旧版被删过）就停在能数到的地方；有环也停（不许死循环）。
+pub fn version_of(m: &LoadedMemory, all: &[LoadedMemory]) -> usize {
+    let by_id: HashMap<&str, &LoadedMemory> = all.iter().map(|x| (x.id(), x)).collect();
+    let mut seen: HashSet<&str> = HashSet::from([m.id()]);
+    let mut cursor = m;
+    let mut version = 1;
+    while let Some(prev_id) = cursor.frontmatter.supersedes.first() {
+        let Some(prev) = by_id.get(prev_id.as_str()) else {
+            break;
+        };
+        if !seen.insert(prev.id()) {
+            break;
+        }
+        version += 1;
+        cursor = prev;
+    }
+    version
+}
+
+/// 一组归属的可见面（`docs/spec/projects.md` §4.2）：**任一命中即可见**。
+///
+/// 项目组会话要同时看见「本项目组」和「这一轮说话的人」——手艺与组规是两条轴，
+/// 用单 owner 的接口就得二选一。判据仍是 [`visible_to`]，这里只加一层「或」：
+/// 不许在别处再写一遍「全局永远可见」这条规矩。
+pub fn visible_to_any(m: &LoadedMemory, owners: &[&str]) -> bool {
+    match owners.first() {
+        // 空 = 没有归属（无人物 / 自带角色）：与单 owner 的 `None` 同义，**只看得到全局**。
+        // 少了这一支，空集会变成「谁都看不见」——全局记忆会凭空消失。
+        None => visible_to(m, None),
+        Some(_) => owners.iter().any(|o| visible_to(m, Some(o))),
+    }
+}
+
+/// [`filter_visible`] 的一组归属版本，保持入参顺序。
+pub fn filter_visible_any<'a>(items: &'a [LoadedMemory], owners: &[&str]) -> Vec<&'a LoadedMemory> {
+    items.iter().filter(|m| visible_to_any(m, owners)).collect()
+}
+
 /// [`filter_visible`] 的 owned 版：调用方要把「这个视图看得见的那一份」当
 /// `&[LoadedMemory]` 传下去时用它（整理主题卡要把可见集合喂给模型）。判定仍只有
 /// [`visible_to`] 一处。
@@ -186,17 +253,25 @@ pub fn visible_owned(active: &[LoadedMemory], owner: Option<&str>) -> Vec<Loaded
     filter_visible(active, owner).into_iter().cloned().collect()
 }
 
+/// [`visible_owned`] 的一组归属版本。
+pub fn visible_owned_any(active: &[LoadedMemory], owners: &[&str]) -> Vec<LoadedMemory> {
+    filter_visible_any(active, owners)
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
 /// 注入面要的那一份：`(active, 其中的 pinned)`。
 ///
 /// 「提示词注入 / 显示面 / 子代理看到的是同一份」那条线就靠它——它是这条轴上
 /// **唯一**的装配函数，CLI 与 GUI 都从这里拿，谁也不许自己写一遍（写两遍就会
 /// 有一天只改一处，某个人物开始看见别人的记忆）。
-/// 判据仍只有 [`visible_to`] 一处，本函数只负责切出这一份。
-pub fn views_for(
+/// 判据仍只有 [`visible_to`] 一处（经 [`visible_to_any`]），本函数只负责切出这一份。
+pub fn views_for_any(
     active: &[LoadedMemory],
-    owner: Option<&str>,
+    owners: &[&str],
 ) -> (Vec<LoadedMemory>, Vec<LoadedMemory>) {
-    let view = visible_owned(active, owner);
+    let view = visible_owned_any(active, owners);
     let pinned = view
         .iter()
         .filter(|m| m.frontmatter.pinned)
@@ -208,6 +283,40 @@ pub fn views_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 版本 = `supersedes` 链的长度；链断了/成环也不许死循环。
+    #[test]
+    fn version_counts_the_supersedes_chain() {
+        let mut first = mem(None, "先这么干");
+        let mut second = mem(None, "改成这么干");
+        second.frontmatter.supersedes = vec![first.frontmatter.id.clone()];
+        let mut third = mem(None, "又改回来");
+        third.frontmatter.supersedes = vec![second.frontmatter.id.clone()];
+        let all = vec![first.clone(), second.clone(), third.clone()];
+
+        assert_eq!(version_of(&first, &all), 1, "没见过更早的 = 第 1 版");
+        assert_eq!(version_of(&second, &all), 2);
+        assert_eq!(version_of(&third, &all), 3);
+
+        // 旧版被删过（链断）→ 停在能数到的地方，不报错
+        assert_eq!(version_of(&second, &[second.clone()]), 2 - 1);
+        // 环 → 停（不许死循环）
+        first.frontmatter.supersedes = vec![third.frontmatter.id.clone()];
+        let cyc = vec![first.clone(), third.clone()];
+        assert!(version_of(&third, &cyc) >= 1);
+    }
+
+    /// 「因为什么」跟着候选落盘（§5.1 规矩 2）；旧文件没有这一栏就是 `None`。
+    #[test]
+    fn because_is_optional_and_never_invented() {
+        let m = mem(None, "空文件照旧");
+        assert_eq!(m.frontmatter.because, None);
+        let parsed: MemoryFrontmatter = serde_yaml::from_str(
+            "id: mem_x\ncreated: 2026-09-17T00:00:00Z\nsource: reflection\nconfidence: high\n",
+        )
+        .expect("老文件必须还能读");
+        assert_eq!(parsed.because, None, "缺这一栏不许报错、不许编");
+    }
 
     #[test]
     fn confidence_is_ordered_low_to_high() {

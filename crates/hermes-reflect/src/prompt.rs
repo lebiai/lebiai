@@ -116,15 +116,36 @@ pub fn user_prompt(session: &Session, skills: &[LoadedSkill], memories: &[Loaded
         }
     }
 
-    // 当前工位 id 必须写进正文：模型无从猜出 id，猜不中就等于「专业口径」永远落全局。
-    // 「会话 → 归属」的转换只有 `hermes_core::persona::memory_owner_for` 一处。
-    match hermes_core::persona::memory_owner_for(session.meta.persona.as_deref()) {
-        Some(owner) => buf.push_str(&format!(
+    // 归属 id 必须写进正文：模型无从猜出 id，猜不中就等于「专业口径」永远落全局。
+    // 「会话 → 归属」的转换只有 `hermes_core::persona::memory_owners_for` 一处。
+    let owners = hermes_core::persona::memory_owners_for(
+        session.meta.persona.as_deref(),
+        session.meta.team.as_deref(),
+        hermes_core::persona::speaker_for(
+            session.meta.persona.as_deref(),
+            session.meta.team.as_deref(),
+            session.flow.holder(),
+        )
+        .map(|p| p.id.as_str()),
+    );
+    let owner_refs: Vec<&str> = owners.iter().map(String::as_str).collect();
+    // 组会话有**两条路**（`docs/spec/projects.md` §4.2）：这个栏目的标准归桌子，
+    // 这个人的手艺归他自己。只给一个 id 时手艺无处可去 → 全都堆进组里。
+    match owner_refs.as_slice() {
+        [table, person, ..] => buf.push_str(&format!(
+            "=== 当前工位 ===\n\
+             {table}（这张桌子）+ {person}（这一轮说话的人）——\n\
+             关于**这个栏目/这份活**的标准（选什么、怎么排、什么角度），`owner` 写 \"{table}\"；\
+             关于**{person} 自己怎么干他那一摊**的手艺（他的口径、措辞、采集纪律），\
+             `owner` 写 \"{person}\"；关于用户本人的，不写 `owner`。\
+             判不准是栏目的还是某个人的，写 \"{table}\"。\n\n"
+        )),
+        [owner] => buf.push_str(&format!(
             "=== 当前工位 ===\n\
              {owner} —— 关于这份活的专业口径的候选，`owner` 写 \"{owner}\"；\
              关于用户本人的，不写 `owner`。\n\n"
         )),
-        None => buf.push_str(
+        [] => buf.push_str(
             "=== 当前工位 ===\n\
              （无 —— 一切落全局：候选一律不写 `owner`）\n\n",
         ),
@@ -236,21 +257,57 @@ mod tests {
             messages: Vec::new(),
             total_input_tokens: 0,
             total_output_tokens: 0,
+            flow: Default::default(),
         }
     }
 
     #[test]
     fn user_prompt_names_the_current_workspace_only_when_there_is_one() {
-        let with = user_prompt(&session_with_persona(Some("xiao-xie")), &[], &[]);
+        let with = user_prompt(&session_with_persona(Some("sao-di-seng")), &[], &[]);
         assert!(
-            with.contains("xiao-xie"),
+            with.contains("sao-di-seng"),
             "带工位时提示词必须出现该 id：\n{with}"
         );
         let without = user_prompt(&session_with_persona(None), &[], &[]);
         assert!(
-            !without.contains("xiao-xie"),
+            !without.contains("sao-di-seng"),
             "无工位时不许提 id：\n{without}"
         );
+    }
+
+    /// 组会话要在提示词里**给两个 id**（标准→组、手艺→说话人）：只给一个，
+    /// 手艺就无处可去，全堆进组里——「组里每个人都变成同一个大脑」。
+    #[test]
+    fn a_team_session_is_told_two_roads_not_one() {
+        let mut meta = hermes_core::SessionMeta::new("test-model", "test-provider");
+        meta.team = Some("caifu-zaozhidao".into());
+        let mut session = Session {
+            meta,
+            messages: Vec::new(),
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            flow: Default::default(),
+        };
+        // 还没交过棒 → **第一棒**（采：王海燕）接。2026-09-20「棒跟产物走」之后
+        // 不再回落接口人（吕老师）——回落接口人时，第一棒就错了。
+        let p = user_prompt(&session, &[], &[]);
+        assert!(
+            p.contains("caifu-zaozhidao") && p.contains("wang-hai-yan"),
+            "桌子和说话人的 id 都要写进去：\n{p}"
+        );
+        // 交了棒 → 换成接棒的人（吕老师），手艺跟着他
+        session.flow.push(hermes_core::HandoffRecord {
+            from: None,
+            to: "lv-lao-shi".into(),
+            at: chrono::Utc::now(),
+            note: None,
+        });
+        let p = user_prompt(&session, &[], &[]);
+        assert!(
+            p.contains("caifu-zaozhidao") && p.contains("lv-lao-shi"),
+            "接了棒，说话人那一路要换人：\n{p}"
+        );
+        assert!(!p.contains("wang-hai-yan"), "交出去的棒不该还在：\n{p}");
     }
 
     /// 自带角色（李现 / 小文）的会话算「没有工位」——不搞专业分工，

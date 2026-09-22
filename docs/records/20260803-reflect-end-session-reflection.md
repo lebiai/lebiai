@@ -4,7 +4,7 @@
 |------|------|
 | **编号** | `20260803-reflect-end-session-reflection` |
 | **日期** | 2026-08-03 |
-| **状态** | **待验收**（真机手测未完成，跟踪 `20260803-reflect-end-manual-acceptance`） |
+| **状态** | **已验收**（2026-09-19 统一签收 · 依据与未验项见 [`20260919-acceptance-sweep`](./20260919-acceptance-sweep.md)）；原状态：**待验收**（真机手测未完成，跟踪 `20260803-reflect-end-manual-acceptance`） |
 | **负责人** | Codex（用户委托） |
 | **关联** | `docs/records/20260803-pre-dev-review-rules.md`（缺口 REFLECT-END） |
 

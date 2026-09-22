@@ -60,7 +60,7 @@ export function SessionEndModal() {
             >
               {t("reflect.sessionEndTitle")}
             </h2>
-            <p className="text-[11px] text-app-fg-tertiary mt-0.5">
+            <p className="text-app-sub text-app-fg-secondary mt-0.5">
               {t("reflect.evolutionHint")}
             </p>
           </div>

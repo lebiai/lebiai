@@ -9,6 +9,7 @@ interface Props {
   onConfirm: () => void;
   /** Anchor: render as absolute dropdown near trigger (parent relative). */
   children?: ReactNode;
+  /** 主按钮的字。**必须写这次真正在干的事**——点「退回上一版」却写「删除」，用户不敢按。 */
   confirmLabel?: string;
   danger?: boolean;
 }
@@ -52,7 +53,7 @@ export function ConfirmPopover({
       className="absolute right-1 top-full z-30 mt-1 w-48 rounded-xl border border-app-border dark:border-slate-700 bg-app-surface dark:bg-slate-900 shadow-lg p-2"
       onClick={(e) => e.stopPropagation()}
     >
-      <p className="text-[11px] text-app-fg-secondary dark:text-slate-400 mb-2 px-0.5 leading-relaxed">
+      <p className="text-app-sub text-app-fg-secondary dark:text-slate-400 mb-2 px-0.5 leading-relaxed">
         {message}
       </p>
       <div className="flex gap-1.5">

@@ -13,12 +13,14 @@ name: Release Installers
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
 on:
+  # 手工发版：tag 必须自己填，而且必须与 `crates/hermes-gui/tauri.conf.json` 的
+  # version 对得上（下面有一处校验）。以前这里写死 `default: "v1.2.0"` ——
+  # 发 1.4.0 的时候，手一点就把安装包挂到 1.2.0 那个 Release 上。
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to attach installers to"
-        required: false
-        default: "v1.2.0"
+        description: "Release tag (must match tauri.conf.json version, e.g. v1.4.0)"
+        required: true
   push:
     tags: ["v*"]
 
@@ -52,8 +54,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: scripts/check-updater-secrets.sh
 
-      - name: Build DMG
+      - name: Add the Intel target (universal build)
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Build DMG (universal, Apple Silicon + Intel)
         env:
+          # 通用包：同一份 .dmg 在两种芯片上都能跑。以前只出 aarch64，
+          # Intel Mac 的客户装了打不开（线上 latest.json 只有 darwin-aarch64）。
+          TAURI_TARGET: universal-apple-darwin
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: scripts/build-dmg.sh
@@ -126,17 +134,15 @@ jobs:
         with:
           name: lebi-ai-windows-nsis
           path: dist
+      - name: Check the tag matches the app version
+        run: scripts/check-release-tag.sh "${{ github.event_name == 'push' && github.ref_name || inputs.tag }}"
       - name: Write latest.json
         run: |
           TAG="${{ github.event_name == 'push' && github.ref_name || inputs.tag }}"
           scripts/write-latest-json.sh "$TAG" dist dist/latest.json
-      # action-gh-release 的 update 路径不会补正文，overwrite 入参也已废弃（被忽略）。
-      # 先删旧 Release 再全新创建，保证 body_path 每次注入最新发布说明。
-      - name: Clear stale release
-        run: gh release delete "$RELEASE_TAG" --yes || true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+      # 不再「先删后建」：删掉 Release 会让正在检查更新的客户端看到 404
+      # （updater 的 endpoint 正是 `releases/latest/download/latest.json`）。
+      # 改成 upsert —— 资产照旧上传，正文随后覆写。
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
@@ -145,3 +151,11 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # action-gh-release 的 update 路径不补正文，所以正文单独覆写一次。
+      # 顺序在资产上传**之后**：客户端只会看到「旧说明 + 旧资产」或
+      # 「新说明 + 新资产」，不会看到空窗。
+      - name: Refresh release notes
+        run: gh release edit "$RELEASE_TAG" --notes-file docs/releases/release-notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}

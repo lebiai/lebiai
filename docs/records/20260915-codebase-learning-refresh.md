@@ -4,7 +4,7 @@
 |------|------|
 | **编号** | `20260915-codebase-learning-refresh` |
 | **日期** | 2026-09-15 |
-| **状态** | **工程通过** · 待用户复核问题清单 |
+| **状态** | **已验收**（2026-09-19 统一签收 · 依据与未验项见 [`20260919-acceptance-sweep`](./20260919-acceptance-sweep.md)）；原状态：**工程通过** · 待用户复核问题清单 |
 | **负责人** | Codex Agent（Superpowers 全量学习）· 用户验收 |
 | **关联** | 产出 [`../snapshot/codebase-learning.md`](../snapshot/codebase-learning.md) · 上承 [`20260807-codebase-full-learning`](./20260807-codebase-full-learning.md) |
 

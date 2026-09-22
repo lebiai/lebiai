@@ -473,7 +473,7 @@ export function InputArea() {
             )}
           </div>
         </div>
-        <p className="text-center text-[10px] text-app-fg-tertiary dark:text-slate-600 mt-2">
+        <p className="text-center text-app-sub text-app-fg-secondary dark:text-slate-400 mt-2">
           {t("chat.inputHint")}
         </p>
       </div>

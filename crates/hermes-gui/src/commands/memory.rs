@@ -107,9 +107,36 @@ pub struct MemoryItem {
     pub zone: String,
     pub created_at: String,
     pub source: String,
+    /// 归属：`None` = 全局。有值 = 某个人物的手艺，或某个项目组的标准。
+    pub owner: Option<String>,
+    /// 归属给人看的样子：`全局` / `财富早知道` / `情报王海燕`。
+    /// 这个版本不认识的旧归属 → `旧版角色`（**不静默**：用户得知道有个东西对不上）。
+    pub owner_name: String,
+    /// 因为什么（§5.1 规矩 2）。老文件没有 → `None`。
+    pub because: Option<String>,
+    /// 它取代了谁（新版才有）。有值 = 界面上可以「退回上一版」。
+    pub supersedes: Vec<String>,
+    /// 第几版（沿 `supersedes` 链数出来的）。
+    pub version: usize,
 }
 
-fn to_item(m: &hermes_memory::LoadedMemory) -> MemoryItem {
+/// 归属标签：先问项目组，再问人物；都不认识 → 明说「旧版角色」。
+///
+/// 判据只有一处（`hermes_memory::team_owner` + `persona::get`），不许在这里各写一份。
+pub fn owner_label(owner: Option<&str>) -> String {
+    let Some(id) = owner else {
+        return "全局".into();
+    };
+    if let Some(t) = hermes_memory::team_owner(id) {
+        return t.name.clone();
+    }
+    match hermes_core::persona::get(id) {
+        Some(p) => p.name.clone(),
+        None => "旧版角色".into(),
+    }
+}
+
+fn to_item(m: &hermes_memory::LoadedMemory, all: &[hermes_memory::LoadedMemory]) -> MemoryItem {
     MemoryItem {
         id: m.frontmatter.id.clone(),
         body: m.body.clone(),
@@ -120,16 +147,23 @@ fn to_item(m: &hermes_memory::LoadedMemory) -> MemoryItem {
         zone: m.frontmatter.zone.clone(),
         created_at: m.frontmatter.created.to_rfc3339(),
         source: format!("{:?}", m.frontmatter.source),
+        owner: m.frontmatter.owner.clone(),
+        owner_name: owner_label(m.frontmatter.owner.as_deref()),
+        because: m.frontmatter.because.clone(),
+        supersedes: m.frontmatter.supersedes.clone(),
+        version: hermes_memory::version_of(m, all),
     }
 }
 
+/// **管理可见**（`docs/spec/personas.md` §5.4）：这一页看的是全库，不是某个视图——
+/// 每条带归属标签，用户才知道「我教的那句落在谁名下」。
 #[tauri::command]
 pub fn list_memories(state: State<'_, AppState>) -> Result<Vec<MemoryItem>, GuiError> {
     let memories = state
         .memory_store
         .list_active()
         .map_err(|e| GuiError::Internal(e.to_string()))?;
-    let mut items: Vec<MemoryItem> = memories.iter().map(to_item).collect();
+    let mut items: Vec<MemoryItem> = memories.iter().map(|m| to_item(m, &memories)).collect();
     sort_newest_first(&mut items);
     Ok(items)
 }
@@ -172,8 +206,15 @@ pub fn create_memory(
     state
         .memory_store
         .put(s, fm.clone(), &body)
-        .map_err(|e| GuiError::Internal(e.to_string()))?;
+        .map_err(|e| match e {
+            // 已经有一条同样的：说人话，不吐引擎英文。
+            hermes_memory::MemoryStoreError::Conflict { .. } => {
+                GuiError::Config("memory_duplicate".into())
+            }
+            e => GuiError::Internal(e.to_string()),
+        })?;
 
+    // 手建的一条：归属默认全局（§5.4），也没有「因为什么」——不是候选，没人替它说理由。
     let item = MemoryItem {
         id: fm.id.clone(),
         body,
@@ -184,6 +225,11 @@ pub fn create_memory(
         zone: fm.zone.clone(),
         created_at: fm.created.to_rfc3339(),
         source: "User".into(),
+        owner: None,
+        owner_name: owner_label(None),
+        because: None,
+        supersedes: Vec::new(),
+        version: 1,
     };
     Ok(item)
 }
@@ -226,7 +272,11 @@ pub fn toggle_pin_memory(
         .memory_store
         .get(&id)
         .map_err(|e| GuiError::Internal(e.to_string()))?;
-    Ok(updated.as_ref().map(to_item))
+    let all = state
+        .memory_store
+        .list_active()
+        .map_err(|e| GuiError::Internal(e.to_string()))?;
+    Ok(updated.as_ref().map(|m| to_item(m, &all)))
 }
 
 #[cfg(test)]
@@ -244,11 +294,39 @@ mod tests {
             zone: "general".into(),
             created_at: created.to_string(),
             source: "User".into(),
+            owner: None,
+            owner_name: "全局".into(),
+            because: None,
+            supersedes: vec![],
+            version: 1,
         }
     }
 
     fn ids(items: &[MemoryItem]) -> Vec<&str> {
         items.iter().map(|m| m.id.as_str()).collect()
+    }
+
+    /// 归属标签是用户唯一能看到的「这条归谁」——判据只有一处，四种结果都得钉死：
+    /// 空 = 全局、组 id = 组名、在册人物 id = 人名、其余 = **不静默**（说「旧版角色」）。
+    ///
+    /// 「其余」包含**已下线的角色**（今天的小谢/小金/小乐）：它们的定义还在仓库里，
+    /// 但名册上没有这个工位了——报一个用户点不过去的人名才是骗人，所以只说
+    /// 「旧版角色」（规格 §0b 错态）。
+    #[test]
+    fn the_owner_label_says_the_table_the_person_or_that_it_is_an_old_role() {
+        assert_eq!(owner_label(None), "全局");
+        assert_eq!(owner_label(Some("caifu-zaozhidao")), "财富早知道");
+        assert_eq!(owner_label(Some("wang-hai-yan")), "情报王海燕");
+        assert_eq!(
+            owner_label(Some("xiao-xie")),
+            "旧版角色",
+            "下线的人不在名册上，就不能报一个点不过去的名字"
+        );
+        assert_eq!(
+            owner_label(Some("some-role-from-an-older-build")),
+            "旧版角色",
+            "认不出来就得说出来，不能显示空白或 None"
+        );
     }
 
     #[test]

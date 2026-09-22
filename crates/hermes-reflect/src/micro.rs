@@ -92,17 +92,19 @@ Reply with EXACTLY ONE JSON object:
 /// Run a micro-reflection on the most recent turn. Much cheaper than full
 /// session reflection — only sends the last turn's messages.
 ///
-/// `owner` is the current workspace's memory owner (`None` = no workspace /
-/// builtin persona): the prompt names it so the model can tag this kind of
-/// work's rules with it, and never has to guess an id.
+/// `owners` = what this session can see, **first one being the session itself**
+/// (`docs/spec/projects.md` §4.2). Empty = no workspace / builtin persona. In a
+/// project group there are two: the table (this show's standards) and the person
+/// talking now (their craft) — the prompt names both so the model never has to
+/// guess an id, and craft stops landing on the whole table.
 pub async fn micro_reflect(
     provider: &dyn LlmProvider,
     turn_messages: &[Message],
     skills: &[LoadedSkill],
     memories: &[LoadedMemory],
-    owner: Option<&str>,
+    owners: &[&str],
 ) -> Result<ReflectionOutput, ReflectError> {
-    let user_prompt = build_micro_prompt(turn_messages, skills, memories, owner);
+    let user_prompt = build_micro_prompt(turn_messages, skills, memories, owners);
 
     let req = CompletionRequest {
         model: String::new(),
@@ -147,16 +149,26 @@ fn build_micro_prompt(
     turn_messages: &[Message],
     skills: &[LoadedSkill],
     memories: &[LoadedMemory],
-    owner: Option<&str>,
+    owners: &[&str],
 ) -> String {
     let mut buf = String::new();
-    match owner {
-        Some(owner) => buf.push_str(&format!(
+    // 组会话有**两条路**（`docs/spec/projects.md` §4.2）：这份活的标准归桌子，
+    // 这个人的手艺归他自己。只给一个 id 时，手艺无处可去 → 全都堆进组里。
+    match owners {
+        [table, person, ..] => buf.push_str(&format!(
+            "=== Current workspace: {table} (table) + {person} (the one talking now) ===\n\
+             A rule about **this show / this kind of work** (what we pick, what order, \
+             how long) sets `owner` to \"{table}\". A rule about **how {person} does \
+             their own job** (their craft, their sourcing or wording discipline) sets \
+             `owner` to \"{person}\". A rule about the user themselves omits `owner`. \
+             When unsure whether a rule is the show's or one person's, use \"{table}\".\n\n"
+        )),
+        [owner] => buf.push_str(&format!(
             "=== Current workspace: {owner} ===\n\
              A rule about this kind of work sets `owner` to \"{owner}\". \
              A rule about the user themselves omits `owner`.\n\n"
         )),
-        None => buf.push_str(
+        [] => buf.push_str(
             "=== Current workspace: none ===\n\
              No workspace is active, so omit `owner` on every candidate — \
              every memory stays global.\n\n",
@@ -229,6 +241,7 @@ mod tests {
                 text: text.to_string(),
             }],
             at: None,
+            speaker: None,
         }
     }
 
@@ -239,6 +252,7 @@ mod tests {
                 text: text.to_string(),
             }],
             at: None,
+            speaker: None,
         }
     }
 
@@ -278,16 +292,34 @@ mod tests {
     #[test]
     fn prompt_names_the_current_workspace_only_when_there_is_one() {
         let msgs = [user_msg("写一篇林碳的稿子")];
-        let with = build_micro_prompt(&msgs, &[], &[], Some("xiao-xie"));
+        let with = build_micro_prompt(&msgs, &[], &[], &["xiao-xie"]);
         assert!(
             with.contains("xiao-xie"),
             "带工位时提示词必须出现该 id：\n{with}"
         );
-        let without = build_micro_prompt(&msgs, &[], &[], None);
+        let without = build_micro_prompt(&msgs, &[], &[], &[]);
         assert!(
             !without.contains("xiao-xie") && without.contains("none"),
             "无工位时不许提 id，且要说明一切落全局：\n{without}"
         );
+    }
+
+    /// 组会话要**两条路**（`docs/spec/projects.md` §4.2）：这个栏目的标准归桌子，
+    /// 这个人的手艺归他自己。只给一个 id 时，手艺无处可去 → 全堆进组里。
+    #[test]
+    fn a_team_session_is_offered_both_the_table_and_the_person() {
+        let msgs = [user_msg("往期公告都吃 1/3，别再排两条")];
+        let p = build_micro_prompt(&msgs, &[], &[], &["caifu-zaozhidao", "lv-lao-shi"]);
+        for needle in [
+            "caifu-zaozhidao",
+            "lv-lao-shi",
+            "this show",
+            "their own job",
+        ] {
+            assert!(p.contains(needle), "提示词里少了 {needle}：\n{p}");
+        }
+        // 判不准时归桌子（宁可窄）
+        assert!(p.contains("use \"caifu-zaozhidao\""), "判不准要归组：\n{p}");
     }
 
     #[test]
@@ -411,7 +443,7 @@ mod tests {
         let msgs = [user_msg("写一篇林碳的稿子")];
 
         let p = CapturingProvider::default();
-        block_on(micro_reflect(&p, &msgs, &[], &[], Some("xiao-xie"))).unwrap();
+        block_on(micro_reflect(&p, &msgs, &[], &[], &["xiao-xie"])).unwrap();
         let (system, user) = last_system_and_user(&p);
         assert!(
             system.contains("Owner:"),
@@ -423,7 +455,7 @@ mod tests {
         );
 
         let q = CapturingProvider::default();
-        block_on(micro_reflect(&q, &msgs, &[], &[], None)).unwrap();
+        block_on(micro_reflect(&q, &msgs, &[], &[], &[])).unwrap();
         let (_, user) = last_system_and_user(&q);
         assert!(
             user.contains("Current workspace: none") && !user.contains("xiao-xie"),

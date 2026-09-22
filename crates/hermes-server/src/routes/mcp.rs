@@ -19,7 +19,9 @@ pub struct McpToolItem {
 pub async fn list_mcp_tools(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<McpToolItem>>, ApiError> {
-    let tools = state.tools.lock().await;
+    // 现问宿主，不读启动时那份缓存：工具面只有「本轮宿主说了算」一个来源，
+    // 缓存过的那份会在宿主换了之后开始说谎（与 chat 同一口径）。
+    let tools = state.host.list_tools().await.unwrap_or_default();
     Ok(Json(
         tools
             .iter()

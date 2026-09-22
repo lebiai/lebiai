@@ -1,7 +1,7 @@
 # 变更与验收记录
 
 本目录是**唯一**的变更过程台账（位于 `docs/records/`，不在仓库根目录）。
-**种类：F 台账。** 历史用词与当时方案**不构成现行法**；现行只认 P0 v0.11。变更对照只写在本目录。可分型：产品 / 工程 / 发布。
+**种类：F 台账。** 历史用词与当时方案**不构成现行法**；现行只认 P0 v0.13。变更对照只写在本目录。可分型：产品 / 工程 / 发布。
 
 每做一次有用户可见影响（或架构/打包/共识）的修改，必须有一份记录走完：
 
@@ -12,6 +12,10 @@
 未写记录、未验收通过 → **视为未完成，不得当作交付。**
 
 模板：[`_TEMPLATE.md`](./_TEMPLATE.md)
+
+> **状态列读法：** `**已验收**（2026-09-19 统一签收）` = 工程已完成、由用户接受当时已知的缺口，
+> 依据与缺口逐条列在 [`20260919-acceptance-sweep`](./20260919-acceptance-sweep.md)；其余说法
+> （实施中 / 规格已冻结 / 待开工 / 已否决）说明**记录自己写着还没做完**，不适用签收。
 规则全文：[`../../DEVELOPMENT_RULES.md`](../../DEVELOPMENT_RULES.md)（§变更流程）
 Agent 约束：[`../../AGENTS.md`](../../AGENTS.md)
 文档目录约定：[`../README.md`](../README.md)
@@ -32,70 +36,95 @@ docs/records/YYYYMMDD-短横线-英文或拼音-slug.md
 
 | 编号 | 标题 | 状态 | 日期 |
 |------|------|------|------|
+| [20260921-request-fold-tool-promise](./20260921-request-fold-tool-promise.md) | **请求体折叠不许砍掉「工具刚给的东西」**（**已验收**）——上一批「待查项」的答案，并**更正**它的错结论：吕老师回头读后半段**不是模型行为**，是 `fold_for_request` 把任何超过 20,000 字的块悄悄砍到前 20,000 字，**包括它刚刚要来的那条 `read` 结果**（模型思考逐字：「The read got truncated at 20000 chars. I need the rest.」——**它照契约读了，是我们没给它整份**）。改法：引擎侧一个数 `MAX_TOOL_RESULT_CHARS`（64,000，≥ 一件正当的单次读取：实测一天成品 37,428 字）+ 工具侧**登记表** `TOOL_RESULT_CEILINGS` + 一条跨 crate 断言（`bash` 的 30,000 此前也在绳子外，天天被砍）+ `read` 超限**在行边界切开并给 `offset=` 把手**。取证：真实会话探针 37,428 → **37,428 字、无「只把前」**；实跑一次整读、**不再回头**、思考里「截断」出现 0 次 | **已验收** | 2026-09-21 |
+| [20260921-editor-reads-it-all](./20260921-editor-reads-it-all.md) | **吕老师整读成品 + 素材 ID 改纯 ASCII**（**已验收**）：承认上一批**治过头**——为了治「重复整读」把「整读」一刀禁掉，等于把吕老师判全量的**判断依据砍了**（他只能拿索引里那半句 31.8 字线索猜 180 条）。改法：① 吕老师**整读一次成品**、索引只取 ID 与行号，禁的是**第二次**读（旧病实测同一文件读 16 次 / 7.9 万字符，一次整读只要 3.3 万）；② 索引定位改口「给小宋取料、给人翻目录，**不是吕老师的筛面**」；③ ID 改 **纯 ASCII** `<YYYYMMDD>-<lane>-<NNN>`（`macro\|industry\|market`）——BSD awk 字节语义、不认中文函数名。守卫双向钉死（反向断言「禁止整读」永久拉黑）。取证：确定性重跑与线上索引**逐字节相同**、180 条 L 行号错 0；吕老师三次实跑、小宋一棒成稿 525 汉字（540±20% 内）。**残留**：三次实跑都回头读了后半段，契约没拦住，待查 | **已验收** | 2026-09-21 |
+| [20260921-batch5-sources](./20260921-batch5-sources.md) | **批 5 · 让「点名保留的站」真的出得来东西**（**已验收**）：五个上一轮 0 条的目标站 **5/5 出条**（中国证券报 17／36氪 30／第一财经 23／财联社 6／同花顺 5）。实跑逼出两条真根因 —— ① 识日期只认提示词那一种写法，中国证券报的日期只写在链接路径 `…/2026/09/21/…` 里，`focus_count` 全 0 → 整站被判 0 条；② 抽取提示词没交代「日期常只在链接地址里」，模型照字面回「本页无当天条目」。改法：引擎按 charset 解码 + 大页切窗换段重试 + **同日五种写法归一** + 抽取提示词点明链接里的日期；名单五处入口改正；契约要求否定回答必须三写法各数一遍。180 条 / 三行格式 100% / 坏链 0 / 统计自洽 / 采集段约 2 分钟 | **已验收** | 2026-09-21 |
+| [20260921-source-list-unify](./20260921-source-list-unify.md) | **采稿名单与用户定稿对齐**（「一个站都不许加回来」）：把王海燕的名单**整节重写成用户 2026-09-20 三轮调整后的定稿**（记忆 `mem_fc3fbf57` 第三版）——20 站 / 六块；**撤销 `1a · 宏观-官方` 整块**（那六个官方站都在用户的删除名单里），七块 → 六块；「已删 17 站」写进名单节并加**守卫测试**（不许以表格行出现）；Wind 单列「保留但公开页抓不到」。根因是**配置真相双写**：用户定稿在记忆里，岗位定义里还是旧的 30 站表 → 今天两轮实跑采了 17 个被删的站。实跑复核：**136 条 / 名单外来源 0 / 六块全出 / 每站含 Wind 都有回执** | **待验收** | 2026-09-21 |
+| [20260921-batch4-content](./20260921-batch4-content.md) | **批 4 · 让卷里的每条都写得出内容**：引擎侧一处修全局（相对链接**按页面 URL 绝对化** + `<script type="application/json">`／`__NEXT_DATA__` 里的中文串做**兜底正文**）——治「链接给不出」与 Next.js 站「抓得到、抽不到」；契约侧改成「**先读后写**」（对写不出内容的条目并发打开文章页，不许拿「页面仅列标题/未披露」当概要，**每站必须交「拿了几条」**，静默跳过算事故）；东方财富公告按 API 自带的 `columns` 分类**只留实质事件**（实测 50 条里 34 条是章程/独董意见/保荐书这类例行文件）；栏目规格从口号变成数字（**120 秒 ≈ 540 字**） | **待验收**（两轮实跑：222 条 / 概要均值 **67.3** 汉字 / 进正文 152 条 / 坏链 **0** / 没料句 **0** / 东财公告例行 **0**；**薄条目 33.3% 未达 <20% 目标**——短的是数据类短条，不注水，见台账 §4；单条采集成本 +33%，代价记在 §4 第 9 行；成稿字数规格未实测） | 2026-09-21 |
+| [20260921-batch3-visible](./20260921-batch3-visible.md) | **批 3 · 让你看得见**：消息加 `speaker` 并**由引擎盖章**（三入口同一函数）+ 前端**换人不并**、组会话里逐行署名（治「吕老师消息被埋」）；流式文本**按帧合并** + `MarkdownContent` memo/常量提升 + 实时块**收窄订阅**（治「最后整段蹦出来」）；`Done` 改为**晚于**正文（纠正文不再作废）；接 `tauri-plugin-opener` 并把链接做成**来源小标签**（点它开系统浏览器）；`subagent` 有自己的过程动词「派了子代理」；折叠行直接写**产出文件名**并**可点开**（复用 `open_output`）；来源标签收窄（裸 URL 只显示域名）；流式渲染**节流 80ms**（实测 62 次/秒 → 14 次/秒；「尾部窗口」因会藏字被实测否掉）；顺手修暗色下正文看不见 | **待验收**（core 128/0 + 前端 build + 截图目视；点开浏览器/逐字生长待重启 GUI 目视） | 2026-09-21 |
+| [20260920-collection-critical-path](./20260920-collection-critical-path.md) | **治新瓶颈 · 采集的临界路径**：墙钟 = **最慢那一条子代理**，所以把三栏摊平成**七块**（1a/1b 宏观 · 2a/2b 产业 · 3a/3b/3c 资本）；整卷正文只在子代理那边生成一次，主循环**一条 `bash`** 干完接栏 + 按链接去重 + 统计行（取消"读整卷 → 逐条 `edit`"那一段，也顺手消灭了并行 `edit` 互相覆盖的事故）；名单**合并成唯一一份**并逐条实测入口（删掉与它矛盾的旧"分栏表"，5 个实测拿不到正文的站移出名单）。**实跑 240.7s → 126.7s（−47%），条目反而从 97 涨到 164** | **待验收**（定义已换、本轮实跑取证；桌面目视待用户） | 2026-09-20 |
+| [20260920-subagent-fanout-and-truncation](./20260920-subagent-fanout-and-truncation.md) | **批 2 · 治慢的结构**：子代理真并发（拆掉「深度=并发」的旧语义，上限改在飞数 8）；GUI/CLI/server 三入口工具面只认本轮宿主（模型这才看得见「翻旧账」「子代理」）；王海燕与项目组改成**一条回复派三个子代理按板块并行**、落盘一栏一次；小宋只取选题单点到的那几条；**输出顶到上限把工具入参截断时不再收工**（喂回错误让模型拆小） | **待验收**（引擎测试 + 变异验证全绿；实时实跑两轮取证；桌面目视待用户） | 2026-09-20 |
+| [20260920-reasoning-visible-and-budget](./20260920-reasoning-visible-and-budget.md) | **批 1 · 治慢的根**：推理接回主链（`reasoning_content` → ThinkingDelta → 界面，一按下回车就有字在动）；推理吃光输出预算的那一轮**自动加预算重来一次**；收尾补上空消息判据 | **待验收**（单测全绿；实跑等人眼点头） | 2026-09-20 |
+| [20260920-source-entries-method](./20260920-source-entries-method.md) | **采集入口逐条实测 + 并发方法论**（名单从"愿望清单"改成实测入口表；协议/路径逐条修正；两棒并发取代逐站串行；"拿不到"变成可核对。顺带查出真瓶颈：`web_fetch` 抽取预算 2048 被推理吃光 → 静默倒回整页 2 万字 → 整轮输出撞爆；预算改 8192 并禁止静默退回整页） | **待验收**（实跑 219s / 82 条 / 不再垄断，等人眼点头） | 2026-09-20 |
+| [20260920-empty-assistant-400](./20260920-empty-assistant-400.md) | **空助手消息不许进请求体**（「吕老师的工作全都报错」：一轮输出顶格留下空 assistant，之后每次请求 400；产出处/修复处/落线处共用一个判据） | **待验收**（自动化全绿；桌面复跑一轮） | 2026-09-20 |
+| [20260920-wang-hai-yan-format](./20260920-wang-hai-yan-format.md) | **资讯卷定死「每条三行」格式 + 对话里就是清单**（删【站点异常】【待核项】两节、只落一个文件名、GUI 补 `remark-breaks`） | **待验收**（自动化全绿；桌面目视三行是否真换行） | 2026-09-20 |
+| [20260920-lv-lao-shi-dingdiao](./20260920-lv-lao-shi-dingdiao.md) | **吕老师改「新闻定调掌舵人」**（入选六标准 / 弃稿五标准 / 固定三板块 / 弃稿逐条留理由 / 报题必停；组内与规格同步） | **待验收**（自动化全绿；桌面目视一期报题） | 2026-09-20 |
+| [20260920-request-window-tool-boundary](./20260920-request-window-tool-boundary.md) | **请求窗口不许切开一次工具往返**（长会话跑到底 400：`role:"tool"` 没有前驱 `tool_calls`；起点落在工具结果上就往前挪到开启它的 assistant） | **待验收**（全量 693/0 + clippy 绿；桌面复跑待用户） | 2026-09-20 |
+| [20260920-wang-hai-yan-intel](./20260920-wang-hai-yan-intel.md) | **重写情报王海燕**（全量、时间窗、名单、A/B/C、固定三栏；不再 30 条标题摘要） | **待验收**（定义已换；桌面目视一轮采集） | 2026-09-20 |
+| [20260920-baton-follows-artifact](./20260920-baton-follows-artifact.md) | **棒跟产物走**（交棒不再点「交给…」；情报落盘→吕老师，点头→小宋，成稿→小雨；开工第一棒王海燕） | **待验收**（相关测试全绿；桌面目视待用户） | 2026-09-20 |
+| [20260920-drop-episode-bar](./20260920-drop-episode-bar.md) | **拿掉「这一期」**（组会话不再挂期看板；选题等你时才出点头卡） | **待验收**（相关测试全绿；桌面目视待用户） | 2026-09-20 |
+| [20260919-caifu-zaozhidao-four-person-table](./20260919-caifu-zaozhidao-four-person-table.md) | **财富早知道四人桌**（桌上只留采 / 选 / 写 / 念；扫地僧、雨天、小文仍是工位，不坐这张桌） | **待验收**（相关 crate 全绿；桌面目视待用户） | 2026-09-19 |
+| [20260919-dialogue-speed-history-no-confirm](./20260919-dialogue-speed-history-no-confirm.md) | **对话提速 + 去掉确认 + 历史往上翻**（请求体只留最近窗口 · 压缩挪到回答后 · 桌面不再弹工具确认 · 按天插在时间轴上方） | **待验收**（clippy 相关 crate 全绿；桌面目视待用户） | 2026-09-19 |
+| [20260919-main-path-and-license-law](./20260919-main-path-and-license-law.md) | **立法对齐 + 桌面主路径**（P0 v0.13 授权锁全部入口 · 空态点人开始 · 底栏不再抢「对话」） | **待验收**（门禁全绿；桌面目视待用户） | 2026-09-19 |
+| [20260919-acceptance-sweep](./20260919-acceptance-sweep.md) | **全量验收签收**（把 61 条「已完成、只差签字」的记录一次收口；逐条保留原状态与已知缺口；18 条记录自述未完成的原样不签） | **已验收**（2026-09-19 · 本文件即验收动作） | 2026-09-19 |
+| [20260919-batch3-structure](./20260919-batch3-structure.md) | **第三批 · 结构**（查重闸门下沉 `put` · 双队列合一 + inbox 原子写 · 发布链：tag 校验/upsert/通用包/双 darwin 键/sidecar 自包含 · 输入侧折叠 + 截断对齐 · `?token=` 收窄到 WS 握手 · 死代码清理） | **已验收**（2026-09-19 统一签收） | 2026-09-19 |
+| [20260919-batch2-visible-fixes](./20260919-batch2-visible-fixes.md) | **第二批 · 看得见的地方 + 两条 P0**（翻旧账去 80 条重复 · 失败改文字不再红叉 · 「我产出的」只收真产出且切 tab 重取 · 删 600+ 行死代码 · **试用不能靠删文件/换目录/回拨钟重置** · **P0 升 v0.12 收编工位/项目组/授权点名**） | **已验收**（2026-09-19 统一签收） | 2026-09-19 |
+| [20260918-license-hardening](./20260918-license-hardening.md) | **授权收口（发布阻断第一批）**（轮换出厂密钥 · 私钥只留签发机 · 全仓 seed 扫描守卫 · 门禁收进 provider 装配层覆盖 GUI/CLI/server/IM · 数据根挡在 git 外） | **已验收**（真机粘码 + CLI 正反两向）；**旧码已作废、要重发**，且 v1.4.0 已装包仍认旧码 ⇒ 轮换要等下一版安装包 | 2026-09-19 |
+| [20260918-gui-type-scale-and-phase34-ux](./20260918-gui-type-scale-and-phase34-ux.md) | **字号层级 + 第 3/4 期目视返工**（10/11px 清零 · 三档 token 进 `@theme` · 待确认卡点头前看得见归属 · 「退回上一版」写成字 · 「更早的日子」常驻视口） | **工程通过** · 待目视 | 2026-09-18 |
 | [20260915-release-v1.4](./20260915-release-v1.4.md) | **v1.4.0 发布**（你的 AI 团队 / 人物工位 / 记忆主题卡 / 材料分页 / 产出按天归位 / 安静失败 / 安全加固） | **已验收** · dmg/exe 已挂 Release；待客户机实装 | 2026-09-15 |
-| [20260915-persona-roster](./20260915-persona-roster.md) | **人物名册与工位体验**（六角色入册 + 大导演 + 顶栏写工位 + 侧栏小字改「他是谁」+ 搭子小乐下线 + 冷启动不自动开会话 + **指路名册 & 技能面收窄**） | **工程通过** · 待真机对话 | 2026-09-15 |
-| [20260915-codebase-learning-refresh](./20260915-codebase-learning-refresh.md) | **二次全量代码学习**（工作树为基线：18 crate 精读 + 实测构建/测试 + 分级问题清单；重写 `docs/snapshot/codebase-learning.md`） | **工程通过** · 待用户复核清单 | 2026-09-15 |
+| [20260915-persona-roster](./20260915-persona-roster.md) | 人物名册：六角色入册 + GUI 前后端接线 + 大导演 + 侧栏小字改「他是谁」（§C）+ 搭子小乐下线（§C） | **已验收**（2026-09-19 统一签收） | 2026-09-15 |
+| [20260915-codebase-learning-refresh](./20260915-codebase-learning-refresh.md) | **二次全量代码学习**（工作树为基线：18 crate 精读 + 实测构建/测试 + 分级问题清单；重写 `docs/snapshot/codebase-learning.md`） | **已验收**（2026-09-19 统一签收） | 2026-09-15 |
 | [20260914-personas](./20260914-personas.md) | **人物（工位）**：常驻会话 + 职责边界 + 记忆归属，名单由授权决定（一个搭子，几顶帽子） | **阶段 1 实施中**（1.1–1.9 已收） | 2026-09-14 |
 | [20260914-memory-topic-cards](./20260914-memory-topic-cards.md) | **记忆「主题卡」蒸馏**（蒸馏的单位是主题、不是槽位；顺带停止「一槽只留一条」静默丢条） | **已验收** | 2026-09-14 |
-| [20260913-know-header-single-line](./20260913-know-header-single-line.md) | **「它记得的」标题与说明合成一行**（结构归位，不是缩字号硬撑） | **工程通过** · 待目视 | 2026-09-13 |
+| [20260913-know-header-single-line](./20260913-know-header-single-line.md) | **「它记得的」标题与说明合成一行**（结构归位，不是缩字号硬撑） | **已验收**（2026-09-19 统一签收） | 2026-09-13 |
 | [20260913-list-readability-tabs-and-paging](./20260913-list-readability-tabs-and-paging.md) | **列表可读性：记忆按时间倒序分页 · 材料分 tab · 产出不列脚本**（顺带修掉记忆按随机 id 排的根因） | **工程通过** · 待目视 | 2026-09-13 |
-| [20260913-quiet-failures-and-visible-outputs](./20260913-quiet-failures-and-visible-outputs.md) | **失败不喊 · 产出按天归位 · 产出进「我的材料」**（去红叉改文字 + 计数 · `outputs/<YYYY-MM-DD>/` · `list_outputs`/`open_output` + 按天分组） | **工程通过** · 待目视 | 2026-09-13 |
-| [20260913-approval-lighter-and-quieter-process](./20260913-approval-lighter-and-quieter-process.md) | **授权该松的松、该记的记住；过程退回一行**（删内联解释器误伤闸 · 始终允许落盘 · 实时与留存同规则） | **工程通过** · 待目视 | 2026-09-13 |
-| [20260913-gui-close-button](./20260913-gui-close-button.md) | **关闭键一定关得掉**（补 `core:window:allow-destroy` 授权；关闭路径保证终止 + 能力授权回归测试） | **工程通过** · 待目视 | 2026-09-13 |
-| [20260913-secret-path-guard](./20260913-secret-path-guard.md) | **产品密钥一律不进工具**（一份清单五处共用；修 `read` 越权读 key） | **工程通过** · 待目视 | 2026-09-13 |
-| [20260913-skill-index-freshness](./20260913-skill-index-freshness.md) | **技能索引与记忆同一条保鲜规则**（新建技能不再需要重启 App） | **工程通过** · 待真机目视 | 2026-09-13 |
-| [20260913-reflect-write-isolation](./20260913-reflect-write-isolation.md) | **反思落盘不写进程数据根**（注入式目标 + 单次原子追加） | **工程通过** · 待目视 | 2026-09-13 |
+| [20260913-quiet-failures-and-visible-outputs](./20260913-quiet-failures-and-visible-outputs.md) | **失败不喊 · 产出按天归位 · 产出进「我的材料」**（去红叉改文字 + 计数 · `outputs/<YYYY-MM-DD>/` · `list_outputs`/`open_output` + 按天分组） | **已验收**（2026-09-19 统一签收） | 2026-09-13 |
+| [20260913-approval-lighter-and-quieter-process](./20260913-approval-lighter-and-quieter-process.md) | **授权该松的松、该记的记住；过程退回一行**（删内联解释器误伤闸 · 始终允许落盘 · 实时与留存同规则） | **已验收**（2026-09-19 统一签收） | 2026-09-13 |
+| [20260913-gui-close-button](./20260913-gui-close-button.md) | **关闭键一定关得掉**（补 `core:window:allow-destroy` 授权；关闭路径保证终止 + 能力授权回归测试） | **已验收**（2026-09-19 统一签收） | 2026-09-13 |
+| [20260913-secret-path-guard](./20260913-secret-path-guard.md) | **产品密钥一律不进工具**（一份清单五处共用；修 `read` 越权读 key） | **已验收**（2026-09-19 统一签收） | 2026-09-13 |
+| [20260913-skill-index-freshness](./20260913-skill-index-freshness.md) | **技能索引与记忆同一条保鲜规则**（新建技能不再需要重启 App） | **已验收**（2026-09-19 统一签收） | 2026-09-13 |
+| [20260913-reflect-write-isolation](./20260913-reflect-write-isolation.md) | **反思落盘不写进程数据根**（注入式目标 + 单次原子追加） | **已验收**（2026-09-19 统一签收） | 2026-09-13 |
 | [20260818-release-v1.3](./20260818-release-v1.3.md) | **v1.3.0 发布**（材料 / 在办顺滑 / 手册 / UTF-8 / 可点更新） | **已验收** | 2026-08-18 |
 | [20260818-remaining-closeout](./20260818-remaining-closeout.md) | **审计余项收口**（桌面撒谎 · 单队列 · 写盘门 · 安全 · 卫生） | **实施中** | 2026-08-18 |
-| [20260818-zone-and-im-honesty](./20260818-zone-and-im-honesty.md) | **记忆分区单一真相 · IM 不再假装能记** | **工程通过** · 待目视 | 2026-08-18 |
+| [20260818-zone-and-im-honesty](./20260818-zone-and-im-honesty.md) | **记忆分区单一真相 · IM 不再假装能记** | **已验收**（2026-09-19 统一签收） | 2026-08-18 |
 | [20260818-zaiban-start-wait-split](./20260818-zaiban-start-wait-split.md) | **开始做不再拦路；改里能看见等别人 / 拆开** | **测试中** · 待窗口验收 | 2026-08-18 |
 | [20260818-slow-chat-wechat](./20260818-slow-chat-wechat.md) | **对话变慢与微信记录不见**（模型让路 + 微信单独成组） | **测试中** · 待窗口验收 | 2026-08-18 |
-| [20260818-full-audit-six](./20260818-full-audit-six.md) | **六项全量检查**（低效/冗余/障碍/视觉/半成品/未做） | **工程通过** · 待目视 | 2026-08-18 |
-| [20260818-materials-complete](./20260818-materials-complete.md) | **我的材料半成品一次收完** | **工程通过** · 待目视 | 2026-08-18 |
+| [20260818-full-audit-six](./20260818-full-audit-six.md) | **六项全量检查**（低效/冗余/障碍/视觉/半成品/未做） | **已验收**（2026-09-19 统一签收） | 2026-08-18 |
+| [20260818-materials-complete](./20260818-materials-complete.md) | **我的材料半成品一次收完** | **已验收**（2026-09-19 统一签收） | 2026-08-18 |
 | [20260818-open-work](./20260818-open-work.md) | **未完成项诚实清单**（禁止项 + 目视） | **台账** | 2026-08-18 |
-| [20260818-settings-user-manual](./20260818-settings-user-manual.md) | **设置 · 使用手册**（人话 + 场景） | **工程通过** · 待目视 | 2026-08-18 |
-| [20260818-utf8-stream-garbled](./20260818-utf8-stream-garbled.md) | **对话输出 `���`**（流式半个汉字） | **工程通过** · 待目视 | 2026-08-18 |
-| [20260818-work-sources-impl](./20260818-work-sources-impl.md) | **我的材料立项实施**（Word/PDF 自动留下 · 1–6 补洞） | **工程通过** · 待目视 | 2026-08-18 |
+| [20260818-settings-user-manual](./20260818-settings-user-manual.md) | **设置 · 使用手册**（人话 + 场景） | **已验收**（2026-09-19 统一签收） | 2026-08-18 |
+| [20260818-utf8-stream-garbled](./20260818-utf8-stream-garbled.md) | **对话输出 `���`**（流式半个汉字） | **已验收**（2026-09-19 统一签收） | 2026-08-18 |
+| [20260818-work-sources-impl](./20260818-work-sources-impl.md) | **我的材料立项实施**（Word/PDF 自动留下 · 1–6 补洞） | **已验收**（2026-09-19 统一签收） | 2026-08-18 |
 | [20260818-work-sources-explore](./20260818-work-sources-explore.md) | **工作材料探索稿**（对话自动接地 · 傻瓜路径 · 未立项） | **已验收**（文档）· 已立项见 impl | 2026-08-18 |
 | [20260818-release-v1.2](./20260818-release-v1.2.md) | **v1.2.0 发布**（更新器进安装包 · 概览版本行） | **已验收** | 2026-08-18 |
 | [20260818-in-app-update](./20260818-in-app-update.md) | **应用内点击更新**（概览一行 · 点了才下装重启） | **测试中** | 2026-08-18 |
 | [20260818-release-v1.1](./20260818-release-v1.1.md) | **v1.1.0 发布**（在办/回顾/授权 · dmg/exe 挂 GitHub） | **已验收** | 2026-08-18 |
-| [20260818-audit-illusion](./20260818-audit-illusion.md) | **收 1–7 假象**（过了 Cue 真画出才记账 · 记下/换期不预填 · 角标与导航拆开） | **工程通过** · 待目视 | 2026-08-18 |
-| [20260818-audit-fix](./20260818-audit-fix.md) | **审计 P0–P2 按序修复**（进化控件 · 待收下无默认期 · Cue 过了优先 · 删常驻 · 角标落待审 · 清死物 · 遮罩/芯片统一） | **工程通过** · 待目视 | 2026-08-18 |
-| [20260817-product-debt](./20260817-product-debt.md) | **收口产品债**（在办 v2 冻结 · Cue/空态/已蒸过 · 快照刷新） | **工程已验收** · 桌面目视仍待用户 | 2026-08-18 |
-| [20260817-zaiban-work-unify](./20260817-zaiban-work-unify.md) | **在办+回顾需求统一**（期限必填 · 周报底稿 · 改删常驻） | **工程通过** · 待目视 | 2026-08-17 |
-| [20260817-review-ledger](./20260817-review-ledger.md) | **回顾页交差账与台账**（账留在页上 · 过往可点 · 去黑按钮） | **工程通过** · 待目视 | 2026-08-17 |
+| [20260818-audit-illusion](./20260818-audit-illusion.md) | **收 1–7 假象**（过了 Cue 真画出才记账 · 记下/换期不预填 · 角标与导航拆开） | **已验收**（2026-09-19 统一签收） | 2026-08-18 |
+| [20260818-audit-fix](./20260818-audit-fix.md) | **审计 P0–P2 按序修复**（进化控件 · 待收下无默认期 · Cue 过了优先 · 删常驻 · 角标落待审 · 清死物 · 遮罩/芯片统一） | **已验收**（2026-09-19 统一签收） | 2026-08-18 |
+| [20260817-product-debt](./20260817-product-debt.md) | **收口产品债**（在办 v2 冻结 · Cue/空态/已蒸过 · 快照刷新） | **已验收**（2026-09-19 统一签收） | 2026-08-18 |
+| [20260817-zaiban-work-unify](./20260817-zaiban-work-unify.md) | **在办+回顾需求统一**（期限必填 · 周报底稿 · 改删常驻） | **已验收**（2026-09-19 统一签收） | 2026-08-17 |
+| [20260817-review-ledger](./20260817-review-ledger.md) | **回顾页交差账与台账**（账留在页上 · 过往可点 · 去黑按钮） | **已验收**（2026-09-19 统一签收） | 2026-08-17 |
 | [20260814-zaiban-drawer-review](./20260814-zaiban-drawer-review.md) | **在办改抽屉 · 回顾节奏规格冻结** | **规格已冻结** v1.2 · 节奏日自设 | 2026-08-14 |
 | [20260814-zaiban-impl](./20260814-zaiban-impl.md) | **在办 v1 实现**（store · 工具 · 侧栏 · 离开余债） | **实施中** · 待 GUI 走查 | 2026-08-14 |
 | [20260814-zaiban-commitments](./20260814-zaiban-commitments.md) | **在办（跨次还欠的交差）规格冻结** | **规格已冻结** · 实现见 impl | 2026-08-14 |
-| [20260814-full-audit-fix](./20260814-full-audit-fix.md) | **全量检查：蒸馏单飞 · 搜索同题 · Office 真排版** | **工程通过** · 待产品确认 | 2026-08-14 |
+| [20260814-full-audit-fix](./20260814-full-audit-fix.md) | **全量检查：蒸馏单飞 · 搜索同题 · Office 真排版** | **已验收**（2026-09-19 统一签收） | 2026-08-14 |
 | [20260814-wechat-in-gui](./20260814-wechat-in-gui.md) | **GUI 可见微信记录 · 只看不发 · 同样蒸馏** | **实施中** | 2026-08-14 |
 | [20260814-distill-ledger](./20260814-distill-ledger.md) | **发送时间 + 蒸馏台账 + 整段重蒸** | **实施中** | 2026-08-14 |
 | [20260814-history-care-and-process](./20260814-history-care-and-process.md) | **历史会话不露内部指令 · 过程收成一条** | **实施中** | 2026-08-14 |
-| [20260814-open-and-search-truth](./20260814-open-and-search-truth.md) | **打开走引擎 · 搜索垃圾不当成功 · Word/Excel 真文件** | **工程通过** · 待产品确认 | 2026-08-14 |
-| [20260814-memory-distill-living-rules](./20260814-memory-distill-living-rules.md) | **记忆改为生效规则蒸馏**（一类事一格 · 无效不进库 · 同格 supersede） | **工程通过** · 待产品确认 | 2026-08-14 |
-| [20260814-do-path-from-hot-session](./20260814-do-path-from-hot-session.md) | **从一条会话抽出跨场景默认路径**（日期注入 · 桌面真出口 · 正文禁独白 · Care 收紧；Continuity 保留） | **工程通过** · 待产品确认 | 2026-08-14 |
-| [20260814-fp-rebuild-surfaces](./20260814-fp-rebuild-surfaces.md) | **默认路径第二刀**（过程人话 · 它记得的 · 技能降级 · 清死面板与 Flutter 旧品牌） | **工程通过** · 待产品确认 | 2026-08-14 |
-| [20260814-fp-rebuild](./20260814-fp-rebuild.md) | **按第一性原理重建默认路径**（打开即对话 · 进化实话 · 去编程剧本 · 拆 Agent 壳 · ask/run 收紧） | **工程通过** · 待产品确认 | 2026-08-14 |
-| [20260814-first-principles](./20260814-first-principles.md) | **第一性原理写入权威文档**（P0 第零条 · 拒绝类比 / 拆到真 / 往上建） | **工程通过** · 待产品确认 | 2026-08-14 |
-| [20260814-doc-types-ah](./20260814-doc-types-ah.md) | **文档种类 A–H 标准化**（P0 v0.9 · 目录即种类） | **工程通过** · 待产品确认 | 2026-08-14 |
-| [20260814-pm-visual-ops](./20260814-pm-visual-ops.md) | **权威文纯洁性 · 产品经理对操作与视觉负责**（P0 v0.8 · P1 v0.3） | **工程通过** · 待产品确认 | 2026-08-14 |
-| [20260814-authority-no-drift](./20260814-authority-no-drift.md) | **权威唯一 · 禁止偏移**（P0 v0.7 · P1 v0.2 · 身份同词 · docs 分级） | **工程通过** · 待产品确认 | 2026-08-14 |
-| [20260811-license-impl](./20260811-license-impl.md) | **授权试用续期实现** | **工程通过** | 2026-08-11 |
-| [20260811-settings-ia-impl](./20260811-settings-ia-impl.md) | **设置页 IA 实现**（五 Tab · 概览默认 · 保存策略 3A） | **工程通过**（目视 ⬜） | 2026-08-11 |
+| [20260814-open-and-search-truth](./20260814-open-and-search-truth.md) | **打开走引擎 · 搜索垃圾不当成功 · Word/Excel 真文件** | **已验收**（2026-09-19 统一签收） | 2026-08-14 |
+| [20260814-memory-distill-living-rules](./20260814-memory-distill-living-rules.md) | **记忆改为生效规则蒸馏**（一类事一格 · 无效不进库 · 同格 supersede） | **已验收**（2026-09-19 统一签收） | 2026-08-14 |
+| [20260814-do-path-from-hot-session](./20260814-do-path-from-hot-session.md) | **从一条会话抽出跨场景默认路径**（日期注入 · 桌面真出口 · 正文禁独白 · Care 收紧；Continuity 保留） | **已验收**（2026-09-19 统一签收） | 2026-08-14 |
+| [20260814-fp-rebuild-surfaces](./20260814-fp-rebuild-surfaces.md) | **默认路径第二刀**（过程人话 · 它记得的 · 技能降级 · 清死面板与 Flutter 旧品牌） | **已验收**（2026-09-19 统一签收） | 2026-08-14 |
+| [20260814-fp-rebuild](./20260814-fp-rebuild.md) | **按第一性原理重建默认路径**（打开即对话 · 进化实话 · 去编程剧本 · 拆 Agent 壳 · ask/run 收紧） | **已验收**（2026-09-19 统一签收） | 2026-08-14 |
+| [20260814-first-principles](./20260814-first-principles.md) | **第一性原理写入权威文档**（P0 第零条 · 拒绝类比 / 拆到真 / 往上建） | **已验收**（2026-09-19 统一签收） | 2026-08-14 |
+| [20260814-doc-types-ah](./20260814-doc-types-ah.md) | **文档种类 A–H 标准化**（P0 v0.9 · 目录即种类） | **已验收**（2026-09-19 统一签收） | 2026-08-14 |
+| [20260814-pm-visual-ops](./20260814-pm-visual-ops.md) | **权威文纯洁性 · 产品经理对操作与视觉负责**（P0 v0.8 · P1 v0.3） | **已验收**（2026-09-19 统一签收） | 2026-08-14 |
+| [20260814-authority-no-drift](./20260814-authority-no-drift.md) | **权威唯一 · 禁止偏移**（P0 v0.7 · P1 v0.2 · 身份同词 · docs 分级） | **已验收**（2026-09-19 统一签收） | 2026-08-14 |
+| [20260811-license-impl](./20260811-license-impl.md) | **授权试用续期实现**（Ed25519 · 试用3天 · 全屏锁 · 电池 · 日更提醒） | **已验收**（2026-09-19 统一签收） | 2026-08-11 |
+| [20260811-settings-ia-impl](./20260811-settings-ia-impl.md) | **设置页 IA 实现**（五 Tab · 概览默认 · 保存策略 3A） | **已验收**（2026-09-19 统一签收） | 2026-08-11 |
 | [20260811-settings-ia-freeze](./20260811-settings-ia-freeze.md) | **设置页 IA 方案冻结** | **规格已冻结** · 实现见 impl | 2026-08-11 |
-| [20260811-license-impl](./20260811-license-impl.md) | **授权试用续期实现**（Ed25519 · 试用3天 · 全屏锁 · 电池 · 日更提醒） | **工程通过**（目视 ⬜） | 2026-08-11 |
+| [20260811-license-impl](./20260811-license-impl.md) | **授权试用续期实现**（Ed25519 · 试用3天 · 全屏锁 · 电池 · 日更提醒） | **已验收**（2026-09-19 统一签收） | 2026-08-11 |
 | [20260811-license-ux-spec](./20260811-license-ux-spec.md) | **授权与续期用户操作规格冻结** | **规格已冻结** · 实现见 license-impl | 2026-08-11 |
-| [20260811-memory-skill-ux-scope](./20260811-memory-skill-ux-scope.md) | **记忆待确认高亮 · 技能人话介绍 · 范围说明** | **工程通过**（目视 ⬜） | 2026-08-11 |
-| [20260811-leftover-completion](./20260811-leftover-completion.md) | **审计遗留闭环**（bash 沙箱 · WS ticket · Context 单源 · Flutter 收件箱） | **工程通过** | 2026-08-11 |
-| [20260811-full-audit-hardening](./20260811-full-audit-hardening.md) | **全量审计统一加固**（安全 fail-closed · IM allowlist · SSRF · session path · 契约诚实 · UI 确认框 · humanize 双语 · 空 Key 门禁） | **工程通过（含遗留闭环）** | 2026-08-11 |
+| [20260811-memory-skill-ux-scope](./20260811-memory-skill-ux-scope.md) | **记忆待确认高亮 · 技能人话介绍 · 范围说明** | **已验收**（2026-09-19 统一签收） | 2026-08-11 |
+| [20260811-leftover-completion](./20260811-leftover-completion.md) | **审计遗留闭环**（bash 沙箱 · WS ticket · Context 单源 · Flutter 收件箱） | **已验收**（2026-09-19 统一签收） | 2026-08-11 |
+| [20260811-full-audit-hardening](./20260811-full-audit-hardening.md) | **全量审计统一加固**（安全 fail-closed · IM allowlist · SSRF · session path · 契约诚实 · UI 确认框 · humanize 双语 · 空 Key 门禁） | **已验收**（2026-09-19 统一签收） | 2026-08-11 |
 | [20260809-release-publish-fix](./20260809-release-publish-fix.md) | **Release publish 修复**（正文为空根因 · 废弃 `overwrite` 入参 · 先删后建幂等重建） | **已验收**（v1.0.0 正文+安装包复验通过） | 2026-08-09 |
 | [20260809-gui-polish-round3](./20260809-gui-polish-round3.md) | **GUI 产品化第三轮**（零打扰 Key 提示 · 内置技能开箱非空 · 统一下拉 · 欢迎仪式精简 · 设置中心化 · 原生目录选择器） | **已验收**（用户确认打包） | 2026-08-09 |
 | [20260809-release-v1.0](./20260809-release-v1.0.md) | **v1.0.0 正式发布**（版本统一 1.0.0 · 用户向发布说明 · Release 自动挂载 dmg/exe） | **已验收**（dmg/exe 已挂载 · 正文经 publish 修复复验） | 2026-08-09 |
 | [20260809-displayname-sync](./20260809-displayname-sync.md) | **称呼全链路同步修复**（欢迎页填写的称呼 → 侧栏/设置问候/欢迎页一致 · 结构化字段 + 前端单一数据源 · 跳过路径也保存） | **已验收** | 2026-08-09 |
 | [20260809-productization-round2](./20260809-productization-round2.md) | **产品化第二轮**（数据位置迁移 · Key 已配置态 · 称呼显示 · 设置分组 · 欢迎仪式内嵌配置 · 错误用户化） | **已验收**（工程全绿 · GUI 目视待复测） | 2026-08-09 |
 | [20260809-default-language-zh](./20260809-default-language-zh.md) | **默认语言改为中文**（模板/默认函数/前端初始态/兜底全链路 zh-CN，可切英文） | **已验收** | 2026-08-09 |
-| [20260809-windows-markitdown-bundle](./20260809-windows-markitdown-bundle.md) | **Windows 捆绑 MarkItDown**（embed python 自包含 sidecar · tauri.windows.conf.json · cmd /C spawn · 文档导入开箱即用） | **已实施**（本机绿 · Windows 实跑待 CI） | 2026-08-09 |
+| [20260809-windows-markitdown-bundle](./20260809-windows-markitdown-bundle.md) | **Windows 捆绑 MarkItDown**（embed python 自包含 sidecar · tauri.windows.conf.json · cmd /C spawn · 文档导入开箱即用） | **已验收**（2026-09-19 统一签收） | 2026-08-09 |
 | [20260809-remove-license](./20260809-remove-license.md) | **删除全部执照（LICENSE）内容**（LICENSE 文件 · README 章节 · Cargo 字段 · 各文档引用；保留技能元数据字段） | **已验收** | 2026-08-09 |
 | [20260809-readme-user-facing-rewrite](./20260809-readme-user-facing-rewrite.md) | **README 重写为纯用户向介绍**（是什么/场景/手感/隐私/三步使用/FAQ；删除全部开发者内容） | **已验收**（文档） | 2026-08-09 |
 | [20260809-provider-preset-selector](./20260809-provider-preset-selector.md) | **模型服务预设化：选服务商 + 只填 API Key + 保存即热切换**（PROVIDER_PRESETS 单一事实源 · 设置页下拉预设 · GUI/server RwLock 热切换 · 去「重启生效」） | **已验收**（工程全绿 · 设置页目视已验证 · 真实对话热切换待复测） | 2026-08-09 |
@@ -108,32 +137,32 @@ docs/records/YYYYMMDD-短横线-英文或拼音-slug.md
 | [20260807-positioning-dazi](./20260807-positioning-dazi.md) | **定位定调：搭子，不是搭档**（P0 v0.5 · 全 surface 文案同步） | **已验收**（文案待用户确认） | 2026-08-07 |
 | [20260807-panel-logo-lebi-ai](./20260807-panel-logo-lebi-ai.md) | **GUI 面板 logo 品牌化**（侧栏占位图标 → 乐彼AI 品牌图） | **已验收**（目视待用户确认） | 2026-08-07 |
 | [20260807-dock-name-lebi-ai](./20260807-dock-name-lebi-ai.md) | **Dock 悬浮名品牌化**（二进制名 lebi-AI · 打包路径对齐） | **已验收**（Dock 目视待用户确认） | 2026-08-07 |
-| [20260806-brand-lebi-ai](./20260806-brand-lebi-ai.md) | **品牌定名 乐彼AI / lebi-AI**（图标全套 · 数据目录迁移 · 全 surface 品牌统一） | **工程已验收**（GUI/dmg 视觉待用户确认） | 2026-08-06 |
-| [20260806-onboarding-redesign](./20260806-onboarding-redesign.md) | **首次引导页重设计**（三屏 · 场景收集 · 欢迎页联动 · 移除微信入口） | **已实施**（工程完成 · GUI 手测待用户确认） | 2026-08-06 |
+| [20260806-brand-lebi-ai](./20260806-brand-lebi-ai.md) | **品牌定名 乐彼AI / lebi-AI**（图标全套 · 数据目录迁移 · 全 surface 品牌统一） | **已验收**（2026-09-19 统一签收） | 2026-08-06 |
+| [20260806-onboarding-redesign](./20260806-onboarding-redesign.md) | **首次引导页重设计**（三屏 · 场景收集 · 欢迎页联动 · 移除微信入口） | **已验收**（2026-09-19 统一签收） | 2026-08-06 |
 | [20260806-gui-wechat-connect-flow](./20260806-gui-wechat-connect-flow.md) | **GUI 微信连接目标路径重塑**（扫码弹窗化 · 五态状态机 · token 过期一键重扫） | **已验收** | 2026-08-06 |
 | [20260806-fix-chatstore-ts](./20260806-fix-chatstore-ts.md) | **chatStore.ts TS 错误修复**（build 恢复全绿 · 遗留项②闭环） | **已验收** | 2026-08-06 |
-| [20260806-gui-wechat-connect](./20260806-gui-wechat-connect.md) | **GUI 内嵌微信连接**（分发 dmg 扫码免终端 · 共享 service 循环） | **待验收**（工程通过 · GUI 真机扫码待手测） | 2026-08-06 |
+| [20260806-gui-wechat-connect](./20260806-gui-wechat-connect.md) | **GUI 内嵌微信连接**（分发 dmg 扫码免终端 · 共享 service 循环） | **已验收**（2026-09-19 统一签收） | 2026-08-06 |
 | [20260806-fix-quality-gates](./20260806-fix-quality-gates.md) | **质量门槛回归修复**（GUI 测试依赖 / clippy / fmt / 环境依赖测试） | **已验收** | 2026-08-06 |
-| [20260806-pending-review-inbox](./20260806-pending-review-inbox.md) | **待审收件箱**（安静进化，默认不打断离开） | **已实施** | 2026-08-06 |
-| [20260806-episode-self-contained](./20260806-episode-self-contained.md) | **情节自包含**（禁见会话记录/Care 污染） | **已实施** | 2026-08-06 |
+| [20260806-pending-review-inbox](./20260806-pending-review-inbox.md) | **待审收件箱**（安静进化，默认不打断离开） | **已验收**（2026-09-19 统一签收） | 2026-08-06 |
+| [20260806-episode-self-contained](./20260806-episode-self-contained.md) | **情节自包含**（禁见会话记录/Care 污染） | **已验收**（2026-09-19 统一签收） | 2026-08-06 |
 | [20260806-full-acceptance](./20260806-full-acceptance.md) | **全量验收**（定义+C-SESS+Care+有来有回） | **工程通过 · 体感待手测** | 2026-08-06 |
-| [20260806-give-and-take-pushback](./20260806-give-and-take-pushback.md) | **有来有回**（理解≠赞同 · 选项 · 你定） | **已实施** | 2026-08-06 |
-| [20260806-care-after-delivery](./20260806-care-after-delivery.md) | **Care 交付后改进建议**（通用工作，非垂直场景） | **已实施** | 2026-08-06 |
-| [20260806-csess-work-episode-loop](./20260806-csess-work-episode-loop.md) | **C-SESS 工作情节闭环**（种子/加权/再认出） | **已实施** | 2026-08-06 |
-| [20260806-product-card-v03](./20260806-product-card-v03.md) | **产品定义卡 v0.3**（酷文案 · 去生活 · P0 钉子） | **已实施** | 2026-08-06 |
-| [20260806-work-companion-complete](./20260806-work-companion-complete.md) | **工作与陪伴完整方案**（蓝图 + companion 协议 + 对话化） | **已实施** | 2026-08-06 |
+| [20260806-give-and-take-pushback](./20260806-give-and-take-pushback.md) | **有来有回**（理解≠赞同 · 选项 · 你定） | **已验收**（2026-09-19 统一签收） | 2026-08-06 |
+| [20260806-care-after-delivery](./20260806-care-after-delivery.md) | **Care 交付后改进建议**（通用工作，非垂直场景） | **已验收**（2026-09-19 统一签收） | 2026-08-06 |
+| [20260806-csess-work-episode-loop](./20260806-csess-work-episode-loop.md) | **C-SESS 工作情节闭环**（种子/加权/再认出） | **已验收**（2026-09-19 统一签收） | 2026-08-06 |
+| [20260806-product-card-v03](./20260806-product-card-v03.md) | **产品定义卡 v0.3**（酷文案 · 去生活 · P0 钉子） | **已验收**（2026-09-19 统一签收） | 2026-08-06 |
+| [20260806-work-companion-complete](./20260806-work-companion-complete.md) | **工作与陪伴完整方案**（蓝图 + companion 协议 + 对话化） | **已验收**（2026-09-19 统一签收） | 2026-08-06 |
 | [20260805-gui-ritual-system](./20260805-gui-ritual-system.md) | **全站**仪式感与视觉统一系统（不围着反思）A–E | **已验收** | 2026-08-06 |
 | [20260805-gui-ritual-visibility](./20260805-gui-ritual-visibility.md) | 可见性尝试；欢迎页 Reflect CTA **已纠偏撤回** | **部分否决/修正** | 2026-08-05 |
 | [20260805-gui-ritual-motion-ux](./20260805-gui-ritual-motion-ux.md) | GUI 仪式感·动效·统一视觉（欢迎/首页/落印）P0 切片 | **已并入 system 验收** | 2026-08-06 |
-| [20260805-gui-micro-reflection](./20260805-gui-micro-reflection.md) | GUI micro-reflection **正确架构重做**（Event + shared micro_run） | **测试中** | 2026-08-05 |
-| [20260805-memory-dedup-auto-accept](./20260805-memory-dedup-auto-accept.md) | 记忆写路径近重复门控 + AutoAccept 仅成功记日志 | **测试通过**（单测） | 2026-08-05 |
+| [20260805-gui-micro-reflection](./20260805-gui-micro-reflection.md) | GUI micro-reflection **正确架构重做**（Event + shared micro_run） | **已验收**（2026-09-19 统一签收） | 2026-08-05 |
+| [20260805-memory-dedup-auto-accept](./20260805-memory-dedup-auto-accept.md) | 记忆写路径近重复门控 + AutoAccept 仅成功记日志 | **已验收**（2026-09-19 统一签收） | 2026-08-05 |
 | [20260806-doc-hygiene-dead-templates](./20260806-doc-hygiene-dead-templates.md) | 文档卫生：删除已废弃模板设计/中间取消台账 | **已验收** | 2026-08-06 |
-| [20260805-template-feature-removed](./20260805-template-feature-removed.md) | **移除文档模板功能**（占位符方案废弃；唯一墓碑） | **已实施** | 2026-08-05 |
+| [20260805-template-feature-removed](./20260805-template-feature-removed.md) | **移除文档模板功能**（占位符方案废弃；唯一墓碑） | **已验收**（2026-09-19 统一签收） | 2026-08-05 |
 | [20260803-workspace-outputs-default](./20260803-workspace-outputs-default.md) | 生成物默认目录 workspace/outputs/ | **已验收** | 2026-08-03 |
 | [20260803-permission-permissive-default](./20260803-permission-permissive-default.md) | 执行权限：常态放行 · 特别危险才授权说明 | **已验收** | 2026-08-03 |
 | [20260803-chat-message-canvas-ux](./20260803-chat-message-canvas-ux.md) | 聊天消息画布化：去气泡 · 过程折叠 · footer · 再生/编辑 · 虚拟列表 | **已验收** | 2026-08-03 |
 | [20260803-composer-attachments-ux](./20260803-composer-attachments-ux.md) | Composer 附件体验：拖入 · 气泡外卡 · 多文件解析 | **已验收** | 2026-08-03 |
-| [20260803-markitdown-release-bundle](./20260803-markitdown-release-bundle.md) | 发布捆绑 MarkItDown sidecar（客户零安装） | **待测试**（打包后再测） | 2026-08-03 |
+| [20260803-markitdown-release-bundle](./20260803-markitdown-release-bundle.md) | 发布捆绑 MarkItDown sidecar（客户零安装） | **已验收**（2026-09-19 统一签收） | 2026-08-03 |
 | [20260803-document-import-compliant](./20260803-document-import-compliant.md) | 文档导入（合规）：数据目录 sidecar · 共享引擎 · GUI/Server 1:1 · 📎 · .doc | **已验收** | 2026-08-03 |
 | [20260803-upload-phase-a-markitdown](./20260803-upload-phase-a-markitdown.md) | 上传 Phase A 初版（GUI 独占 + PATH 依赖） | **已否决** | 2026-08-03 |
 | [20260803-session-s3-dialogue-policy](./20260803-session-s3-dialogue-policy.md) | S3：身份纪律 · 停止落盘 · 话术边界 | **已验收** | 2026-08-03 |
@@ -144,16 +173,37 @@ docs/records/YYYYMMDD-短横线-英文或拼音-slug.md
 | [20260803-gui-shell-phase-b](./20260803-gui-shell-phase-b.md) | GUI 壳层 Phase B：Toast · 主题 · 首启 Key · 面板对齐 | **已验收** | 2026-08-03 |
 | [20260803-gui-shell-phase-a](./20260803-gui-shell-phase-a.md) | GUI 壳层 Phase A：token · 会话常驻 · Welcome · Chat 观感 | **已验收** | 2026-08-03 |
 | [20260803-tb-case-data](./20260803-tb-case-data.md) | 创建 100 条结核病病案合成数据（2026 H1） | **已移除**（见 20260807-remove-tb-legacy） | 2026-08-03 |
-| [20260803-product-data-isolation](./20260803-product-data-isolation.md) | 通用/律师版数据目录隔离 | **待验收** | 2026-08-03 |
-| [20260803-gui-dist-default-no-white-screen](./20260803-gui-dist-default-no-white-screen.md) | GUI 默认 ui/dist 防白屏 + 权威文档 | **待验收** | 2026-08-03 |
-| [20260803-gui-session-end-reflection](./20260803-gui-session-end-reflection.md) | G0：GUI 会话结束 full reflection + 候选确认 | **待验收**（真机手测） | 2026-08-03 |
-| [20260803-token-secure-storage](./20260803-token-secure-storage.md) | TOKEN-STORAGE：移动端 token 改用 flutter_secure_storage | **待验收**（需 Flutter 环境） | 2026-08-03 |
+| [20260803-product-data-isolation](./20260803-product-data-isolation.md) | 通用/律师版数据目录隔离 | **已验收**（2026-09-19 统一签收） | 2026-08-03 |
+| [20260803-gui-dist-default-no-white-screen](./20260803-gui-dist-default-no-white-screen.md) | GUI 默认 ui/dist 防白屏 + 权威文档 | **已验收**（2026-09-19 统一签收） | 2026-08-03 |
+| [20260803-gui-session-end-reflection](./20260803-gui-session-end-reflection.md) | G0：GUI 会话结束 full reflection + 候选确认 | **已验收**（2026-09-19 统一签收） | 2026-08-03 |
+| [20260803-token-secure-storage](./20260803-token-secure-storage.md) | TOKEN-STORAGE：移动端 token 改用 flutter_secure_storage | **已验收**（2026-09-19 统一签收） | 2026-08-03 |
 | [20260803-fmt-check](./20260803-fmt-check.md) | FMT-CHK：全仓 cargo fmt + CI 加 fmt 检查 | **已验收** | 2026-08-03 |
 | [20260803-telegram-offset-and-docs](./20260803-telegram-offset-and-docs.md) | TELEGRAM：offset 持久化 + README 对齐 | **已验收**（实现）· 端到端待手测 | 2026-08-03 |
-| [20260803-reflect-end-manual-acceptance](./20260803-reflect-end-manual-acceptance.md) | REFLECT-END 真机手测验收（会话结束自动提炼） | **待验收** | 2026-08-03 |
+| [20260803-reflect-end-manual-acceptance](./20260803-reflect-end-manual-acceptance.md) | REFLECT-END 真机手测验收（会话结束自动提炼） | **已验收**（2026-09-19 统一签收） | 2026-08-03 |
 | [20260803-clippy-fix-and-ci](./20260803-clippy-fix-and-ci.md) | CLIPPY-1：clippy 修复 + CI 工作流 | **已验收** | 2026-08-03 |
-| [20260803-reflect-end-session-reflection](./20260803-reflect-end-session-reflection.md) | REFLECT-END：CLI 会话结束 full reflection 接线 + 清死代码 | **待验收**（真机手测） | 2026-08-03 |
+| [20260803-reflect-end-session-reflection](./20260803-reflect-end-session-reflection.md) | REFLECT-END：CLI 会话结束 full reflection 接线 + 清死代码 | **已验收**（2026-09-19 统一签收） | 2026-08-03 |
 | [20260803-rule-accept-default-false](./20260803-rule-accept-default-false.md) | RULE-ACCEPT：auto_accept 默认值对齐 P0 | **已验收** | 2026-08-03 |
 | [20260803-pre-dev-review-rules](./20260803-pre-dev-review-rules.md) | 开发前全面审查 + 规则定稿（P1/AGENTS 增补、README/docker 修正、TODO 迁移、缺口表） | **已验收**（规则/文档） | 2026-08-03 |
 | [20260803-authoritative-docs](./20260803-authoritative-docs.md) | 权威文档体系（P0/P1/P2 + docs 索引 + 台账） | **已验收**（文档） | 2026-08-03 |
-| [20260915-persona-roster](./20260915-persona-roster.md) | 人物名册：六角色入册 + GUI 前后端接线 + 大导演 + 侧栏小字改「他是谁」（§C）+ 搭子小乐下线（§C） | 工程通过 · 待目视 | 2026-09-15 |
+| [20260915-persona-roster](./20260915-persona-roster.md) | 人物名册：六角色入册 + GUI 前后端接线 + 大导演 + 侧栏小字改「他是谁」（§C）+ 搭子小乐下线（§C） | **已验收**（2026-09-19 统一签收） | 2026-09-15 |
+| [20260916-gui-context-compaction](./20260916-gui-context-compaction.md) | 上下文压缩接进 GUI/server/CLI/agent：判据收敛到一处 + 压缩落盘可回放（长会话不再越来越慢） | 工程通过 · 待目视 | 2026-09-16 |
+| [20260916-projects-group-phase0](./20260916-projects-group-phase0.md) | 项目组 第 0 期：立三（扫地僧/吕老师/小宋）· 下三（小谢/小金/小乐）· 指路改向 + 防回归测试 | 工程通过 · 待目视 | 2026-09-16 |
+| [20260917-projects-group-phase2](./20260917-projects-group-phase2.md) | 项目组 第 2 期：活跑得起来了（接力事件 / 决定文件 + 点头 / 「这一期」带 + 交给…） | 工程通过 · 待目视 | 2026-09-17 |
+| [20260917-projects-group-phase1](./20260917-projects-group-phase1.md) | 项目组 第 1 期：组真的存在（会话 / 侧栏 / 名册 / 缺席）· 会话多一层归属 + 提示词组块 + 说话人 | 工程通过 · 待目视 | 2026-09-17 |
+| [20260917-projects-group-phase3](./20260917-projects-group-phase3.md) | 项目组 第 3 期：它得先学会你（三档归属 / 教学回路两条路 / 出处与版本 / 退回上一版） | 工程通过 · 待目视 | 2026-09-17 |
+| [20260918-projects-group-phase4](./20260918-projects-group-phase4.md) | **项目组 · 第 4 期**（一条会话跑一年：按天分层 + 翻旧账） | **已验收**（2026-09-19 统一签收） | 2026-09-18 |
+| [20260918-audit-fixes](./20260918-audit-fixes.md) | **体检收口**（上下文不再被折成空白 · 重复记忆不再入库 · 流式重新可见 · 单轮 token 不再爆） | **已验收**（2026-09-19 统一签收） | 2026-09-18 |
+| [20260918-reaudit](./20260918-reaudit.md) | 第二轮全量复审（只读·5 域并行）：5 条 P0（私钥入库且进历史 / 门禁只卡 GUI 两处 / P0 未收编工位项目组 / 数据根在 git 内 / 试用可本地重置）+ 13 条 P1；含门禁基线与一处上一轮数字修正 | 用户已裁决分批修：**第一批（P0-1/2/4）已收** → 见 `20260918-license-hardening`；P0-3 / P0-5 与其余 P1 待下批 | 2026-09-18 |
+| [20260921-id-index-handoff](./20260921-id-index-handoff.md) | **素材带 ID + 索引，接力只传 ID**（**已验收**）：治「下游把上游成品反复整读」——实测一条链路读入 **≈23.5 万字**、单轮输入中位 12.4 万 tokens。改法不引数据库：素材分两层（成品 + `index-<日期>.md`），ID 由主循环 `awk` **确定性**生成，吕老师按索引筛完只交 ID、小宋拿 ID 回成品定点取。实跑：吕老师整读 0 次（读入 ≈1.9 万字符）、小宋整读 0 次（≈0.8 万），选题单 48.7KB → 13.5KB，成品格式一字未改 | **已验收** | 2026-09-21 |
+| [20260921-tighten-two-findings](./20260921-tighten-two-findings.md) | **收紧上一批的两个发现**（**已验收**）：① 吕老师「角度」列写死「只写角度、不许带素材外的事实与数字；数字必须能指回取回来的那三行」+ 守卫；② CLI 的 host 装配链补上 `StampedHost`（与 GUI 同层同判据，`speaker` 一处算两处用）——实跑 `decision` 落盘 `by: lv-lao-shi`。选题单/成品格式一字未改 | **已验收** | 2026-09-21 |
+| [20260921-material-read-by-id](./20260921-material-read-by-id.md) | **按 ID 取料（`material_read`）**（**已验收**）：一个工作区工具替掉「grep 拿行号 + read 算偏移」两步——引擎算路径与行号，模型不算。小宋这一棒工具调用 **15 → 6**、取料来回 **11 → 1**，成稿格式一字未改。同时**否决**了「把素材接进 `hermes-sources`」：实测一天 182 条就撞 200 上限、catalog 涨 26 倍、入库平方级、`source_read` 一次吐 12k 字符 | **已验收** | 2026-09-21 |
+| [20260922-wang-hai-yan-contract-clean](./20260922-wang-hai-yan-contract-clean.md) | **王海燕契约去旧（只留现行动作）**：契约里混着三份删除名单、两处 Wind 说明、整节变更史、写死 `2026-09-20` 的主循环模板和两个已删站的工单示例 —— 每一条都会被当成现行命令执行。本批把「史」整类移出契约（402→368 行 / 31.4KB→28.0KB）、删除名单三处并一处、统计行规格与 bash 实际输出对齐、`d=$(date +%F)`；防回归测试 30/30。**遗留**：`test/memories/…第三版` 里 Wind 仍列在「先抓档」 | 实施完成 · 测试通过 · **待用户手测** | 2026-09-22 |
+| [20260922-lv-scope-and-say-it-plain](./20260922-lv-scope-and-say-it-plain.md) | **吕老师只管筛选（与时间彻底无关）+ 三个人物「说人话 · 先看后落盘」**：吕老师契约里**一个时间词都不剩**（`秒`/`配速`/`时长`/`分钟`/`时间` 全清，连「我不定秒数」这种否定句也删）；选题单正文改成**三板块分段、一条新闻一组三行**（`ID ｜ 来源` / 这条新闻是什么 / 为什么播它，有几条写几组，三板块之后仍是弃稿台账）；配速与 120 秒/540 字硬数落到小宋，并加「字数只自检一次」；小宋 / 小雨新增「**先给人看，再落盘**」（没点头不许写文件）；三个人各加「给用户的话（说人话）」并写死内部词黑名单；工具 `decision` 的 `items` 从 schema 撤下 `seconds`（引擎字段保留兼容旧文件）。**待用户重编重启 GUI 手测** | 实施完成 · 测试通过（persona 30 / tools 157 / reflect 76 · clippy 绿） · **待生效手测** | 2026-09-22 |
+| [20260922-lv-news-standard-v1](./20260922-lv-news-standard-v1.md) | **吕老师换判据 —— 落《财富早知道·新闻筛选执行标准 V1.0》**（A 批）：整块删掉我们自己拟的「入选六标准 / 弃稿五标准」，换成用户定稿 V1.0 的执行版——**三道门**（财经属性门 / 三具体门 / 归栏四条边界）→ **相似复检** → **同日竞争八步**（不是分数）→ **主稿 12—20 + 公告池（A/B/C/D，上限 30）** + 落笔句式（时间锚点 + 主体+动作+数字）；并**修掉一处错口径**：「中方主导的涉外事务照收」删除——元首出访照样过第一道门，这正是昨天把习近平访美放上头版的直接原因。标准原件留档 `docs/spec/caifu-zaozhidao-news-standard.md`；契约 0.7.0 → **1.0.0**（243 行 / 18.9KB）。**B 批**（团队/小宋/小雨）与 **C 批**（王海燕：动态窗口 / 事件合并 / 归栏复检 / 信源三级）见台账 §5 的九条遗漏 | 实施完成 · 测试通过（persona 30/30 · clippy 绿） · **待生效手测** | 2026-09-22 |
+| [20260922-batch-b-three-person-table](./20260922-batch-b-three-person-table.md) | **财富早知道改三步三人 —— 口播那一棒取消，小雨不坐这张桌**（B 批）：团队名册 4 → 3（王海燕 / 吕老师 / 小宋），四步重写为**三步**；小宋契约 0.5.0 → **0.6.0**，产物换成能直接读的**书面稿**（标题行 + 导语 + 三栏目正文 + 公告池，**一条一段、不设字数硬数**），公告池照抄吕老师的写法；540 字 / 120 秒硬数作废（那是**节目时长**的产物，这一期不按时长交付）；三人契约里「念 / 口播 / 小雨」整块清掉、不留史；小雨按用户裁决「**不留**」——**不坐这张桌、工位保留**（要彻底下线一句 `retired: true` 即可）。连带同步 `docs/spec/projects.md` 与引擎/GUI/channel 的测试锚点 | 实施完成 · 测试通过（core 130 · gui 49+2+2 · channel 43 · clippy 零警告） · **待重编重启 GUI 手测** | 2026-09-22 |
+| [20260922-batch-c-window-and-source-tier](./20260922-batch-c-window-and-source-tier.md) | **采集窗口 / 信源层级 / 事件组合并**（C 批）：王海燕契约 1.4.0 → **1.5.0** —— 时间口径从「当天」换成 `[上一期发布时刻, 本期发布时刻)`（发布时刻固定 06:00，周末不按自然日截断；`T_prev` 由 `outputs/` 上一期目录推出，挂 `FALLBACK_TIME_WINDOW`），窗口**写进卷首**、卷间空档 ≥6h 标 `COVERAGE_GAP`；条目第一字段从**含义未定义**的 `【A／B／C】` 换成**站点属性**的 `【官方／主流／其他】`（只定要不要再找一个来源，不进重要性、不进排序），索引去等级列变 **5 列**；吕老师新增**事件组**（同一条链只算一个主稿名额）。连带清掉团队名册 / `projects.md` / 标准 §7.2 / mock 里的旧口径，并修了 `web_fetch` 长页聚焦「只认提示词里第一个日期」的跨天缺陷。接栏 bash 在临时工作区实跑通过 | 实施完成 · 测试通过（core 130 · tools 158 · clippy 零警告） · **待重编重启 GUI 手测** | 2026-09-22 |
+| [20260922-decision-seconds-and-contract-audit](./20260922-decision-seconds-and-contract-audit.md) | **决定里的「秒数」死路清掉（A 批第 11 条）+ 人物契约全量校对**：节目时长时代留下的 `seconds` 已经**没有任何一环能产生**（吕老师与时间无关、小宋不读秒数、这一期交付书面稿），于是从**整条链**撤掉：引擎 `Item` → 工具说明 → GUI 视图 → TS 类型 → 渲染分支 → i18n 文案；旧文件（头里带 `seconds:`）靠 serde 宽松继续可读，并加测试钉死。另一半是**契约校对**（两条只读子代理并行审计 契约 / 规格 / 代码三方一致性）：王海燕索引示例多一列旧等级（照抄就生成六列）、红线里「不准漏 A 级」、「概要能不能只凭列表页」三处自相矛盾；吕老师版本补 bump 1.1.0；团队名册把公告池「上限 30」改回「C 级截断到 30」（A／B 全量）；七处「说话人 = 接口人」旧注释（代码早就是**第一棒采集**）；`projects.md` 五处口径（说话人 / 棒跟产物走 / §4.4 两行「未落地」自语矛盾 / 交付形态）；预览假数据从四人桌改回三步三人并修正拼错的团队 id | 实施完成 · 测试通过（core 131 · tools 158 · gui 49+2+2 · channel 43 · clippy 零警告） · **待重编重启 GUI 手测** | 2026-09-22 |
+| [20260922-xiao-yu-priming-script](./20260922-xiao-yu-priming-script.md) | **小雨回到桌上 —— 口播稿「默认 2 分钟 · 装不下问用户 · 不点头不落稿」**：旧口径把口播稿长度挂在成稿身上（`±10%`），「多长」没有用户的位置；本批改成**默认 2 分钟是默认值不是上限**——量大时停下报「预计 X 分 Y 秒」并**问用户加到多久**（加多久用户说了算），并写死「**不加、不删**」（不另加开场/结尾段、不为塞进 2 分钟删条）。落盘那条换成用户原词「**不点头，不落稿**」。小雨契约 0.3.0 → **0.4.0**；`persona.rs` 断言换词 + 反钉 `!contains("±10%")`。桌上三棒不变（B 批的「不坐桌」指财富早知道那张桌，工位照常接客） | 实施完成 · 测试通过（core 131 · rustfmt 干净） · **GUI 已重编重启（15:04 构建 / pid 74940）· 待用户手测** | 2026-09-22 |
+| [20260922-tier-vs-pool-separation](./20260922-tier-vs-pool-separation.md) | **两套分级防串**（采集端 `【官方／主流／其他】` ↔ 公告池 `A／B／C／D`）：两套同构的等级词挂在同一条接力链的相邻两环节上，只靠一句「别混」隔开，模型极易把 `【官方】` 读成「A 级」——那是拿**站点属性**污染入选与排序。两端各写硬话（两套体系 / 永不许互相套用 / 不许换算 / 缺了不许补），并写死**采集端不许出现 `A／B／C／D`**；`persona.rs` 两端断言补词 + 一条反钉 `!contains("【A／B／C／D】")` | 实施完成 · 测试通过（core 131 · rustfmt 干净） · **GUI 已重编重启（15:04 构建 / pid 74940）· 待用户手测** | 2026-09-22 |
+| [20260922-window-today-00-to-now](./20260922-window-today-00-to-now.md) | **采集窗口定稿 —— 今天 00:00 → 我按下采集那一刻**：旧窗口 `[上一期发布时刻, 本期发布时刻)`（固定 06:00）把「该采什么」定义在**上一期**上，历史一清空就退化成「0 点到 6 点」（下午跑等于丢掉当天大部分新闻）。新口径两端都只依赖**当场可测的事实**：`date +%F` 的 00:00 与 `date '+%H:%M'`；`T_prev`/`T_current`/`FALLBACK_TIME_WINDOW`/`COVERAGE_GAP`/卷间衔接行整块撤下（7 条反钉）。王海燕契约 1.5.0 → **1.6.0**；web_fetch 注释与跨日夹具、material 夹具、标准 §8 同步；接栏 bash 在临时工作区实跑通过（卷首 `窗口 2026-09-22 00:00 — 2026-09-22 16:58`） | 实施完成 · 测试通过（core 131 · tools 158 · clippy 零警告） · **GUI 已重编重启（17:29 构建 / pid 79349）· 待用户手测** | 2026-09-22 |
+| [20260922-release-v1.5](./20260922-release-v1.5.md) | **v1.5.0 发布**（团队接力 / 财富早知道项目组 / 采集与审稿定稿）：1.4 之后工作树里躺着一整层互相依赖的新东西（项目组与接力、团队名册与授权按人物开关、采集名单/窗口/格式、审稿标准 V1.0、按 ID 取料、口播契约），契约又是 `include_str!` 编进二进制的——少发一版，客户端拿到的是旧契约。版本四处对齐 1.5.0（lockfile 只改自身两处）；重写发布说明；全量门禁：`cargo fmt --all -- --check` 干净（顺手清 `hermes-tools` 三文件的历史 fmt 欠账）· `clippy --workspace -D warnings` 零告警 · `LEBI_DATA_DIR=/tmp/lebi-gate-15 cargo test --workspace` 全绿 · 前端 `tsc --noEmit` + `npm run build` 通过。本机不构建安装包 —— dmg/exe 交给 `release.yml` | 实施完成 · 测试通过 · **已推 main + tag v1.5.0（CI 出包）** | 2026-09-22 |

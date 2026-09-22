@@ -11,6 +11,7 @@ import type {
 import { Button, ui } from "../common/ui";
 import { toast } from "../../utils/toast";
 import { playSeal } from "../../utils/ritual";
+import { errorText } from "../../utils/errorText";
 
 type ConflictAction = "keep_new" | "keep_old" | "merge" | "scope_split" | "skip";
 
@@ -38,7 +39,7 @@ export function ReflectionReview({ result, onChange }: ReflectionReviewProps) {
       playSeal(t("ritual.sealSkill"));
       toast.success(t("toast.skillAccepted"));
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorText(e));
     }
   };
 
@@ -67,7 +68,7 @@ export function ReflectionReview({ result, onChange }: ReflectionReviewProps) {
       playSeal(t("ritual.sealMemory"));
       toast.success(t("toast.memoryAccepted"));
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorText(e));
     }
   };
 
@@ -123,7 +124,7 @@ export function ReflectionReview({ result, onChange }: ReflectionReviewProps) {
       }
       toast.success(t("toast.conflictResolved"));
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorText(e));
       throw e;
     }
   };
@@ -165,18 +166,20 @@ export function ReflectionReview({ result, onChange }: ReflectionReviewProps) {
                   <button
                     type="button"
                     onClick={() => void acceptSkill(c)}
-                    className="p-1.5 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-app-success"
+                    className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-app-success text-xs font-medium"
                     title={t("reflect.accept")}
                   >
                     <Check size={14} />
+                    {t("reflect.accept")}
                   </button>
                   <button
                     type="button"
                     onClick={() => rejectSkill(c)}
-                    className="p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/40 text-app-danger"
+                    className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg hover:bg-app-muted dark:hover:bg-slate-700/60 text-app-fg-secondary text-xs font-medium"
                     title={t("reflect.reject")}
                   >
                     <X size={14} />
+                    {t("reflect.reject")}
                   </button>
                 </div>
               </div>
@@ -198,7 +201,7 @@ export function ReflectionReview({ result, onChange }: ReflectionReviewProps) {
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0 space-y-1.5">
                   {isWorkEpisodeCandidate(c) && (
-                    <span className="inline-flex text-[10px] font-medium tracking-wide uppercase px-1.5 py-0.5 rounded bg-app-primary/10 text-app-primary dark:bg-sky-500/15 dark:text-sky-300">
+                    <span className="inline-flex text-xs font-medium tracking-wide uppercase px-1.5 py-0.5 rounded bg-app-primary/10 text-app-primary dark:bg-sky-500/15 dark:text-sky-300">
                       {t("reflect.workEpisodeBadge")}
                     </span>
                   )}
@@ -210,18 +213,20 @@ export function ReflectionReview({ result, onChange }: ReflectionReviewProps) {
                   <button
                     type="button"
                     onClick={() => void acceptMemory(c)}
-                    className="p-1.5 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-app-success"
+                    className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-app-success text-xs font-medium"
                     title={t("reflect.accept")}
                   >
                     <Check size={14} />
+                    {t("reflect.accept")}
                   </button>
                   <button
                     type="button"
                     onClick={() => rejectMemory(c)}
-                    className="p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/40 text-app-danger"
+                    className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg hover:bg-app-muted dark:hover:bg-slate-700/60 text-app-fg-secondary text-xs font-medium"
                     title={t("reflect.reject")}
                   >
                     <X size={14} />
+                    {t("reflect.reject")}
                   </button>
                 </div>
               </div>
@@ -337,7 +342,7 @@ function ConflictCard({
       <p className="text-sm text-app-fg dark:text-slate-100">{conflict.explain}</p>
 
       <div className="rounded-xl border border-amber-200/70 dark:border-amber-800/50 bg-app-surface/80 dark:bg-slate-900/50 p-2.5">
-        <div className="text-[10px] uppercase tracking-wide text-app-fg-tertiary mb-1">
+        <div className="text-xs uppercase tracking-wide text-app-fg-tertiary mb-1">
           {t("reflect.newCandidate")}
         </div>
         <p className="text-sm text-app-fg dark:text-slate-100">{candidate.fact}</p>

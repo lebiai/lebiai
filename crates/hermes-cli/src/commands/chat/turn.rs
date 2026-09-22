@@ -222,8 +222,21 @@ pub(super) async fn run_one_turn(
 
     let output = result.map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    // 盖上这一轮开口的人（判据仍只有 `speaker_for` 一处）：组会话里棒会换人，
+    // 不盖的话这份 transcript 回放到界面上就分不出谁说的。
+    let mut new_messages = output.new_messages;
+    hermes_core::message::stamp_speaker(
+        &mut new_messages,
+        hermes_core::persona::speaker_for(
+            session.meta.persona.as_deref(),
+            session.meta.team.as_deref(),
+            session.flow.holder(),
+        )
+        .map(|p| p.id.as_str()),
+    );
+
     // Apply new messages to session + persist
-    for msg in &output.new_messages {
+    for msg in &new_messages {
         session.messages.push(msg.clone());
         if let Err(e) = writer.append(&SessionEvent::Message(msg.clone())) {
             tracing::warn!(error=%e, "persist message");

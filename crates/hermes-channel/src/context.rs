@@ -676,7 +676,7 @@ mod tests {
     fn the_persona_block_never_displaces_the_companion_protocol() {
         let pinned = pinned_memory("mem_p", "pinned body");
         let cards = "## Topic cards (index — NOT the wording)\n- 财经内容 (2): sum";
-        let p = hermes_core::persona::get("xiao-xie").unwrap();
+        let p = hermes_core::persona::get("sao-di-seng").unwrap();
         let sources = ContextSources {
             base: Some("BASE"),
             persona: Some(p),
@@ -707,7 +707,7 @@ mod tests {
             mine < pinned_at && pinned_at < cards_at,
             "人物块必须落在记忆与卡之前（规格 §6.1：顺序即断言）"
         );
-        assert!(sys.contains("没依据的话，我不说"));
+        assert!(sys.contains("热闹我不看，我看门道"));
     }
 
     #[test]
@@ -755,7 +755,7 @@ mod tests {
         let without = plain.build_turn_system("帮我改这段标题");
         assert!(!without.contains("你现在是谁"), "{without}");
 
-        let p = hermes_core::persona::get("xiao-xie").unwrap();
+        let p = hermes_core::persona::get("sao-di-seng").unwrap();
         let with = ContextSources {
             persona: Some(p),
             roster: &[],
@@ -776,7 +776,7 @@ mod tests {
     fn the_persona_block_is_inserted_once_per_turn_prompt() {
         // 本文件的 `build_turn_system` 以 `build_session_system` 为前缀，两条
         // 路径共用同一次插入——每轮追加的记忆 / 技能索引不得再插一遍。
-        let p = hermes_core::persona::get("xiao-xie").unwrap();
+        let p = hermes_core::persona::get("sao-di-seng").unwrap();
         let sources = ContextSources {
             base: Some("BASE"),
             persona: Some(p),

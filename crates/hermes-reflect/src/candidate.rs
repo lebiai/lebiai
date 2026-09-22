@@ -14,6 +14,9 @@ use hermes_memory::{
 
 use crate::output::MemoryCandidate;
 
+/// `because` 落盘上限：一句话，别把整段推理塞进 frontmatter。
+const BECAUSE_MAX: usize = 240;
+
 /// zone 兜底：`trim` 后为空的落 `general`。
 ///
 /// 模型常不填 zone，或填一串空白——两边归一，再交给 [`MemoryFrontmatter`]
@@ -32,17 +35,31 @@ pub fn zone_or_general(zone: Option<&str>) -> String {
 /// 归属判定只有 [`hermes_memory::resolve_owner`] 一个地方，这里只传参。
 pub fn frontmatter_for(c: &MemoryCandidate, session_owner: Option<&str>) -> MemoryFrontmatter {
     let zone = zone_or_general(Some(c.zone.as_str()));
-    let owner = resolve_owner(
-        session_owner,
-        c.owner.as_deref(),
-        &zone,
-        &c.tags,
-        OwnerDefault::Global,
-    );
+    let owner = owner_for(c, session_owner);
     let mut fm =
         MemoryFrontmatter::new(Source::Reflection, c.confidence, c.tags.clone(), zone).owned(owner);
     fm.supersedes = c.supersedes.clone();
+    // 「因为什么」跟着一起落盘：丢了它，用户就问不出「这条规矩哪来的」
+    // （`docs/spec/projects.md` §5.1 规矩 2）。太长就截断——它是一句话，不是一篇文章。
+    let because: String = c.rationale.trim().chars().take(BECAUSE_MAX).collect();
+    fm.because = match because.trim() {
+        "" => None,
+        b => Some(b.to_string()),
+    };
     fm
+}
+
+/// 这条候选落盘后会归谁。**只读的同一个判据**（[`resolve_owner`]），给「回执」用：
+/// 用户点完头要看得见这句话落在了谁名下（`docs/spec/projects.md` §5.1 规矩 4），
+/// 但这里**不算第二遍**——跟落盘走的是同一段代码。
+pub fn owner_for(c: &MemoryCandidate, session_owner: Option<&str>) -> Option<String> {
+    resolve_owner(
+        session_owner,
+        c.owner.as_deref(),
+        &zone_or_general(Some(c.zone.as_str())),
+        &c.tags,
+        OwnerDefault::Global,
+    )
 }
 
 /// 落盘：`Project` 落不动（没配项目根）时退回 `User`——模型常提 `Project`，

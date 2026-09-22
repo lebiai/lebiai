@@ -32,7 +32,7 @@ export const ui = {
   sessionIdle:
     "hover:bg-app-muted dark:hover:bg-slate-800/60 text-app-fg dark:text-slate-200 transition-colors duration-[var(--motion-fast)]",
   sectionLabel:
-    "text-[10px] font-semibold uppercase tracking-wider text-app-fg-tertiary",
+    "text-xs font-semibold uppercase tracking-wider text-app-fg-tertiary",
   /** One overlay language. Callers add z-index. */
   overlay:
     "fixed inset-0 flex items-center justify-center bg-black/45 backdrop-blur-[2px]",
@@ -143,7 +143,7 @@ export function Chip({
     <button
       type="button"
       onClick={onClick}
-      className={`px-2.5 py-1 rounded-full text-[12px] transition-colors ${
+      className={`px-2.5 py-1 rounded-full text-xs transition-colors ${
         active
           ? "bg-app-primary-soft dark:bg-blue-950/50 text-app-primary dark:text-blue-300 font-medium"
           : "bg-app-muted dark:bg-slate-800 text-app-fg-secondary hover:text-app-fg"

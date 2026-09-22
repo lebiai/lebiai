@@ -9,6 +9,7 @@ description = "Generic frontmatter document IO (no domain logic)"
 [dependencies]
 hermes-core = { workspace = true }
 anyhow = { workspace = true }
+chrono = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }

@@ -9,7 +9,7 @@ export function UserManual() {
   return (
     <div className="space-y-5 fade-up-in">
       <section className={`${ui.card} p-5 space-y-2`}>
-        <p className="text-[11px] font-medium tracking-wide text-app-fg-tertiary uppercase">
+        <p className="text-xs font-medium tracking-wide text-app-fg-tertiary uppercase">
           {doc.kicker}
         </p>
         <h3 className="text-lg font-semibold text-app-fg dark:text-slate-100">
@@ -46,7 +46,7 @@ export function UserManual() {
             <ol className="space-y-2 pl-0">
               {sec.steps.map((step, i) => (
                 <li key={i} className="flex gap-3 text-sm leading-relaxed text-app-fg">
-                  <span className="shrink-0 mt-0.5 h-5 w-5 rounded-full bg-app-primary-soft dark:bg-blue-950/50 text-app-primary dark:text-blue-300 text-[11px] font-semibold flex items-center justify-center">
+                  <span className="shrink-0 mt-0.5 h-5 w-5 rounded-full bg-app-primary-soft dark:bg-blue-950/50 text-app-primary dark:text-blue-300 text-xs font-semibold flex items-center justify-center">
                     {i + 1}
                   </span>
                   <span className="min-w-0">{step}</span>

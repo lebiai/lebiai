@@ -4,7 +4,7 @@
 |------|------|
 | **编号** | `20260803-token-secure-storage` |
 | **日期** | 2026-08-03 |
-| **状态** | **待验收**（已实施；本机无 Flutter SDK，pub get/analyze/test/build 需 Flutter 环境执行） |
+| **状态** | **已验收**（2026-09-19 统一签收 · 依据与未验项见 [`20260919-acceptance-sweep`](./20260919-acceptance-sweep.md)）；原状态：**待验收**（已实施；本机无 Flutter SDK，pub get/analyze/test/build 需 Flutter 环境执行） |
 | **负责人** | Codex（用户委托）→ 验证需用户在 Flutter 环境执行 |
 | **关联** | `docs/project-map.md` §6 P1 缺口 TOKEN-STORAGE |
 

@@ -4,6 +4,10 @@ use hermes_core::{Result, ToolCallOutcome, ToolSpec};
 use hermes_sources::SourceStore;
 use serde::Deserialize;
 
+/// `source_read` 一次交给模型的正文上限。超了要**说出来**（不能悄悄砍：
+/// 模型会把残缺当完整用，然后照着它下判断）。
+pub const MAX_SOURCE_CHARS: usize = 12_000;
+
 pub fn list_spec() -> ToolSpec {
     ToolSpec {
         name: "source_list".into(),
@@ -102,9 +106,17 @@ pub async fn read_run(store: &SourceStore, args: serde_json::Value) -> Result<To
             is_error: false,
         }),
         Some((meta, text)) => {
-            let clipped: String = text.chars().take(12_000).collect();
+            let clipped: String = text.chars().take(MAX_SOURCE_CHARS).collect();
+            let note = if text.chars().count() > MAX_SOURCE_CHARS {
+                format!(
+                    "\n... (原文共 {} 字，这里只给前 {MAX_SOURCE_CHARS} 字)",
+                    text.chars().count()
+                )
+            } else {
+                String::new()
+            };
             Ok(ToolCallOutcome {
-                content: format!("[{}|《{}》]\n{clipped}", meta.id, meta.title),
+                content: format!("[{}|《{}》]\n{clipped}{note}", meta.id, meta.title),
                 is_error: false,
             })
         }

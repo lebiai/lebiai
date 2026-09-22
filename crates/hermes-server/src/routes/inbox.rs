@@ -124,6 +124,7 @@ pub async fn accept_pending(
     match &item.payload {
         InboxPayload::Memory(c) => {
             // 归属的判定与落盘都在 `hermes-reflect` 里，GUI / server / CLI 同一份实现。
+            // 重复不是错误：条目照样从待审里移除（查重闸门在 `put` 里，P1-4）。
             hermes_reflect::inbox_accept_memory_item(state.memory_store.as_ref(), &item, c)
                 .map_err(|e| ApiError::Internal(e.to_string()))?;
         }

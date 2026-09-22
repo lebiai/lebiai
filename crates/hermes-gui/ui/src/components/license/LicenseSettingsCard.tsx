@@ -121,13 +121,13 @@ export function LicenseSettingsCard() {
                 style={{ width: `${Math.max(pct, pct > 0 ? 4 : 0)}%` }}
               />
             </div>
-            <p className="text-[11px] text-app-fg-tertiary">
+            <p className="text-app-sub text-app-fg-secondary">
               {formatRemaining(status.remainingSecs, t as never)}
             </p>
           </>
         )}
         {isLocked && (
-          <p className="text-[11px] text-app-fg-tertiary">{t("license.remainingNone")}</p>
+          <p className="text-app-sub text-app-fg-secondary">{t("license.remainingNone")}</p>
         )}
       </div>
 

@@ -25,7 +25,8 @@ pub mod skills;
 pub mod uploads;
 
 /// Build the full router with shared `Arc<AppState>`, every route gated by
-/// auth middleware (Bearer, short-lived `?ticket=`, or legacy `?token=`).
+/// auth middleware (Bearer; short-lived `?ticket=`; legacy `?token=` only on
+/// the WebSocket handshake).
 pub fn build(state: Arc<AppState>, token: Arc<String>, tickets: Arc<TicketStore>) -> Router {
     let auth = AuthState {
         token: token.clone(),

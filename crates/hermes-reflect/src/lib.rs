@@ -9,7 +9,6 @@
 
 pub mod candidate;
 pub mod compile;
-pub mod deferred;
 pub mod episode;
 pub mod focused;
 pub mod inbox;
@@ -26,9 +25,6 @@ pub mod topics;
 
 pub use candidate::{frontmatter_for, put_with_fallback, zone_or_general};
 pub use compile::{compile_profile, profile_input};
-pub use deferred::{
-    clear as deferred_clear, load as deferred_load, save as deferred_save, DeferredCandidate,
-};
 pub use episode::{
     episode_is_self_contained, finalize_reflection_output, finalize_reflection_output_with,
     is_internal_noise_text, is_work_episode, normalize_candidate, seed_episode_from_summary,
@@ -36,9 +32,9 @@ pub use episode::{
 pub use focused::reflect_focused;
 pub use inbox::{
     accept_memory_item as inbox_accept_memory_item, clear as inbox_clear, count as inbox_count,
-    enqueue_from_reflection, enqueue_from_reflection_marked, get as inbox_get, list as inbox_list,
-    memory_passes_gate, remove as inbox_remove, skill_passes_gate, EnqueueMark, InboxItem,
-    InboxPayload, InboxSource,
+    enqueue_candidate, enqueue_from_reflection, enqueue_from_reflection_marked, get as inbox_get,
+    list as inbox_list, memory_passes_gate, remove as inbox_remove, skill_passes_gate, EnqueueMark,
+    InboxItem, InboxPayload, InboxSource,
 };
 pub use ledger::{
     needs_distill, new_distill_id, record_success, DistillCursor, DistillSessionGuard,

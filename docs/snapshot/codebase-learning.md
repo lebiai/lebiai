@@ -154,11 +154,19 @@ LEBI_DATA_DIR:14  →  HERMES_DATA_DIR(兼容):18  →  指针文件 data-dir.tx
    文件头 `:6` 写着「Private key never ships in the client」，`docs/spec/license-ux.md:260` 也写「发版前务必轮换」。
    → 拿到本仓库（`origin git@github.com:lebiai/lebiai.git`）的人可**自签永久授权码**，签发体系对已发布版本失效。
    **需产品/商业决策（轮换密钥 + seed 移出源码），不是随手能改的补丁。**
+   > **已修复（2026-09-18）：** 密钥对已轮换，私钥移出仓库、只留签发机；全仓扫描守卫测试防复发。
+   > 见 [`../records/20260918-license-hardening.md`](../records/20260918-license-hardening.md)。
+   > 本条只描述 2026-09-15 那天的树。
 2. **[亲验] 授权只卡两个点**：`hermes-gui/src/commands/chat.rs:92`、`review.rs:103`（`can_use_main`）。
    过期后 CLI / Flutter(server) / IM 全功能，GUI 的反思、记忆、微信连接也未设门。
    「授权只锁桌面」是已拍板（`project-map.md` §6），但**桌面内部**哪些该锁没写清。
+   > **已修复（2026-09-18）：** 门禁收进 provider 装配层（`hermes-core::LicenseGatedProvider`
+   > 由 `hermes-llm::Config::build_active_provider` 套上），四个入口一起覆盖。见同上台账。
 3. **[子代理] server 无 TLS，且仍接受 legacy `?token=`**（`hermes-server/src/auth.rs:129-133`）；
    `data-dir/reset`、`config PUT` 等破坏性写面同一 token 即可（`routes/config.rs:333,144`）。默认 loopback + 仅 warn（`lib.rs:46-51`）。
+   > **已收窄（2026-09-19）：** `?token=` 现在**只在 WebSocket 握手**被接受（浏览器没法给 WS 设 header）；
+   > 普通 REST 带 `?token=` 一律 401。**TLS 仍未内置**，公网必须反代。见
+   > [`../records/20260919-batch3-structure.md`](../records/20260919-batch3-structure.md)。
 
 ### B · 未接线 / 文档不实（诚实性）
 
@@ -183,7 +191,11 @@ LEBI_DATA_DIR:14  →  HERMES_DATA_DIR(兼容):18  →  指针文件 data-dir.tx
 2. **[子代理] `url_safety` 两份且已分叉**：`hermes-tools/src/url_safety.rs` 放行 `198.18/15`（Clash/Surge fake-ip），
    `hermes-skills/src/url_safety.rs` 不放行。
 3. **[子代理] 双待审队列**：`deferred.jsonl`（CLI）与 `pending-review.json`（GUI/server）并行，靠 `MicroApplyConfig::queue_deferred` 切换（`micro_apply.rs:30-31,53`）。
+   > **已修复（2026-09-19）：** 只剩一条队列 `pending-review.json`（原子写）；`deferred.rs` 已删，
+   > CLI 会把旧 `deferred.jsonl` 并进来后删掉。见 [`../records/20260919-batch3-structure.md`](../records/20260919-batch3-structure.md)。
 4. **[子代理] embedding 是死代码**：`hermes-memory` 的 `embed` feature 无任何 crate 启用（`Cargo.toml:23-26`），`embed.rs` 不可达（`scoped.rs:226-230` 自认）。
+   > **复核（2026-09-19）：** 说法成立，但**不是遗物** —— `docs/explore/work-sources.md` 写着
+   > 「v1 不上向量，保持关，以后再加」。**有意保留**，见 [`../records/20260919-batch3-structure.md`](../records/20260919-batch3-structure.md)。
 5. **[子代理] 数据根迁移只在 GUI/CLI 调用** → 老 `.small-rust-hermes` 用户走 Flutter 后端会看到空的 `~/.lebi-ai`。
 6. **[子代理] 启动即改用户文件**：`hermes-core/src/workspace_hygiene.rs:12-27,45-85` 按文件名子串（含「判决」「民初」「法条」）
    把文件搬进 `_quarantine_lawyer/`，不可逆；GUI `state.rs:225` / server `state.rs:97` 启动执行。值得产品复核。

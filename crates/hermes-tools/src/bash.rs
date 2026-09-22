@@ -19,7 +19,10 @@ fn default_timeout() -> u64 {
     120_000
 }
 
-const MAX_OUTPUT_CHARS: usize = 30_000;
+/// 一次 `bash` 交给模型的上限（头尾各留一段，中间省略）。与引擎侧
+/// `hermes_core::compaction::MAX_TOOL_RESULT_CHARS` 是同一根绳子：
+/// 在 `crate::TOOL_RESULT_CEILINGS` 上登记，那条断言会拦住「比引擎上限还大」。
+pub const MAX_OUTPUT_CHARS: usize = 30_000;
 
 fn cap_output(s: &str, max: usize) -> String {
     let chars: Vec<char> = s.chars().collect();

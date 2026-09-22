@@ -118,6 +118,7 @@ fn flush_with_cancel_pairing(messages: &mut Vec<Message>, mut tool_results: Vec<
             role: Role::User,
             content: tool_results,
             at: None,
+            speaker: None,
         });
     }
 }
@@ -187,6 +188,21 @@ pub struct TurnOutput {
     pub usage: Usage,
 }
 
+/// 请求体预算：判据只有一份，落在 `hermes_core::compaction`（GUI/CLI/agent/server
+/// 共用同一套折叠规则），这里只转发，免得每个入口各写一遍。
+fn fold_for_request(messages: &[hermes_core::Message]) -> Vec<hermes_core::Message> {
+    hermes_core::compaction::fold_for_request(
+        messages,
+        hermes_core::compaction::RequestFold::default(),
+    )
+}
+
+/// 撞上限、且一个字正文都没吐出来时，最多把预算加到多少再重来一次。
+///
+/// 只加一倍、只加一次：推理把预算吃光是**偶发**（问得越绕越长），不是常态；
+/// 无限重试会变成一个用户看不见的扣费黑洞。
+const TRUNCATION_RETRY_CEILING: u32 = 32_768;
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_turn<F>(
     provider: &dyn LlmProvider,
@@ -219,118 +235,172 @@ where
         let req = CompletionRequest {
             model: config.model.clone(),
             system: config.system.clone(),
-            messages: messages.clone(),
+            // 每次往返都重发整段历史，所以这里按预算重建请求体：旧的折叠、最近的上限
+            // 截断（工具输出 / 工具入参 / 长正文三种块）。**落盘一字不动**（`messages` 本身没被碰），模型需要
+            // 原文时可以自己翻旧账。见 `hermes_core::compaction::RequestFold`。
+            messages: crate::fold_for_request(&messages),
             tools: tools.to_vec(),
             max_tokens: config.max_tokens,
             temperature: None,
             enable_caching: provider.capabilities().prompt_caching,
         };
 
-        let mut stream = match provider.stream(req).await {
-            Ok(s) => s,
-            Err(e) => {
-                on_event(TurnEvent::Error(format!("stream start: {e}")));
-                on_event(TurnEvent::Done);
-                return Err(e);
-            }
-        };
+        // 推理模型的思考（`reasoning_content`）和正文**共用**同一个 `max_tokens`：
+        // 思考把预算吃光时，这一轮会「一个字都没说」地结束。2026-09-20 实测就是这样
+        // 白等掉一整轮（累计输出里约四成是看不见的推理）。那一轮本来是要作废的，
+        // 所以给它一次加预算重来的机会——重来只有赚。
+        let mut budget = config.max_tokens;
+        let mut retried_after_truncation = false;
 
-        let mut final_resp = None;
-        // Accumulate deltas so cancel mid-stream can still persist a partial reply.
-        let mut partial_text = String::new();
-        let mut partial_thinking = String::new();
+        let resp = 'attempt: loop {
+            let mut attempt_req = req.clone();
+            attempt_req.max_tokens = budget;
 
-        loop {
-            tokio::select! {
-                biased;
-                _ = &mut cancel => {
-                    // Flush partial assistant content if Final never arrived.
-                    if final_resp.is_none()
-                        && (!partial_text.is_empty() || !partial_thinking.is_empty())
-                    {
-                        let mut content = Vec::new();
-                        if !partial_thinking.is_empty() {
-                            content.push(ContentBlock::Thinking {
-                                thinking: partial_thinking,
-                                signature: None,
+            let mut stream = match provider.stream(attempt_req).await {
+                Ok(s) => s,
+                Err(e) => {
+                    on_event(TurnEvent::Error(format!("stream start: {e}")));
+                    on_event(TurnEvent::Done);
+                    return Err(e);
+                }
+            };
+
+            let mut final_resp = None;
+            // Accumulate deltas so cancel mid-stream can still persist a partial reply.
+            let mut partial_text = String::new();
+            let mut partial_thinking = String::new();
+
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut cancel => {
+                        // Flush partial assistant content if Final never arrived.
+                        if final_resp.is_none()
+                            && (!partial_text.is_empty() || !partial_thinking.is_empty())
+                        {
+                            let mut content = Vec::new();
+                            if !partial_thinking.is_empty() {
+                                content.push(ContentBlock::Thinking {
+                                    thinking: partial_thinking,
+                                    signature: None,
+                                });
+                            }
+                            let stopped_note = "\n\n*(Generation stopped.)*";
+                            let text = if partial_text.is_empty() {
+                                "*(Generation stopped before any answer text.)*"
+                                    .to_string()
+                            } else {
+                                format!("{partial_text}{stopped_note}")
+                            };
+                            content.push(ContentBlock::Text { text });
+                            messages.push(Message {
+                                role: Role::Assistant,
+                                content,
+                                at: None,
+                                speaker: None,
                             });
                         }
-                        let stopped_note = "\n\n*(Generation stopped.)*";
-                        let text = if partial_text.is_empty() {
-                            "*(Generation stopped before any answer text.)*"
-                                .to_string()
-                        } else {
-                            format!("{partial_text}{stopped_note}")
-                        };
-                        content.push(ContentBlock::Text { text });
-                        messages.push(Message {
-                            role: Role::Assistant,
-                            content,
-                            at: None,
+                        on_event(TurnEvent::Cancelled);
+                        on_event(TurnEvent::Done);
+                        let new_messages = messages[turn_start_idx..].to_vec();
+                        return Ok(TurnOutput {
+                            new_messages,
+                            usage: cumulative_usage,
                         });
                     }
-                    on_event(TurnEvent::Cancelled);
-                    on_event(TurnEvent::Done);
-                    let new_messages = messages[turn_start_idx..].to_vec();
-                    return Ok(TurnOutput {
-                        new_messages,
-                        usage: cumulative_usage,
-                    });
-                }
-                ev = stream.next() => {
-                    let Some(ev) = ev else { break };
-                    match ev {
-                        Ok(StreamEvent::TextDelta { text, .. }) => {
-                            partial_text.push_str(&text);
-                            on_event(TurnEvent::TextDelta(text));
-                        }
-                        Ok(StreamEvent::ThinkingDelta { text, .. }) => {
-                            partial_thinking.push_str(&text);
-                            on_event(TurnEvent::ThinkingDelta(text));
-                        }
-                        Ok(StreamEvent::ToolUseStart { id, name, .. }) => {
-                            on_event(TurnEvent::ToolUseStart { id, name });
-                        }
-                        Ok(StreamEvent::Final(resp)) => {
-                            final_resp = Some(resp);
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            on_event(TurnEvent::Error(format!("stream: {e}")));
-                            on_event(TurnEvent::Done);
-                            return Err(e);
+                    ev = stream.next() => {
+                        let Some(ev) = ev else { break };
+                        match ev {
+                            Ok(StreamEvent::TextDelta { text, .. }) => {
+                                partial_text.push_str(&text);
+                                on_event(TurnEvent::TextDelta(text));
+                            }
+                            Ok(StreamEvent::ThinkingDelta { text, .. }) => {
+                                partial_thinking.push_str(&text);
+                                on_event(TurnEvent::ThinkingDelta(text));
+                            }
+                            Ok(StreamEvent::ToolUseStart { id, name, .. }) => {
+                                on_event(TurnEvent::ToolUseStart { id, name });
+                            }
+                            Ok(StreamEvent::Final(resp)) => {
+                                final_resp = Some(resp);
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                on_event(TurnEvent::Error(format!("stream: {e}")));
+                                on_event(TurnEvent::Done);
+                                return Err(e);
+                            }
                         }
                     }
                 }
             }
-        }
 
-        let resp = match final_resp {
-            Some(r) => r,
-            None => {
-                let msg = "stream ended without Final event";
-                on_event(TurnEvent::Error(msg.into()));
-                on_event(TurnEvent::Done);
-                return Err(hermes_core::Error::Provider(msg.into()));
+            let resp = match final_resp {
+                Some(r) => r,
+                None => {
+                    let msg = "stream ended without Final event";
+                    on_event(TurnEvent::Error(msg.into()));
+                    on_event(TurnEvent::Done);
+                    return Err(hermes_core::Error::Provider(msg.into()));
+                }
+            };
+
+            // 花掉的 token 照实报——废弃的那一次也真的花了钱，不能藏。
+            on_event(TurnEvent::Usage {
+                input_tokens: resp.usage.input_tokens,
+                output_tokens: resp.usage.output_tokens,
+                cache_read_tokens: resp.usage.cache_read_tokens,
+                cache_creation_tokens: resp.usage.cache_creation_tokens,
+            });
+            cumulative_usage.input_tokens += resp.usage.input_tokens;
+            cumulative_usage.output_tokens += resp.usage.output_tokens;
+            cumulative_usage.cache_read_tokens += resp.usage.cache_read_tokens;
+            cumulative_usage.cache_creation_tokens += resp.usage.cache_creation_tokens;
+
+            // 输出顶到上限有两种形态：正文一个字没写出来（推理吃光预算），或工具入参
+            // 被切成两半（典型：一次 `write` 写整卷）。两种都等于「这一轮本来要作废」，
+            // 所以共用同一次加预算重来的机会。
+            let lost_output_at_cap = resp.stop_reason == StopReason::MaxTokens
+                && (!Message {
+                    role: Role::Assistant,
+                    content: resp.content.clone(),
+                    at: None,
+                    speaker: None,
+                }
+                .has_sendable_content()
+                    || !resp.truncated_tool_ids.is_empty());
+            if lost_output_at_cap && !retried_after_truncation && budget < TRUNCATION_RETRY_CEILING
+            {
+                retried_after_truncation = true;
+                budget = budget.saturating_mul(2).min(TRUNCATION_RETRY_CEILING);
+                on_event(TurnEvent::TextDelta(format!(
+                    "（这一轮的输出预算用完了，我加到 {budget} tokens 重来一次。）\n"
+                )));
+                continue 'attempt;
             }
+
+            break 'attempt resp;
         };
 
-        on_event(TurnEvent::Usage {
-            input_tokens: resp.usage.input_tokens,
-            output_tokens: resp.usage.output_tokens,
-            cache_read_tokens: resp.usage.cache_read_tokens,
-            cache_creation_tokens: resp.usage.cache_creation_tokens,
-        });
-        cumulative_usage.input_tokens += resp.usage.input_tokens;
-        cumulative_usage.output_tokens += resp.usage.output_tokens;
-        cumulative_usage.cache_read_tokens += resp.usage.cache_read_tokens;
-        cumulative_usage.cache_creation_tokens += resp.usage.cache_creation_tokens;
-
-        let assistant_msg = Message {
+        let mut assistant_msg = Message {
             role: Role::Assistant,
             content: resp.content.clone(),
             at: None,
+            speaker: None,
         };
+        // 一轮什么都没产出的情况（典型：输出顶到 `max_tokens`，正文还没开始写）不许留成
+        // 空 assistant——那会让这个会话之后每一次请求都被 provider 拒收（2026-09-20 实测）。
+        // 换成一句人话，用户至少知道是「这轮没出东西」，而不是没人应。
+        if !assistant_msg.has_sendable_content() {
+            let note = format!(
+                "（这一轮没能产出内容：输出在 {} tokens 处被上限截断。再说一句「继续」，\
+                 或者把这一步拆小一点。）",
+                config.max_tokens
+            );
+            on_event(TurnEvent::TextDelta(note.clone()));
+            assistant_msg = Message::assistant_text(note);
+        }
         messages.push(assistant_msg);
 
         // Pre-fill placeholder tool_results for truncated tool_use blocks so
@@ -369,7 +439,15 @@ where
                     role: Role::User,
                     content: tool_results,
                     at: None,
+                    speaker: None,
                 });
+            }
+            // 输出顶到上限把工具入参截断的那一轮**不许在这里收工**：截断错误刚刚已经
+            // 作为工具结果喂回去了，模型看得见，也就能自己拆小重来。以前这里直接
+            // `break`，结果是三分钟采集合成完之后，用户只看到一条「Tool call truncated」，
+            // 一个字都没拿到（2026-09-20 实跑）。轮次上限照旧兜底。
+            if resp.stop_reason == StopReason::MaxTokens && !resp.truncated_tool_ids.is_empty() {
+                continue;
             }
             hit_round_cap = false;
             break;
@@ -397,6 +475,7 @@ where
                     role: Role::User,
                     content: tool_results,
                     at: None,
+                    speaker: None,
                 });
                 continue;
             }
@@ -650,6 +729,7 @@ where
             role: Role::User,
             content: tool_results,
             at: None,
+            speaker: None,
         };
         messages.push(result_msg);
 
@@ -677,7 +757,7 @@ where
         let req = CompletionRequest {
             model: config.model.clone(),
             system: config.system.clone(),
-            messages: synth_messages,
+            messages: crate::fold_for_request(&synth_messages),
             tools: Vec::new(), // no tools advertised → forces a textual answer
             max_tokens: config.max_tokens,
             temperature: None,
@@ -720,11 +800,25 @@ where
                     cumulative_usage.output_tokens += resp.usage.output_tokens;
                     cumulative_usage.cache_read_tokens += resp.usage.cache_read_tokens;
                     cumulative_usage.cache_creation_tokens += resp.usage.cache_creation_tokens;
-                    messages.push(Message {
+                    // 收尾这一次也会「一个字都没吐」：推理吃光预算、或输出顶上
+                    // `max_tokens`。空 assistant 一旦进历史，这个会话之后**每一次**
+                    // 请求都会被端点 400（2026-09-20 实测，主循环那条闸在这里漏了）。
+                    let mut closing = Message {
                         role: Role::Assistant,
                         content: resp.content,
                         at: None,
-                    });
+                        speaker: None,
+                    };
+                    if !closing.has_sendable_content() {
+                        let note = format!(
+                            "（这一轮没能收尾成文：输出在 {} tokens 处被上限截断。\
+                             再说一句「继续」，或者把这一步拆小一点。）",
+                            config.max_tokens
+                        );
+                        on_event(TurnEvent::TextDelta(note.clone()));
+                        closing = Message::assistant_text(note);
+                    }
+                    messages.push(closing);
                 }
             }
             Err(e) => {
@@ -755,13 +849,19 @@ mod tests {
     /// call, emitting a `TextDelta` before `Final` when the response is text.
     struct ScriptedProvider {
         responses: Mutex<VecDeque<CompletionResponse>>,
+        /// 每次 `stream()` 收到的请求，供测试观察「引擎到底又问了一次什么」。
+        requests: Mutex<Vec<CompletionRequest>>,
     }
 
     impl ScriptedProvider {
         fn new(responses: Vec<CompletionResponse>) -> Self {
             Self {
                 responses: Mutex::new(responses.into()),
+                requests: Mutex::new(Vec::new()),
             }
+        }
+        fn requests(&self) -> Vec<CompletionRequest> {
+            self.requests.lock().unwrap().clone()
         }
         fn next(&self) -> hermes_core::Result<CompletionResponse> {
             self.responses
@@ -783,17 +883,26 @@ mod tests {
 
         async fn stream(
             &self,
-            _req: CompletionRequest,
+            req: CompletionRequest,
         ) -> hermes_core::Result<futures::stream::BoxStream<'static, CoreResult<StreamEvent>>>
         {
+            self.requests.lock().unwrap().push(req);
             let resp = self.next()?;
             let mut evs: Vec<CoreResult<StreamEvent>> = Vec::new();
             for (i, block) in resp.content.iter().enumerate() {
-                if let ContentBlock::Text { text } = block {
-                    evs.push(Ok(StreamEvent::TextDelta {
+                match block {
+                    ContentBlock::Text { text } => evs.push(Ok(StreamEvent::TextDelta {
                         index: i,
                         text: text.clone(),
-                    }));
+                    })),
+                    // 与生产里的 OpenAI 线一致：推理先流出来，正文在后。
+                    ContentBlock::Thinking { thinking, .. } => {
+                        evs.push(Ok(StreamEvent::ThinkingDelta {
+                            index: i,
+                            text: thinking.clone(),
+                        }))
+                    }
+                    _ => {}
                 }
             }
             evs.push(Ok(StreamEvent::Final(resp)));
@@ -890,6 +999,20 @@ mod tests {
         }
     }
 
+    /// 输出顶到上限、工具入参被切成两半（一次 `write` 写整卷的典型死法）。
+    fn truncated_tool_resp(id: &str, name: &str) -> CompletionResponse {
+        CompletionResponse {
+            content: vec![ContentBlock::ToolUse {
+                id: id.to_string(),
+                name: name.to_string(),
+                input: serde_json::json!({}),
+            }],
+            stop_reason: StopReason::MaxTokens,
+            usage: usage(5, 7),
+            truncated_tool_ids: vec![id.to_string()],
+        }
+    }
+
     fn config() -> TurnConfig {
         TurnConfig {
             model: "test-model".into(),
@@ -940,6 +1063,20 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("")
+    }
+
+    /// 整个请求里所有看得见的字（正文 + 工具结果），用来断言「引擎到底把什么喂回去了」。
+    fn request_text(req: &CompletionRequest) -> String {
+        req.messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .map(|b| match b {
+                ContentBlock::Text { text } => text.clone(),
+                ContentBlock::ToolResult { content, .. } => content.clone(),
+                _ => String::new(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -1126,5 +1263,140 @@ mod tests {
         )));
         // Model still gets its final text after being told the call was denied.
         assert_eq!(text_of(out.new_messages.last().unwrap()), "after deny");
+    }
+
+    fn thinking_only_resp(thinking: &str) -> CompletionResponse {
+        CompletionResponse {
+            content: vec![ContentBlock::Thinking {
+                thinking: thinking.to_string(),
+                signature: None,
+            }],
+            stop_reason: StopReason::MaxTokens,
+            usage: usage(9, 100),
+            truncated_tool_ids: vec![],
+        }
+    }
+
+    /// 推理把输出预算吃光的那一轮不许白等：加成两倍预算重来一次，正文就出来了。
+    /// 2026-09-20 实测的「一个字不说卡八分钟」就是死在这一步——那一轮本来是要作废的。
+    #[test]
+    fn a_reasoning_only_truncated_round_retries_once_with_a_bigger_budget() {
+        let provider =
+            ScriptedProvider::new(vec![thinking_only_resp("想了很久"), text_resp("正文来了")]);
+        let (out, evs) = events_of(&provider, &EchoHost, &[Message::user_text("干活")], None);
+
+        assert_eq!(out.new_messages.len(), 1, "{:?}", out.new_messages);
+        assert_eq!(text_of(&out.new_messages[0]), "正文来了");
+        assert!(
+            evs.iter()
+                .any(|e| matches!(e, TurnEvent::ThinkingDelta(t) if t == "想了很久")),
+            "推理要流给用户看：{evs:?}"
+        );
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, TurnEvent::TextDelta(t) if t.contains("加到 200 tokens"))));
+    }
+
+    /// 只重来一次。第二次还是零字就认了，给一句人话——不许无限重试（那是扣费黑洞）。
+    #[test]
+    fn the_truncation_retry_happens_at_most_once() {
+        let provider = ScriptedProvider::new(vec![
+            thinking_only_resp("第一轮全用在思考"),
+            thinking_only_resp("第二轮还是全用在思考"),
+        ]);
+        let (out, evs) = events_of(&provider, &EchoHost, &[Message::user_text("干活")], None);
+
+        let retry_notes = evs
+            .iter()
+            .filter(|e| matches!(e, TurnEvent::TextDelta(t) if t.contains("重来一次")))
+            .count();
+        assert_eq!(retry_notes, 1, "只许重来一次：{evs:?}");
+        assert_eq!(out.new_messages.len(), 1);
+        let text = text_of(&out.new_messages[0]);
+        assert!(text.contains("没能产出内容"), "{text}");
+        assert!(
+            out.new_messages
+                .iter()
+                .all(|m| !(m.role == Role::Assistant && !m.has_sendable_content())),
+            "空 assistant 不许进历史——进去之后这个会话每次请求都 400"
+        );
+    }
+
+    /// 输出顶到上限、工具入参被截断的那一轮**不许收工**。以前 `stop_reason != ToolUse`
+    /// 直接 `break`：三分钟采集回来，`write` 写整卷被截断，用户只拿到一条报错，
+    /// 一个字都没有（2026-09-20 实跑）。现在把截断错误当工具结果喂回去，让模型自己拆小。
+    #[test]
+    fn a_truncated_tool_call_hands_the_error_back_instead_of_ending_the_turn() {
+        let provider = ScriptedProvider::new(vec![
+            truncated_tool_resp("t1", "write"),
+            truncated_tool_resp("t2", "write"),
+            text_resp("拆小写好了"),
+        ]);
+        let (out, evs) = events_of(&provider, &EchoHost, &[Message::user_text("落盘")], None);
+
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                TurnEvent::ToolUseResult { content, is_error: true, .. }
+                    if content.contains("Tool call truncated")
+            )),
+            "截断要作为工具错误喂回模型：{evs:?}"
+        );
+        assert_eq!(
+            text_of(out.new_messages.last().unwrap()),
+            "拆小写好了",
+            "模型拆小重来之后这一轮要有正文：{:?}",
+            out.new_messages
+        );
+        // 关键区别：截断那一轮要**在正常循环里**继续，而不是靠轮次打满后的「收尾兜底」
+        // 去补一句话。兜底那条路会发一个「不许再调工具」的收尾请求——它一出现，就说明
+        // 这一轮是被 `break` 掉的，模型压根没有机会拆小重来。
+        let reqs = provider.requests();
+        assert!(
+            !reqs
+                .iter()
+                .any(|r| request_text(r).contains("reached the tool-call budget")),
+            "截断不许落到收尾兜底（最后一个请求不该是无工具的收尾）：{}",
+            reqs.len()
+        );
+        let last_asked = request_text(reqs.last().unwrap());
+        assert!(
+            last_asked.contains("Tool call truncated"),
+            "最后一次请求必须带着截断错误再问一遍：{last_asked}"
+        );
+    }
+
+    /// 收尾那一次也会零字（工具轮次打满后的无工具收尾）。原来那条路**没有**判据，
+    /// 会把空 assistant 推进历史。2026-09-20 之前这是漏掉的第四处。
+    #[test]
+    fn an_empty_closing_synthesis_never_leaves_an_empty_assistant() {
+        let provider = ScriptedProvider::new(vec![
+            tool_resp("t1", "echo_tool", serde_json::json!({})),
+            tool_resp("t2", "echo_tool", serde_json::json!({})),
+            tool_resp("t3", "echo_tool", serde_json::json!({})),
+            tool_resp("t4", "echo_tool", serde_json::json!({})),
+            thinking_only_resp("收尾时又把预算用在思考上了"),
+        ]);
+        let tools = futures::executor::block_on(EchoHost.list_tools()).unwrap();
+        let (out, evs) = events_of(
+            &provider,
+            &EchoHost,
+            &[Message::user_text("一直调工具")],
+            None,
+        );
+        let _ = tools;
+
+        assert!(
+            out.new_messages
+                .iter()
+                .all(|m| !(m.role == Role::Assistant && !m.has_sendable_content())),
+            "收尾零字也不许留空 assistant：{:?}",
+            out.new_messages
+        );
+        let last = text_of(out.new_messages.last().unwrap());
+        assert!(last.contains("没能收尾成文"), "{last}");
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, TurnEvent::TextDelta(t) if t.contains("没能收尾成文"))));
     }
 }

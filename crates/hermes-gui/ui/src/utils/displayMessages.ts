@@ -79,7 +79,14 @@ function mergeAssistantWorkSpans(rows: DisplayMessage[]): DisplayMessage[] {
   const merged: DisplayMessage[] = [];
   for (const row of rows) {
     const prev = merged[merged.length - 1];
-    if (row.role === "assistant" && prev && prev.role === "assistant") {
+    // 同一个说话人、相邻两条 assistant = 同一轮里的分段（工具调用 + 收尾正文），
+    // 并成一块。**换了人就不并** —— 并了就等于把后一个人的话吞进前一个的气泡。
+    if (
+      row.role === "assistant" &&
+      prev &&
+      prev.role === "assistant" &&
+      prev.speaker === row.speaker
+    ) {
       merged[merged.length - 1] = {
         ...prev,
         content: mergeAssistantContent(prev.content, row.content),
@@ -169,6 +176,30 @@ export function userPlainText(msg: MessageData): string {
     .filter((b) => b.type === "text")
     .map((b) => (b.type === "text" ? b.text : ""))
     .join("\n");
+}
+
+/**
+ * 上下文压缩摘要的固定开头 —— 必须与 `hermes-core::compaction::SUMMARY_PREFIX` 一致。
+ * 由**引擎**写入（不是模型），所以可以当作稳定契约来认。
+ */
+export const CONTEXT_SUMMARY_PREFIX = "[Context Summary]";
+
+/**
+ * 这条 user 消息其实不是用户说的话，而是「更早对话被压缩成的摘要」。
+ * 历史里它必须渲染成说明卡 —— 否则界面上会出现一条用户从没打过、
+ * 还长得像自己说的话的气泡。
+ */
+export function isContextSummary(msg: MessageData): boolean {
+  if (msg.role !== "user") return false;
+  return userPlainText(msg).trimStart().startsWith(CONTEXT_SUMMARY_PREFIX);
+}
+
+/** 摘要正文：去掉引擎加的开头，只留模型写的部分。 */
+export function contextSummaryBody(msg: MessageData): string {
+  return userPlainText(msg)
+    .trimStart()
+    .slice(CONTEXT_SUMMARY_PREFIX.length)
+    .trim();
 }
 
 export function formatDurationMs(ms: number): string {

@@ -13,6 +13,7 @@ hermes-commitments = { workspace = true }
 hermes-sources = { workspace = true }
 hermes-skills = { workspace = true }
 hermes-reflect = { workspace = true }
+hermes-store = { workspace = true }
 hermes-turn = { workspace = true }
 tokio = { workspace = true, features = ["process", "fs", "rt"] }
 async-trait = { workspace = true }

@@ -3,6 +3,29 @@
 > **种类：** E 开发者手册（非权威）。产品事实以 P0 v0.9 为准。交互规格见 [`../spec/license-ux.md`](../spec/license-ux.md)。
 
 实现台账见 [`../records/20260811-license-impl.md`](../records/20260811-license-impl.md)。
+**密钥轮换后的现行规则**见 [`20260918-license-hardening`](../records/20260918-license-hardening.md)。
+
+---
+
+## 0. 签发私钥在哪（2026-09-18 起）
+
+```
+~/.lebi-ai-issuer/seed.hex      # 0600，只存在于签发机；不进仓库、不进 git 历史
+~/.lebi-ai-issuer/             # 0700
+```
+
+仓库里**没有**任何 seed：`scripts/issue-license.py`、`scripts/license-issuer.html`
+都不再预置密钥，取不到就报错。守卫测试
+`the_signing_seed_for_the_shipped_key_is_not_in_the_repo` 会全仓扫描（含
+`[u8; 32]` 数组、无标记的数字列表、64 位 hex 串），任何一个能推出出厂公钥就红。
+
+**自检（在签发机上跑；不带私钥的机器会自动跳过）**
+
+```bash
+cargo test -p hermes-core --lib -- license::tests::issuer_seed
+```
+
+**换锁后必须重发所有已发出的码** —— 旧私钥签的码在本构建上一律被拒。
 
 ---
 
@@ -22,19 +45,25 @@ macOS 可：
 open newdata/small-rust-hermes/scripts/license-issuer.html
 ```
 
-2. 选时长（1 月 / 季度 / 年）→ 填备注（客户/订单）→ **生成授权码** → **复制**  
-3. 发给客户，让他在 App **设置 → 账户 → 授权** 粘贴。
+2. 展开「高级 · 签发密钥」，从签发机粘贴 `~/.lebi-ai-issuer/seed.hex` 的内容
+   （页面不预置、不记忆；关掉页面即忘）。
+3. 选时长（1 月 / 季度 / 年）→ 填备注（客户/订单）→ **生成授权码** → **复制**
+4. 发给客户，让他在 App **设置 → 账户 → 授权** 粘贴。
 
 > 首次打开需**能访问外网**一次（加载浏览器签名库 esm.sh）。  
-> **不要把该 HTML 发给客户或挂公网**（内含签发密钥）。
+> 页面本身已不含密钥，仍**别挂公网**：粘贴过 seed 的那个标签页等价于密钥。
 
 ### 方式 B：命令行
 
 ```bash
 cd newdata/small-rust-hermes
 pip install pynacl
-python3 scripts/issue-license.py --days 365 --plan year
+python3 scripts/issue-license.py --days 365 --plan year   # 自动读 ~/.lebi-ai-issuer/seed.hex
+python3 scripts/issue-license.py --list-personas          # 发码前先看名单，别凭记忆写 id
 ```
+
+非默认位置的私钥：`LEBI_ISSUER_SEED_FILE=/path/to/seed.hex`，
+或临时 `LEBI_LICENSE_SEED_HEX=<64 位 hex>`。
 
 ---
 

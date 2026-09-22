@@ -1,4 +1,5 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Brain,
   Check,
@@ -6,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  FileText,
   Loader2,
   Pencil,
   RefreshCw,
@@ -16,13 +18,18 @@ import { MarkdownContent } from "../common/MarkdownContent";
 import { splitOnHand, splitUserTextAndAttachments } from "../../utils/attachments";
 import {
   assistantPlainText,
+  contextSummaryBody,
   formatDurationMs,
+  isContextSummary,
   userPlainText,
 } from "../../utils/displayMessages";
 import {
+  artifactLabel,
+  artifactPathsOf,
   objectFromToolSummary,
   processHeadline,
   processKindForTool,
+  summaryFromToolInput,
 } from "../../utils/processLabel";
 import { toast } from "../../utils/toast";
 import { useZaibanStore } from "../../store/zaibanStore";
@@ -51,6 +58,11 @@ interface Props {
   onRegenerate?: () => void;
   onEditUser?: (rawStart: number, currentText: string) => void;
   isStreaming?: boolean;
+  /**
+   * 组会话里这一轮开口的人。**只有组会话标**——工位的头部已经写着是谁，
+   * 每条消息再标一次名字纯属噪音（规格 §2.2：组里必须看得出谁在说）。
+   */
+  speaker?: string | null;
 }
 
 export function MessageBubble({
@@ -60,6 +72,7 @@ export function MessageBubble({
   onRegenerate,
   onEditUser,
   isStreaming,
+  speaker,
 }: Props) {
   const isUser = message.role === "user";
 
@@ -72,11 +85,17 @@ export function MessageBubble({
         streaming
         durationMs={undefined}
         canRegenerate={false}
+        speaker={speaker}
       />
     );
   }
 
   if (isUser) {
+    // 压缩摘要落盘时也是一条 user 消息，但它不是用户打的字 —— 渲染成说明卡，
+    // 免得历史里冒出一条「用户自己从没说过的话」。
+    if (isContextSummary(message)) {
+      return <ContextSummaryNotice message={message} />;
+    }
     return (
       <UserTurn
         message={message}
@@ -106,6 +125,8 @@ export function MessageBubble({
       return {
         id: tool.id,
         name: tool.name,
+        // 落盘只留入参：把「干了哪件事」从 `input` 还原出来（写了哪个文件等）。
+        summary: summaryFromToolInput(tool.name, tool.input),
         result: result?.type === "toolResult" ? result.content : undefined,
         isError: result?.type === "toolResult" ? result.isError : false,
       };
@@ -122,7 +143,29 @@ export function MessageBubble({
       durationMs={message.durationMs}
       canRegenerate={!!canRegenerate && !isStreaming}
       onRegenerate={onRegenerate}
+      speaker={speaker}
     />
+  );
+}
+
+/**
+ * 「更早的对话已整理为摘要」。默认收起：用户需要的是知道它整理过，
+ * 而不是再读一遍摘要；想看细节点一下就行。
+ */
+function ContextSummaryNotice({ message }: { message: DisplayMessage | MessageData }) {
+  const t = useUiStore((s) => s.t);
+  return (
+    <div className="flex justify-center">
+      <details className="group max-w-[min(620px,100%)] rounded-xl border border-app-border/70 dark:border-zinc-800 bg-app-surface/50 dark:bg-zinc-900/30 px-3.5 py-2">
+        <summary className="cursor-pointer select-none list-none text-app-sub leading-5 text-app-fg-secondary dark:text-zinc-500 marker:content-none">
+          <span className="group-open:hidden">{t("chat.contextSummaryClosed")}</span>
+          <span className="hidden group-open:inline">{t("chat.contextSummaryOpen")}</span>
+        </summary>
+        <div className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-app-fg-secondary dark:text-zinc-400">
+          {contextSummaryBody(message)}
+        </div>
+      </details>
+    </div>
   );
 }
 
@@ -168,7 +211,7 @@ function UserTurn({
         )}
         {onHand.titles.length > 0 || textContent.includes("[on-hand]") ? (
           <div className={`w-full max-w-sm ${ui.card} px-3 py-2 text-left`}>
-            <p className="text-[11px] text-app-fg-tertiary mb-1">
+            <p className="text-app-sub text-app-fg-secondary mb-1">
               {t("materials.onHand")}
             </p>
             {onHand.titles.length === 0 ? (
@@ -176,7 +219,7 @@ function UserTurn({
             ) : (
               <ul className="space-y-0.5">
                 {onHand.titles.map((title) => (
-                  <li key={title} className="text-sm text-app-fg">
+                  <li key={title} className="text-app-body text-app-fg">
                     《{title}》
                   </li>
                 ))}
@@ -185,7 +228,7 @@ function UserTurn({
           </div>
         ) : null}
         {body.trim() ? (
-          <div className="px-4 py-2.5 rounded-2xl rounded-br-md bg-app-user-bubble text-white text-sm shadow-sm leading-relaxed whitespace-pre-wrap">
+          <div className="px-4 py-2.5 rounded-2xl rounded-br-md bg-app-user-bubble text-white text-app-body shadow-sm leading-relaxed whitespace-pre-wrap">
             {body}
           </div>
         ) : null}
@@ -216,6 +259,7 @@ function AssistantCanvas({
   durationMs,
   canRegenerate,
   onRegenerate,
+  speaker,
 }: {
   thinking: string;
   tools: ToolCallView[];
@@ -224,6 +268,7 @@ function AssistantCanvas({
   durationMs?: number;
   canRegenerate: boolean;
   onRegenerate?: () => void;
+  speaker?: string | null;
 }) {
   const t = useUiStore((s) => s.t);
   const hasProcess = !!thinking.trim() || tools.length > 0;
@@ -232,6 +277,12 @@ function AssistantCanvas({
   return (
     <div className="flex justify-start group/msg">
       <div className="w-full max-w-3xl min-w-0 space-y-2">
+        {speaker && (
+          <div className="text-app-sub font-medium text-app-fg-secondary dark:text-slate-400">
+            {speaker}
+          </div>
+        )}
+
         {hasProcess && (
           <ProcessGroup
             thinking={thinking}
@@ -304,21 +355,36 @@ function ProcessGroup({
   // long task used to unfold every single tool call as it ran.
   const [expanded, setExpanded] = useState(false);
   const running = streaming && tools.some((tc) => tc.result === undefined);
+  const runningTool = tools.find((tc) => tc.result === undefined);
+  const runningObject = runningTool
+    ? objectFromToolSummary(runningTool.summary, runningTool.name)
+    : undefined;
   const errorCount = tools.filter((tc) => tc.isError).length;
+  // 这一组落了哪些文件。**折叠行也带出来**，而且是能点开的：用户原话是「看不出写了
+  // 什么」，光有文件名还得再去材料面板翻一遍。最多摊三枚，多的写 +N。
+  const artifacts = artifactPathsOf(tools);
   const summary = processHeadline(
     tools.map((tc) => tc.name),
     thinking,
     streaming,
     running,
-    (key, params) => t(key as Parameters<typeof t>[0], params)
+    (key, params) => t(key as Parameters<typeof t>[0], params),
+    runningObject
   );
+
+  useEffect(() => {
+    if (running) setExpanded(true);
+  }, [running]);
 
   return (
     <div className="rounded-lg border border-app-border/80 dark:border-slate-700/60 bg-app-muted/30 dark:bg-slate-800/25 overflow-hidden transition-[border-color,background-color] duration-[var(--motion-fast)]">
+      {/* 折叠开关与产出标签是**两个并排的按钮**：小标签本身要能点（打开产出），
+          塞进那个开关里就成了按钮套按钮。 */}
+      <div className="flex items-center">
       <button
         type="button"
         onClick={() => setExpanded((e) => !e)}
-        className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-left hover:bg-app-muted/60 dark:hover:bg-slate-800/50 transition-colors duration-[var(--motion-fast)]"
+        className="flex-1 min-w-0 flex items-center gap-2 px-2.5 py-1.5 text-xs text-left hover:bg-app-muted/60 dark:hover:bg-slate-800/50 transition-colors duration-[var(--motion-fast)]"
         aria-expanded={expanded}
       >
         {running ? (
@@ -332,7 +398,7 @@ function ProcessGroup({
           {summary}
         </span>
         {!running && errorCount > 0 && (
-          <span className="shrink-0 text-[11px] text-app-fg-tertiary">
+          <span className="shrink-0 text-app-sub text-app-fg-secondary">
             {t("message.toolStepsFailed", { n: errorCount })}
           </span>
         )}
@@ -344,6 +410,19 @@ function ProcessGroup({
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
       </button>
+      {artifacts.length > 0 && (
+        <div className="shrink-0 flex items-center gap-1 pl-1 pr-2">
+          {artifacts.slice(0, 3).map((path) => (
+            <ArtifactChip key={path} path={path} />
+          ))}
+          {artifacts.length > 3 && (
+            <span className="text-app-sub text-app-fg-tertiary">
+              {t("message.artifactMore", { n: artifacts.length - 3 })}
+            </span>
+          )}
+        </div>
+      )}
+      </div>
       <div className="fold-panel" data-open={expanded ? "true" : "false"}>
         <div className="fold-panel-inner">
           <div className="border-t border-app-border/70 dark:border-slate-700/50 px-2.5 py-2 space-y-2">
@@ -352,7 +431,7 @@ function ProcessGroup({
             ))}
             {thinking.trim() && (
               <div>
-                <div className="text-[11px] text-app-fg-tertiary mb-1 flex items-center gap-1">
+                <div className="text-app-sub text-app-fg-secondary mb-1 flex items-center gap-1">
                   <Brain size={11} />
                   {t("process.thought")}
                 </div>
@@ -367,6 +446,37 @@ function ProcessGroup({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * 产出小标签：点开就是这份文件（复用「我的材料」那条 `open_output`，越界/软链都在
+ * 引擎侧挡过了）。浏览器里预览（非 Tauri 壳）时打不开，会老实地报一句。
+ */
+function ArtifactChip({ path }: { path: string }) {
+  const t = useUiStore((s) => s.t);
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      type="button"
+      title={path}
+      aria-label={t("message.artifactOpen", { name: path })}
+      disabled={busy}
+      onClick={() => {
+        setBusy(true);
+        void invoke("open_output", { path })
+          .catch((e) => toast.error(t("message.artifactFailed", { error: String(e) })))
+          .finally(() => setBusy(false));
+      }}
+      className="inline-flex items-center gap-1 max-w-[16rem] px-2 py-0.5 rounded-full border border-app-border dark:border-blue-900/60 bg-app-primary-soft dark:bg-blue-950/40 text-app-primary dark:text-blue-300 text-xs hover:border-app-primary dark:hover:border-blue-500 transition-colors duration-[var(--motion-fast)]"
+    >
+      {busy ? (
+        <Loader2 size={11} className="animate-spin shrink-0 motion-safe-only" />
+      ) : (
+        <FileText size={11} className="shrink-0" />
+      )}
+      <span className="truncate">{artifactLabel(path)}</span>
+    </button>
   );
 }
 
@@ -399,7 +509,7 @@ function ToolRow({ tc, streaming }: { tc: ToolCallView; streaming: boolean }) {
           {toolRowLabel(tc, t, streaming)}
         </span>
         <span
-          className={`text-[11px] transition-colors duration-[var(--motion-fast)] ${
+          className={`text-app-sub transition-colors duration-[var(--motion-fast)] ${
             tc.isError
               ? "text-app-fg-tertiary"
               : isRunning
@@ -498,7 +608,7 @@ function MessageFooter({
         </IconBtn>
       )}
       {durationMs !== undefined && durationMs > 0 && (
-        <span className="text-[11px] tabular-nums px-1.5">
+        <span className="text-xs tabular-nums px-1.5">
           {t("message.duration", { time: formatDurationMs(durationMs) })}
         </span>
       )}

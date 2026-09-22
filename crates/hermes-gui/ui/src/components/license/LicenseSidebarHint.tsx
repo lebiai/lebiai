@@ -35,7 +35,7 @@ export function LicenseSidebarHint() {
         type="button"
         onClick={openLicense}
         title={t("license.sidebarLicensedTitle")}
-        className="text-[10px] text-app-fg-tertiary hover:text-app-fg-secondary truncate text-left max-w-full"
+        className="text-app-sub text-app-fg-secondary hover:text-app-fg-secondary truncate text-left max-w-full"
       >
         {date ? t("license.sidebarUntil", { date }) : t("license.batteryOk")}
       </button>
@@ -56,7 +56,7 @@ export function LicenseSidebarHint() {
       type="button"
       onClick={openLicense}
       title={text}
-      className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md truncate max-w-full ${chip}`}
+      className={`w-fit text-xs font-medium px-1.5 py-0.5 rounded-md whitespace-nowrap ${chip}`}
     >
       {text}
     </button>

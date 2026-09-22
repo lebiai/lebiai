@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::due::{parse_due, DueError};
-use crate::near::{score_near, NearHit, NEAR_ASK, NEAR_FOLD};
+use crate::near::{score_near, NEAR_ASK, NEAR_FOLD};
 
 pub const SUGGESTED_TTL_DAYS: i64 = 7;
 pub const OPEN_CROWD: usize = 7;
@@ -535,15 +535,6 @@ fn rank_due(c: &Commitment, today: NaiveDate) -> (u8, NaiveDate) {
 
 pub fn standard_path() -> PathBuf {
     hermes_core::data_path("commitments.json")
-}
-
-/// Best live near-hit as a compact struct (tools / GUI).
-pub fn best_near(store: &CommitmentStore, title: &str) -> Result<Option<NearHit>> {
-    Ok(store.find_near_live(title)?.map(|(c, score)| NearHit {
-        id: c.id,
-        title: c.title,
-        score,
-    }))
 }
 
 #[cfg(test)]

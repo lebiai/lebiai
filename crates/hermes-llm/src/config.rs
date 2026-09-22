@@ -549,7 +549,7 @@ extract_model = ""           # empty = reuse main model; e.g. a Haiku / mini tie
     pub fn build_active_provider(&self) -> Result<Arc<dyn LlmProvider>> {
         let cfg = self.active_provider()?;
         let kind = self.active_kind()?;
-        match kind {
+        let inner: Arc<dyn LlmProvider> = match kind {
             ProviderKind::Anthropic => {
                 let p = AnthropicProvider::new(
                     cfg.base_url.clone(),
@@ -558,7 +558,7 @@ extract_model = ""           # empty = reuse main model; e.g. a Haiku / mini tie
                     cfg.supports_caching(),
                 )
                 .map_err(|e| anyhow!("building anthropic provider: {e}"))?;
-                Ok(Arc::new(p))
+                Arc::new(p)
             }
             ProviderKind::OpenAi => {
                 let p = OpenAiProvider::new(
@@ -567,9 +567,13 @@ extract_model = ""           # empty = reuse main model; e.g. a Haiku / mini tie
                     cfg.model.clone(),
                 )
                 .map_err(|e| anyhow!("building openai provider: {e}"))?;
-                Ok(Arc::new(p))
+                Arc::new(p)
             }
-        }
+        };
+        // Single gate for every surface (GUI / server / CLI / IM): locked license
+        // ⇒ no model request leaves the machine. Expiry locks ability, not the
+        // roster — personas stay, they just cannot work.
+        Ok(Arc::new(hermes_core::LicenseGatedProvider::new(inner)))
     }
 }
 

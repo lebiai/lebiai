@@ -4,7 +4,7 @@
 |------|------|
 | **编号** | `20260817-product-debt` |
 | **日期** | 2026-08-17（工程验收 2026-08-18） |
-| **状态** | **工程已验收** · 桌面目视仍待用户 |
+| **状态** | **已验收**（2026-09-19 统一签收 · 依据与未验项见 [`20260919-acceptance-sweep`](./20260919-acceptance-sweep.md)）；原状态：**工程已验收** · 桌面目视仍待用户 |
 | **型** | 产品 |
 | **关联** | [`../spec/zaiban-work.md`](../spec/zaiban-work.md) · [`20260817-zaiban-work-unify`](./20260817-zaiban-work-unify.md) · [`20260817-review-ledger`](./20260817-review-ledger.md) |
 

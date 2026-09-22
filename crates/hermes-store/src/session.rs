@@ -30,6 +30,105 @@ pub enum SessionError {
 
 pub type Result<T> = std::result::Result<T, SessionError>;
 
+/// Unicode 行分隔符 / 段分隔符。JSON 字符串里合法，`serde_json` 也确实
+/// 原样写出来 —— 但几乎所有**按行处理文本**的工具（python 的
+/// `str.splitlines()`、多数编辑器的批量编辑）都把它们当换行，于是把一条
+/// 事件劈成多行，再读回来时整条消息被当成坏行丢掉。
+///
+/// 会话是 append-only 的活文件，必须对任何工具都安全：落盘时换成普通
+/// 换行的转义（`\n`），语义不变，文件里一个原始分隔符都不留。
+const LINE_SEPARATORS: &[char] = &['\u{2028}', '\u{2029}'];
+
+fn escape_line_separators(line: String) -> String {
+    if line.contains(LINE_SEPARATORS) {
+        line.replace(LINE_SEPARATORS, "\\n")
+    } else {
+        line
+    }
+}
+
+/// 落盘编码的唯一入口：所有写会话文件的地方都必须走这里。
+fn encode_event(event: &SessionEvent) -> Result<String> {
+    Ok(escape_line_separators(serde_json::to_string(event)?))
+}
+
+/// 单条事件拼接上限。超过这个长度还读不出来就放弃，避免一条坏行把
+/// 后面的整段会话都吞掉。
+const MAX_EVENT_BYTES: usize = 1 << 20;
+
+/// 逐行读 JSONL 事件；历史上被行分隔符劈开的半条事件在这里拼回来。
+///
+/// 拼接只在「这行自己不是完整事件」时发生，且每次拼之前先确认下一行不是
+/// 独立事件 —— 否则一条坏行会把后面的会话全吞掉。拼不回来的行如实计数
+/// 并写进 warn，不装看不见。
+pub(crate) fn read_events(reader: impl BufRead, path: &Path) -> Result<Vec<SessionEvent>> {
+    let mut events = Vec::new();
+    let mut pending: Option<(usize, String)> = None;
+    let mut merged = 0usize;
+    let mut dropped = 0usize;
+
+    for (idx, raw) in reader.lines().enumerate() {
+        let line_no = idx + 1;
+        let line = raw.map_err(|source| SessionError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        if let Some((start, buf)) = pending.take() {
+            let joined = if buf.len() + line.len() <= MAX_EVENT_BYTES {
+                Some(format!("{buf}\\n{line}"))
+            } else {
+                None
+            };
+            if let Some(Ok(event)) = joined.as_deref().map(serde_json::from_str::<SessionEvent>) {
+                merged += 1;
+                events.push(event);
+                continue;
+            }
+            if serde_json::from_str::<SessionEvent>(&line).is_err() {
+                match joined {
+                    Some(j) => {
+                        pending = Some((start, j));
+                        continue;
+                    }
+                    None => {
+                        dropped += 1;
+                        tracing::warn!(path = %path.display(), line = start,
+                            "dropped an unrecoverable session line (too long to merge)");
+                        continue;
+                    }
+                }
+            }
+            dropped += 1;
+            tracing::warn!(path = %path.display(), line = start,
+                "dropped an unrecoverable session line");
+            // 这行自己是完整事件，落到下面正常处理。
+        }
+
+        match serde_json::from_str::<SessionEvent>(&line) {
+            Ok(event) => events.push(event),
+            Err(source) => {
+                tracing::warn!(path = %path.display(), line = line_no, %source,
+                    "session line is not complete JSON; merging with the next line may fix it");
+                pending = Some((line_no, line));
+            }
+        }
+    }
+    if let Some((start, _)) = pending {
+        dropped += 1;
+        tracing::warn!(path = %path.display(), line = start,
+            "dropped an unrecoverable session line");
+    }
+    if merged > 0 || dropped > 0 {
+        tracing::warn!(path = %path.display(), merged, dropped,
+            "session file contained split or malformed lines");
+    }
+    Ok(events)
+}
+
 /// Owns an open file handle, appends one JSONL event per call, fsyncs on
 /// every write so a crash leaves a valid transcript up to the last event.
 #[derive(Debug)]
@@ -79,7 +178,7 @@ impl SessionWriter {
     }
 
     pub fn append(&mut self, event: &SessionEvent) -> Result<()> {
-        let line = serde_json::to_string(event)?;
+        let line = encode_event(event)?;
         writeln!(self.file, "{line}").map_err(|source| SessionError::Io {
             path: self.path.clone(),
             source,
@@ -96,32 +195,21 @@ impl SessionWriter {
 ///
 /// The first valid line MUST be a `Meta` event (otherwise we don't know
 /// the session id / model / provider). All `Message` events build the
-/// transcript; `Usage` events accumulate into running totals. Unknown
-/// or malformed lines are skipped with a warning.
+/// transcript; `Usage` events accumulate into running totals.
+///
+/// 历史遗留的半条事件（U+2028 被上游工具当换行劈开）会在这里拼回来；
+/// 真正读不出来的行才丢弃，并写进 warn。
 pub fn read_session(path: impl AsRef<Path>) -> Result<Session> {
     let path = path.as_ref();
     let file = File::open(path).map_err(|source| SessionError::Io {
         path: path.to_path_buf(),
         source,
     })?;
-    let reader = BufReader::new(file);
-
     let mut session: Option<Session> = None;
-    for (idx, line) in reader.lines().enumerate() {
-        let line = line.map_err(|source| SessionError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let event: SessionEvent = match serde_json::from_str(&line) {
-            Ok(e) => e,
-            Err(source) => {
-                tracing::warn!(line = idx + 1, %source, "skipping malformed session line");
-                continue;
-            }
-        };
+    for (idx, event) in read_events(BufReader::new(file), path)?
+        .into_iter()
+        .enumerate()
+    {
         match event {
             SessionEvent::Meta(meta) => {
                 if session.is_none() {
@@ -144,12 +232,65 @@ pub fn read_session(path: impl AsRef<Path>) -> Result<Session> {
                 })?;
                 s.record_usage(u);
             }
+            // 压缩是顺序可回放的：每次把**当前**列表最前面的 `replaced` 条
+            // 换成摘要。连压多次，逐条应用就能重建出与当时一致的内存状态。
+            SessionEvent::Compaction(rec) => {
+                let s = session.as_mut().ok_or_else(|| SessionError::MissingMeta {
+                    path: path.to_path_buf(),
+                })?;
+                let replaced = rec.replaced.min(s.messages.len());
+                if replaced == 0 {
+                    tracing::debug!(line = idx + 1, "compaction record replaced nothing");
+                    continue;
+                }
+                let rest = s.messages.split_off(replaced);
+                s.messages.clear();
+                s.messages
+                    .push(hermes_core::Message::user_text(rec.summary));
+                s.messages.extend(rest);
+            }
+            // 接力也是顺序可回放的：最后一棒就是现在谁在手上。
+            // 不另存「当前持有人」——存了就有一天会和文件对不上。
+            SessionEvent::Handoff(rec) => {
+                let s = session.as_mut().ok_or_else(|| SessionError::MissingMeta {
+                    path: path.to_path_buf(),
+                })?;
+                s.flow.push(rec);
+            }
         }
     }
 
     session.ok_or_else(|| SessionError::MissingMeta {
         path: path.to_path_buf(),
     })
+}
+
+/// 只读接力链：扫一遍会话文件，只留 `Handoff` 事件。
+///
+/// 组会话注定很长（一天一期、日复一日），所以这里**不**走 [`read_session`]——
+/// 那条路会把整份转写解析进内存。这里按行过，先看这一行认不认得出是接力。
+pub fn read_flow(path: impl AsRef<Path>) -> Result<hermes_core::Flow> {
+    let path = path.as_ref();
+    let file = File::open(path).map_err(|source| SessionError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut flow = hermes_core::Flow::default();
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|source| SessionError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if !line.contains("\"handoff\"") {
+            continue;
+        }
+        if let Ok(hermes_core::SessionEvent::Handoff(rec)) =
+            serde_json::from_str::<hermes_core::SessionEvent>(&line)
+        {
+            flow.push(rec);
+        }
+    }
+    Ok(flow)
 }
 
 /// Sidebar listing: first Meta + whether a human user line exists. Does not
@@ -265,13 +406,13 @@ pub fn rewrite_session(path: impl AsRef<Path>, session: &Session) -> Result<()> 
             path: tmp.clone(),
             source,
         })?;
-        let meta_line = serde_json::to_string(&SessionEvent::Meta(session.meta.clone()))?;
+        let meta_line = encode_event(&SessionEvent::Meta(session.meta.clone()))?;
         writeln!(file, "{meta_line}").map_err(|source| SessionError::Io {
             path: tmp.clone(),
             source,
         })?;
         for msg in &session.messages {
-            let line = serde_json::to_string(&SessionEvent::Message(msg.clone()))?;
+            let line = encode_event(&SessionEvent::Message(msg.clone()))?;
             writeln!(file, "{line}").map_err(|source| SessionError::Io {
                 path: tmp.clone(),
                 source,
@@ -284,7 +425,7 @@ pub fn rewrite_session(path: impl AsRef<Path>, session: &Session) -> Result<()> 
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
             };
-            let line = serde_json::to_string(&SessionEvent::Usage(usage))?;
+            let line = encode_event(&SessionEvent::Usage(usage))?;
             writeln!(file, "{line}").map_err(|source| SessionError::Io {
                 path: tmp.clone(),
                 source,
@@ -329,20 +470,20 @@ pub fn update_session_title(path: impl AsRef<Path>, title: impl Into<String>) ->
             match event {
                 SessionEvent::Meta(mut meta) => {
                     meta.title = Some(title.clone());
-                    let rewritten = serde_json::to_string(&SessionEvent::Meta(meta))?;
+                    let rewritten = encode_event(&SessionEvent::Meta(meta))?;
                     out_lines.push(rewritten);
                     saw_meta = true;
                     continue;
                 }
                 other => {
                     // Unexpected first event — keep as-is but still fail soft.
-                    out_lines.push(serde_json::to_string(&other)?);
+                    out_lines.push(encode_event(&other)?);
                     saw_meta = true;
                     continue;
                 }
             }
         }
-        out_lines.push(line.to_string());
+        out_lines.push(escape_line_separators(line.to_string()));
     }
     if !saw_meta {
         return Err(SessionError::MissingMeta {
@@ -399,6 +540,64 @@ pub fn purge_empty_sessions(dir: impl AsRef<Path>) -> Result<usize> {
 mod tests {
     use super::*;
     use hermes_core::{Message, SessionMeta, Usage};
+
+    /// 一行 `{"compaction": {...}}`——磁盘上的真实形状。
+    fn compaction_event(replaced: usize, summary: &str) -> SessionEvent {
+        serde_json::from_str(&format!(
+            r#"{{"compaction":{{"replaced":{replaced},"summary":"{summary}","at":"2026-09-16T00:00:00Z"}}}}"#
+        ))
+        .unwrap()
+    }
+
+    /// 压缩记录必须能回放：两次压缩按顺序应用，重建出与当时一致的内存状态。
+    /// 不回放的话，重启后会话又变回全长 —— 那等于没修。
+    #[test]
+    fn compaction_records_fold_prefix_on_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut w = SessionWriter::create(&path).unwrap();
+        w.append(&SessionEvent::Meta(SessionMeta::new("m", "stub")))
+            .unwrap();
+        for i in 1..=6 {
+            w.append(&SessionEvent::Message(Message::user_text(format!("m{i}"))))
+                .unwrap();
+        }
+        // 用字面 JSON 构造：既省掉一个 dev-dependency，也顺带钉住磁盘格式。
+        w.append(&compaction_event(4, "S1")).unwrap();
+        w.append(&SessionEvent::Message(Message::user_text("m7")))
+            .unwrap();
+        w.append(&SessionEvent::Message(Message::user_text("m8")))
+            .unwrap();
+        w.append(&compaction_event(2, "S2")).unwrap();
+        drop(w);
+
+        let s = read_session(&path).unwrap();
+        let got: Vec<String> = s
+            .messages
+            .iter()
+            .map(|m| m.content[0].as_text().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(got, vec!["S2", "m6", "m7", "m8"]);
+    }
+
+    /// 坏记录（replaced 超过实际条数 / 为 0）不能让会话读不出来。
+    #[test]
+    fn compaction_record_with_bad_count_is_clamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut w = SessionWriter::create(&path).unwrap();
+        w.append(&SessionEvent::Meta(SessionMeta::new("m", "stub")))
+            .unwrap();
+        w.append(&SessionEvent::Message(Message::user_text("only")))
+            .unwrap();
+        w.append(&compaction_event(99, "S")).unwrap();
+        w.append(&compaction_event(0, "ignored")).unwrap();
+        drop(w);
+
+        let s = read_session(&path).unwrap();
+        assert_eq!(s.messages.len(), 1);
+        assert_eq!(s.messages[0].content[0].as_text(), Some("S"));
+    }
 
     #[test]
     fn append_meta_then_message() {
@@ -581,5 +780,72 @@ mod tests {
         std::fs::write(&inner, b"").unwrap();
         let listed = list_sessions(dir.path()).unwrap();
         assert!(listed.iter().any(|p| p == &inner), "{listed:?}");
+    }
+
+    /// 用户从微信 / Word 粘过来的文本会带 U+2028 / U+2029；serde 原样写出来
+    /// 时，任何按 Unicode 行边界切分的工具都会把这条事件劈成多行。
+    /// 落盘必须换成转义 —— 文件里一个原始分隔符都不留。
+    #[test]
+    fn unicode_line_separators_never_land_raw_in_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let mut writer = SessionWriter::create(&path).unwrap();
+        writer
+            .append(&SessionEvent::Meta(SessionMeta::new("m", "p")))
+            .unwrap();
+        writer
+            .append(&SessionEvent::Message(Message::user_text(
+                "第一段\u{2028}第二段\u{2029}第三段",
+            )))
+            .unwrap();
+        drop(writer);
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains('\u{2028}'), "原始行分隔符不许落盘");
+        assert!(!raw.contains('\u{2029}'), "原始段分隔符不许落盘");
+        assert_eq!(raw.lines().count(), 2, "两条事件就是两行，不许被劈开");
+
+        let s = read_session(&path).unwrap();
+        assert_eq!(
+            s.messages[0].content[0].as_text(),
+            Some("第一段\n第二段\n第三段"),
+            "语义不变：分隔符还是换行"
+        );
+    }
+
+    /// 历史文件里被劈开的半条事件要能读回来，不能静默丢掉。
+    #[test]
+    fn a_line_split_in_two_is_merged_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let meta = serde_json::to_string(&SessionEvent::Meta(SessionMeta::new("m", "p"))).unwrap();
+        let broken =
+            "{\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"选材标准\n1 大公司\"}]}}";
+        let good =
+            serde_json::to_string(&SessionEvent::Message(Message::user_text("收到"))).unwrap();
+        std::fs::write(&path, format!("{meta}\n{broken}\n{good}\n")).unwrap();
+
+        let s = read_session(&path).unwrap();
+        assert_eq!(s.messages.len(), 2, "半条事件拼回来，后面的消息也没丢");
+        assert!(s.messages[0].content[0]
+            .as_text()
+            .unwrap()
+            .contains("选材标准\n1 大公司"));
+    }
+
+    /// 一条真的坏行只丢它自己，不许把后面的会话全吞掉。
+    #[test]
+    fn a_garbage_line_does_not_swallow_the_rest_of_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let meta = serde_json::to_string(&SessionEvent::Meta(SessionMeta::new("m", "p"))).unwrap();
+        let one =
+            serde_json::to_string(&SessionEvent::Message(Message::user_text("第一句"))).unwrap();
+        let two =
+            serde_json::to_string(&SessionEvent::Message(Message::user_text("第二句"))).unwrap();
+        std::fs::write(&path, format!("{meta}\n这行根本不是 JSON\n{one}\n{two}\n")).unwrap();
+
+        let s = read_session(&path).unwrap();
+        assert_eq!(s.messages.len(), 2, "坏行只丢它自己");
     }
 }

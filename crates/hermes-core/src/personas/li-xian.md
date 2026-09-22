@@ -5,8 +5,8 @@ role: 你卡在哪，我带你走一遍
 voice: 平铺直叙，像说明书；先给最短路径，再给细节
 kind: dedicated
 # 写了 skills 就收窄：只广告名单里的技能 + 内置元技能（memory-palace /
-# skill-creator / find-skills）。空名单 = 只剩元技能——这两顶帽子本来就不该
-# 看见别人的内容技能（2026-09-15：李现在曾把技能名「小王」当成工位指给用户）。
+# skill-creator / find-skills）。空名单 = 只剩元技能——这两顶帽子不该看见
+# 别人的内容技能：技能名不是工位名，报技能名会把用户引到空处。
 # 没写这一行的工位 = 不收窄。
 skills: []
 builtin: true

@@ -79,12 +79,6 @@ fn cached() -> &'static AllowFile {
     CACHE.get_or_init(load_allow_file)
 }
 
-/// Force-reload allowlist (tests / rare hot-reload).
-#[cfg(test)]
-pub fn reload_for_tests() {
-    // OnceLock can't clear; tests use direct evaluation helpers instead.
-}
-
 fn entries_for<'a>(channel: &str, file: &'a AllowFile) -> &'a [String] {
     match channel {
         "telegram" => &file.telegram.allowed,

@@ -210,7 +210,7 @@ export function ReviewPane() {
           <button
             type="button"
             onClick={closeReader}
-            className="text-[13px] text-app-primary dark:text-blue-300 py-1"
+            className="text-app-sub text-app-primary dark:text-blue-300 py-1"
           >
             {t("review.close")}
           </button>
@@ -218,29 +218,29 @@ export function ReviewPane() {
         </header>
         <div className="flex-1 min-h-0 overflow-y-auto px-6 py-7">
           <article>
-            <h2 className="text-[20px] font-medium tracking-tight text-app-fg dark:text-slate-50">
+            <h2 className="text-xl font-medium tracking-tight text-app-fg dark:text-slate-50">
               {shortDay(selected.from)}–{shortDay(selected.to)}
             </h2>
             {selected.createdAt && (
-              <p className="mt-1.5 text-[12px] text-app-fg-tertiary">
+              <p className="mt-1.5 text-xs text-app-fg-tertiary">
                 {t("review.alreadyWhen", { date: createdDay(selected.createdAt) })}
               </p>
             )}
             {bodyEmpty(body) ? (
-              <p className="mt-8 text-[14px] leading-relaxed text-app-fg-secondary">
+              <p className="mt-8 text-sm leading-relaxed text-app-fg-secondary">
                 {t("review.bodyEmpty")}
               </p>
             ) : (
               <>
                 {body.focus && (
-                  <p className="mt-7 text-[15px] leading-[1.75] text-app-fg dark:text-slate-100">
+                  <p className="mt-7 text-app-body leading-[1.75] text-app-fg dark:text-slate-100">
                     {body.focus}
                   </p>
                 )}
                 {body.done.length > 0 && (
                   <Section title={t("review.done")}>
                     {body.done.map((d) => (
-                      <li key={d} className="text-[14px] leading-relaxed py-0.5">
+                      <li key={d} className="text-sm leading-relaxed py-0.5">
                         {d}
                       </li>
                     ))}
@@ -251,7 +251,7 @@ export function ReviewPane() {
                     {body.outputs.map((p) => (
                       <li
                         key={p}
-                        className="font-mono text-[12px] text-app-fg-secondary break-all py-0.5"
+                        className="font-mono text-xs text-app-fg-secondary break-all py-0.5"
                       >
                         {p}
                       </li>
@@ -261,7 +261,7 @@ export function ReviewPane() {
                 {body.stillOwe.length > 0 && (
                   <Section title={t("review.stillOwe")}>
                     {body.stillOwe.map((d) => (
-                      <li key={d} className="text-[14px] leading-relaxed py-0.5">
+                      <li key={d} className="text-sm leading-relaxed py-0.5">
                         {d}
                       </li>
                     ))}
@@ -271,7 +271,7 @@ export function ReviewPane() {
                   <button
                     type="button"
                     onClick={() => setTab("zaiban")}
-                    className="mt-5 text-[13px] text-app-primary dark:text-blue-300"
+                    className="mt-5 text-app-sub text-app-primary dark:text-blue-300"
                   >
                     {t("review.openZaiban")}
                   </button>
@@ -310,18 +310,18 @@ export function ReviewPane() {
       )}
 
       <section className="space-y-3">
-        <p className="text-[15px] tracking-tight text-app-fg dark:text-slate-100">
+        <p className="text-app-body tracking-tight text-app-fg dark:text-slate-100">
           {rangeLabel(from, to, span, t)}
         </p>
         {emptyRun && (
-          <p className="text-[13px] text-app-fg-tertiary leading-relaxed">{t("review.empty")}</p>
+          <p className="text-app-sub text-app-fg-secondary leading-relaxed">{t("review.empty")}</p>
         )}
         {(() => {
           const existing = ledger.find((r) => r.from === from && r.to === to);
           if (existing && !emptyRun) {
             return (
               <>
-                <p className="text-[13px] text-app-fg-secondary">
+                <p className="text-app-sub text-app-fg-secondary">
                   {t("review.alreadyWhen", { date: createdDay(existing.createdAt) })}
                 </p>
                 <Button
@@ -338,7 +338,7 @@ export function ReviewPane() {
                   type="button"
                   disabled={busy}
                   onClick={() => void run(from, to)}
-                  className="text-[12px] text-app-primary dark:text-blue-300"
+                  className="text-xs text-app-primary dark:text-blue-300"
                 >
                   {busy ? t("review.running") : t("review.again")}
                 </button>
@@ -360,7 +360,7 @@ export function ReviewPane() {
           <button
             type="button"
             onClick={() => setSetupOpen((v) => !v)}
-            className="text-[12px] text-app-primary dark:text-blue-300"
+            className="text-xs text-app-primary dark:text-blue-300"
           >
             {t("review.setup")}
           </button>
@@ -382,7 +382,7 @@ export function ReviewPane() {
             <button
               type="button"
               onClick={() => setCustom((v) => !v)}
-              className="px-2.5 py-1 text-[12px] text-app-primary dark:text-blue-300 hover:opacity-80"
+              className="px-2.5 py-1 text-xs text-app-primary dark:text-blue-300 hover:opacity-80"
             >
               {t("review.changeRange")}
             </button>
@@ -396,9 +396,9 @@ export function ReviewPane() {
                   setFrom(e.target.value);
                   setEmptyRun(false);
                 }}
-                className={`${ui.input} flex-1 min-w-0 py-1.5 text-[12px]`}
+                className={`${ui.input} flex-1 min-w-0 py-1.5 text-xs`}
               />
-              <span className="text-app-fg-tertiary text-[11px]">–</span>
+              <span className="text-app-fg-secondary text-app-sub">–</span>
               <input
                 type="date"
                 value={to}
@@ -406,7 +406,7 @@ export function ReviewPane() {
                   setTo(e.target.value);
                   setEmptyRun(false);
                 }}
-                className={`${ui.input} flex-1 min-w-0 py-1.5 text-[12px]`}
+                className={`${ui.input} flex-1 min-w-0 py-1.5 text-xs`}
               />
             </div>
           )}
@@ -424,7 +424,7 @@ export function ReviewPane() {
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="mt-8 pt-6 border-t border-app-border/80 dark:border-slate-800">
-      <h3 className="text-[11px] font-medium tracking-wide text-app-fg-tertiary mb-3">
+      <h3 className="text-xs font-medium tracking-wide text-app-fg-tertiary mb-3">
         {title}
       </h3>
       <ul className="space-y-2.5 text-app-fg dark:text-slate-200">{children}</ul>
@@ -453,7 +453,7 @@ function Cadence({
         ))}
       </div>
       {weekday === 0 && (
-        <p className="text-[11px] text-app-fg-tertiary leading-relaxed">{hint}</p>
+        <p className="text-app-sub text-app-fg-secondary leading-relaxed">{hint}</p>
       )}
     </div>
   );
@@ -487,12 +487,12 @@ function PastList({
                   {shortDay(row.from)}–{shortDay(row.to)}
                 </span>
                 {preview && (
-                  <span className="block mt-1 text-[12px] leading-relaxed text-app-fg-secondary line-clamp-2">
+                  <span className="block mt-1 text-xs leading-relaxed text-app-fg-secondary line-clamp-2">
                     {preview}
                   </span>
                 )}
                 {row.createdAt && (
-                  <span className="block mt-1 text-[11px] text-app-fg-tertiary">
+                  <span className="block mt-1 text-app-sub text-app-fg-secondary">
                     {written(row.createdAt)}
                   </span>
                 )}

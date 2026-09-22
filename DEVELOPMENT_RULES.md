@@ -2,7 +2,7 @@
 
 > **版本：** v0.6
 > **更新日期：** 2026-08-14
-> **对齐：** [`PRODUCT_PRINCIPLES.md`](./PRODUCT_PRINCIPLES.md) **v0.11**
+> **对齐：** [`PRODUCT_PRINCIPLES.md`](./PRODUCT_PRINCIPLES.md) **v0.13**
 > **前提：** 只执行 P0。本文**不得**新增品类、口号、用户主路径或关系模型。冲突以 P0 为准。
 > **文体：** 只陈述现行规则。变更对照只写 `docs/records/`。
 > **入口：** 协作/Agent 先读 [`AGENTS.md`](./AGENTS.md)。

@@ -1,6 +1,6 @@
 # 文档目录
 
-> **效力：** 本目录全部**非权威**。冲突以 [`PRODUCT_PRINCIPLES.md`](../PRODUCT_PRINCIPLES.md)（P0 v0.11）为准。
+> **效力：** 本目录全部**非权威**。冲突以 [`PRODUCT_PRINCIPLES.md`](../PRODUCT_PRINCIPLES.md)（P0 v0.13）为准。
 > **规则：** 先选种类 B–H 再写。选不出就不写。种类见 P0 第六条。
 
 ## A · 权威（仓库根，仅 4 个）
@@ -32,11 +32,14 @@
 |------|------|
 | [`spec/work-companion-solution.md`](./spec/work-companion-solution.md) | 工作搭子体验规格（展开 P0） |
 | [`spec/personas.md`](./spec/personas.md) | **人物（工位）**：常驻会话 · 职责边界 · 记忆归属 · 名单由授权决定（一个搭子，几顶帽子） |
+| [`spec/projects.md`](./spec/projects.md) | **项目组**：一个会话几个人一件周期活 · 三处归属（会话/记忆/文件）· 接力与「决定」载体（第一个：财富早知道） |
 | [`spec/license-ux.md`](./spec/license-ux.md) | 授权 / 试用 / 续期交互 |
 | [`spec/settings-ia.md`](./spec/settings-ia.md) | 设置页信息架构 |
 | [`spec/in-app-update.md`](./spec/in-app-update.md) | 桌面应用内点击更新（实施中 · U3 未做） |
 | [`spec/gui-ritual-motion.md`](./spec/gui-ritual-motion.md) | GUI 仪式感 / 动效 |
+| [`spec/gui-typography.md`](./spec/gui-typography.md) | **GUI 字号与层级**：正文 15 / 二级 13 / 三级 12 三档，唯一来源在 `@theme`；GUI 内禁止 `text-[10px]`/`text-[11px]` |
 | [`spec/work-sources.md`](./spec/work-sources.md) | **我的材料**（Word/PDF 自动留下 · 对话检索 · 已立项） |
+| [`spec/caifu-zaozhidao-news-standard.md`](./spec/caifu-zaozhidao-news-standard.md) | **《财富早知道·新闻筛选执行标准 V1.0》**（用户定稿·原件留档）：判稿原则 / 执行流程 / 标定参数表 / 否决清单 / 常见判错。**可执行的版本在吕老师契约里**（`personas/lv-lao-shi.md`），冲突以契约为准 |
 | [`spec/zaiban-work.md`](./spec/zaiban-work.md) | **在办+回顾统一规格 v2.0**（已拍板；目视仍开放） |
 | [`spec/zaiban.md`](./spec/zaiban.md) | 在办 v1（被 v2 草案覆盖） |
 | [`spec/zaiban-drawer-review.md`](./spec/zaiban-drawer-review.md) | 抽屉+回顾 v1.2（被 v2 草案覆盖） |

@@ -37,7 +37,7 @@ export function Pager({
 
   return (
     <div className="flex items-center justify-between gap-2 pt-3">
-      <span className="text-[11px] text-app-fg-tertiary tabular-nums">
+      <span className="text-xs text-app-fg-tertiary tabular-nums">
         {t("pager.summary", { total, page: current, pages })}
       </span>
       <div className="flex items-center gap-1">

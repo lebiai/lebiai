@@ -1,5 +1,6 @@
 //! License / trial Tauri commands (docs/spec/license-ux.md).
 
+use ed25519_dalek::VerifyingKey;
 use hermes_core::{
     dev_has_license_backup, dev_restore_license_backup, dev_simulate_expired, dev_tools_enabled,
     load_status, mark_nudge_seen, LicenseError, LicenseStatus,
@@ -62,12 +63,29 @@ pub(crate) fn apply_license_at(
     prefs_path: &Path,
     token: &str,
 ) -> Result<ApplyLicenseResult, GuiError> {
-    let status = match hermes_core::license::apply_token_at(license_path, token) {
+    apply_license_at_with_key(
+        license_path,
+        prefs_path,
+        token,
+        &hermes_core::license::shipped_verifying_key(),
+    )
+}
+
+/// 与 [`apply_license_at`] 同一套行为，但验签公钥由调用方注入 —— 测试自己生成
+/// 密钥对，仓库里因此不需要存任何私钥（事故见 `docs/records/20260918-reaudit.md` P0-1）。
+pub(crate) fn apply_license_at_with_key(
+    license_path: &Path,
+    prefs_path: &Path,
+    token: &str,
+    key: &VerifyingKey,
+) -> Result<ApplyLicenseResult, GuiError> {
+    let status = match hermes_core::license::apply_token_at_with_key(license_path, token, key) {
         Ok(status) => status,
         // 同一张码再粘一次：绝不拿「这已经是当前授权码」把人挡回去——他重粘，
         // 多半正是因为「粘了没反应」（老版本只写码、不开通工位）。照常开通名单。
         Err(LicenseError::SameAsCurrent) => {
-            let status = hermes_core::license::load_status_at(license_path).map_err(map_err)?;
+            let status = hermes_core::license::load_status_at_with_key(license_path, key)
+                .map_err(map_err)?;
             let licensed: BTreeSet<String> = status.personas.iter().cloned().collect();
             let enabled_personas = personas::enable_licensed_at(prefs_path, &licensed)?;
             return Ok(ApplyLicenseResult {
@@ -119,25 +137,25 @@ pub fn license_dev_restore_backup() -> Result<LicenseStatus, GuiError> {
 mod tests {
     use super::*;
     use crate::commands::personas::{items_at, PersonaItem};
+    use ed25519_dalek::SigningKey;
 
-    /// 与 `scripts/issue-license.py` 的 `DEFAULT_SEED_HEX`、`hermes-core` 测试同一把种子
-    /// （配对内置公钥）。签出来的就是客户端认的真码。
-    const DEV_SEED: [u8; 32] = [
-        0xb3, 0x6d, 0xd8, 0xc9, 0xe2, 0x35, 0xb0, 0xe3, 0x09, 0x7f, 0x97, 0x29, 0xc1, 0x45, 0x19,
-        0x0d, 0x78, 0x07, 0xf3, 0x14, 0xa3, 0x0a, 0xb5, 0x29, 0x52, 0x7c, 0xf0, 0xec, 0xbd, 0x1f,
-        0x23, 0x3b,
-    ];
+    /// 每个测试自己生成一对密钥，把公钥注入被测函数 —— 仓库里不存任何私钥。
+    fn test_key() -> (SigningKey, VerifyingKey) {
+        let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+        let vk = sk.verifying_key();
+        (sk, vk)
+    }
 
     /// 自带三人：谁都有、不进授权码。顺序 = `persona::SOURCES` 顺序。
     const BUILTINS: [&str; 3] = ["li-xian", "xiao-wen", "da-dao-yan"];
 
-    fn token(days: i64, personas: Option<&[&str]>) -> String {
+    fn token(sk: &SigningKey, days: i64, personas: Option<&[&str]>) -> String {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        hermes_core::license::sign_token_with_seed(
-            &DEV_SEED,
+        hermes_core::license::sign_token_with_key(
+            sk,
             now + days * 86400,
             Some(now),
             Some("lic-test".into()),
@@ -149,12 +167,13 @@ mod tests {
 
     /// 盘上这份授权 + 这份选择渲染出来的、处于 enabled 的工位 id。
     /// 走的是 `list_personas` 同一处渲染（`items_at`），不是另写一份断言口径。
-    fn enabled_on_disk(license: &Path, prefs: &Path) -> Vec<String> {
-        let licensed: BTreeSet<String> = hermes_core::license::load_status_at(license)
-            .unwrap()
-            .personas
-            .into_iter()
-            .collect();
+    fn enabled_on_disk(license: &Path, prefs: &Path, key: &VerifyingKey) -> Vec<String> {
+        let licensed: BTreeSet<String> =
+            hermes_core::license::load_status_at_with_key(license, key)
+                .unwrap()
+                .personas
+                .into_iter()
+                .collect();
         items_at(prefs, &licensed)
             .into_iter()
             .filter(|i: &PersonaItem| i.enabled)
@@ -165,33 +184,35 @@ mod tests {
     #[test]
     fn a_code_with_a_roster_turns_its_workstations_on() {
         let dir = tempfile::tempdir().unwrap();
+        let (sk, vk) = test_key();
         let (license, prefs) = (
             dir.path().join("license.json"),
             dir.path().join("personas.json"),
         );
-        let res = apply_license_at(
+        let res = apply_license_at_with_key(
             &license,
             &prefs,
-            &token(365, Some(&["wang-hai-yan", "xiao-xie"])),
+            &token(&sk, 365, Some(&["wang-hai-yan", "yu-tian"])),
+            &vk,
         )
         .unwrap();
 
         assert!(res.status.can_use_main);
-        assert_eq!(res.enabled_personas, vec!["wang-hai-yan", "xiao-xie"]);
+        assert_eq!(res.enabled_personas, vec!["wang-hai-yan", "yu-tian"]);
         assert_eq!(
-            enabled_on_disk(&license, &prefs),
+            enabled_on_disk(&license, &prefs, &vk),
             vec![
                 "li-xian",
                 "xiao-wen",
                 "da-dao-yan",
                 "wang-hai-yan",
-                "xiao-xie"
+                "yu-tian"
             ],
             "用户没勾任何东西，侧栏也该直接多出这两个工位（自带永远在）"
         );
         assert_eq!(
             std::fs::read_to_string(&prefs).unwrap(),
-            "{\n  \"enabled\": [\n    \"wang-hai-yan\",\n    \"xiao-xie\"\n  ]\n}",
+            "{\n  \"enabled\": [\n    \"wang-hai-yan\",\n    \"yu-tian\"\n  ]\n}",
             "落盘的只有授权角色：自带不占文件"
         );
     }
@@ -199,26 +220,27 @@ mod tests {
     #[test]
     fn re_pasting_the_same_code_still_opens_its_workstations() {
         let dir = tempfile::tempdir().unwrap();
+        let (sk, vk) = test_key();
         let (license, prefs) = (
             dir.path().join("license.json"),
             dir.path().join("personas.json"),
         );
-        let code = token(365, Some(&["wang-hai-yan", "xiao-xie"]));
-        apply_license_at(&license, &prefs, &code).unwrap();
+        let code = token(&sk, 365, Some(&["wang-hai-yan", "yu-tian"]));
+        apply_license_at_with_key(&license, &prefs, &code, &vk).unwrap();
         // 老版本的现场：码在盘上，但用户的选择文件从没写过 → 侧栏一动不动。
         std::fs::remove_file(&prefs).unwrap();
 
-        let res = apply_license_at(&license, &prefs, &code).unwrap();
+        let res = apply_license_at_with_key(&license, &prefs, &code, &vk).unwrap();
 
-        assert_eq!(res.enabled_personas, vec!["wang-hai-yan", "xiao-xie"]);
+        assert_eq!(res.enabled_personas, vec!["wang-hai-yan", "yu-tian"]);
         assert_eq!(
-            enabled_on_disk(&license, &prefs),
+            enabled_on_disk(&license, &prefs, &vk),
             vec![
                 "li-xian",
                 "xiao-wen",
                 "da-dao-yan",
                 "wang-hai-yan",
-                "xiao-xie"
+                "yu-tian"
             ],
             "重粘同一张码也要把工位开通出来，而不是报「已是当前码」"
         );
@@ -227,14 +249,15 @@ mod tests {
     #[test]
     fn a_legacy_code_neither_errors_nor_clears_the_choices() {
         let dir = tempfile::tempdir().unwrap();
+        let (sk, vk) = test_key();
         let (license, prefs) = (
             dir.path().join("license.json"),
             dir.path().join("personas.json"),
         );
-        std::fs::write(&prefs, "{\"enabled\": [\"xiao-jin\"]}").unwrap();
+        std::fs::write(&prefs, "{\"enabled\": [\"sao-di-seng\"]}").unwrap();
         let before = std::fs::read_to_string(&prefs).unwrap();
 
-        let res = apply_license_at(&license, &prefs, &token(365, None)).unwrap();
+        let res = apply_license_at_with_key(&license, &prefs, &token(&sk, 365, None), &vk).unwrap();
 
         assert!(res.status.can_use_main, "老格式码照样能用");
         assert!(res.enabled_personas.is_empty());
@@ -244,7 +267,7 @@ mod tests {
             "没带名单的码不许动用户已选的工位"
         );
         assert_eq!(
-            enabled_on_disk(&license, &prefs),
+            enabled_on_disk(&license, &prefs, &vk),
             BUILTINS.to_vec(),
             "没带名单 = 只有三个自带（选择还在盘上，等下一张点名的码再回来）"
         );
@@ -253,21 +276,23 @@ mod tests {
     #[test]
     fn an_unknown_id_is_dropped_without_taking_the_known_one_with_it() {
         let dir = tempfile::tempdir().unwrap();
+        let (sk, vk) = test_key();
         let (license, prefs) = (
             dir.path().join("license.json"),
             dir.path().join("personas.json"),
         );
-        let res = apply_license_at(
+        let res = apply_license_at_with_key(
             &license,
             &prefs,
-            &token(365, Some(&["ghost-role", "wang-hai-yan"])),
+            &token(&sk, 365, Some(&["ghost-role", "wang-hai-yan"])),
+            &vk,
         )
         .unwrap();
 
         assert_eq!(res.status.unknown_personas, vec!["ghost-role"]);
         assert_eq!(res.enabled_personas, vec!["wang-hai-yan"]);
         assert_eq!(
-            enabled_on_disk(&license, &prefs),
+            enabled_on_disk(&license, &prefs, &vk),
             vec!["li-xian", "xiao-wen", "da-dao-yan", "wang-hai-yan"]
         );
     }
@@ -275,35 +300,59 @@ mod tests {
     #[test]
     fn a_second_code_swaps_the_roster() {
         let dir = tempfile::tempdir().unwrap();
+        let (sk, vk) = test_key();
         let (license, prefs) = (
             dir.path().join("license.json"),
             dir.path().join("personas.json"),
         );
-        apply_license_at(
+        apply_license_at_with_key(
             &license,
             &prefs,
-            &token(365, Some(&["wang-hai-yan", "xiao-xie"])),
+            &token(&sk, 365, Some(&["wang-hai-yan", "yu-tian"])),
+            &vk,
         )
         .unwrap();
 
-        let res = apply_license_at(
+        let res = apply_license_at_with_key(
             &license,
             &prefs,
-            &token(366, Some(&["xiao-jin", "wang-hai-yan"])),
+            &token(&sk, 366, Some(&["lv-lao-shi", "yu-tian"])),
+            &vk,
         )
         .unwrap();
 
-        assert_eq!(res.enabled_personas, vec!["wang-hai-yan", "xiao-jin"]);
+        assert_eq!(res.enabled_personas, vec!["lv-lao-shi", "yu-tian"]);
         assert_eq!(
-            enabled_on_disk(&license, &prefs),
-            vec![
-                "li-xian",
-                "xiao-wen",
-                "da-dao-yan",
-                "wang-hai-yan",
-                "xiao-jin"
-            ],
-            "粘哪张码就显示哪张：小谢不在新名单里，得下去"
+            enabled_on_disk(&license, &prefs, &vk),
+            vec!["li-xian", "xiao-wen", "da-dao-yan", "lv-lao-shi", "yu-tian"],
+            "粘哪张码就显示哪张：王海燕不在新名单里，得下去"
+        );
+    }
+
+    /// 下线的人对客户端就是「不认识的 id」——与拼错的 id 同待遇：
+    /// 报出来、不显示、也不许从旧的 personas.json 里溜回侧栏。
+    #[test]
+    fn a_retired_id_in_a_code_is_reported_unknown_and_never_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sk, vk) = test_key();
+        let (license, prefs) = (
+            dir.path().join("license.json"),
+            dir.path().join("personas.json"),
+        );
+        let res = apply_license_at_with_key(
+            &license,
+            &prefs,
+            &token(&sk, 365, Some(&["xiao-xie", "sao-di-seng"])),
+            &vk,
+        )
+        .unwrap();
+
+        assert_eq!(res.status.unknown_personas, vec!["xiao-xie"]);
+        assert_eq!(res.enabled_personas, vec!["sao-di-seng"]);
+        assert_eq!(
+            enabled_on_disk(&license, &prefs, &vk),
+            vec!["li-xian", "xiao-wen", "da-dao-yan", "sao-di-seng"],
+            "下线的人不许回到侧栏"
         );
     }
 }

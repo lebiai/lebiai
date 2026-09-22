@@ -36,6 +36,25 @@ pub fn project_data_dirname() -> &'static str {
 /// macOS: `~/Library/Application Support/lebi-ai/data-dir.txt`; Linux:
 /// `$XDG_CONFIG_HOME/lebi-ai/data-dir.txt`.
 pub fn data_dir_pointer_path() -> PathBuf {
+    system_config_dir().join("data-dir.txt")
+}
+
+/// 试用起点的锚（`docs/records/20260918-license-hardening.md` P0-5）。
+///
+/// 和数据根指针住在同一个「本机系统目录」里，理由也一样：**数据根之外**。
+/// 换 `LEBI_DATA_DIR`、删掉数据目录都不会把它一起带走 —— 否则「删一个文件
+/// 就又拿到三天试用」。
+///
+/// 这不是防破解（本机文件终究删得掉），是把免费的重复试用从「删一个文件」
+/// 抬到「找到并删掉另一个目录里的隐藏文件」。
+pub fn trial_anchor_path() -> PathBuf {
+    system_config_dir().join("trial-anchor")
+}
+
+/// 本产品的系统级目录（数据根**之外**）：产品级指针与锚都放这里，随用户走、
+/// 不随数据根走。Windows `%APPDATA%\lebi-ai`；macOS
+/// `~/Library/Application Support/lebi-ai`；Linux `$XDG_CONFIG_HOME/lebi-ai`。
+fn system_config_dir() -> PathBuf {
     let base = if cfg!(target_os = "windows") {
         std::env::var_os("APPDATA")
             .map(PathBuf::from)
@@ -51,7 +70,7 @@ pub fn data_dir_pointer_path() -> PathBuf {
             .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
             .unwrap_or_default()
     };
-    base.join("lebi-ai").join("data-dir.txt")
+    base.join("lebi-ai")
 }
 
 /// Whether the current data root was chosen by the user via Settings migration

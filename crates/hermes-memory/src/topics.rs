@@ -88,7 +88,7 @@ pub fn path(owner: Option<&str>) -> Result<PathBuf> {
 /// （面板与 CLI 目前用 `.unwrap_or_default()` 吞掉 → 显示成「还没整理过」，
 /// 只留一条 `tracing::warn`）。
 ///
-/// 「这个视图该看到哪些卡」不是这一层的事——见 [`cards_for_view`]：全局那份是
+/// 「这个视图该看到哪些卡」不是这一层的事——见 [`cards_for_view_any`]：全局那份是
 /// 所有视图共用的索引，人物视图在它之后接上自己那份。
 pub fn load(owner: Option<&str>) -> Result<TopicCards> {
     let path = path(owner)?;
@@ -188,9 +188,19 @@ pub fn is_stale(cards: &TopicCards, active: &[LoadedMemory]) -> bool {
 /// 文件才可能；真要收紧得让 `prune_to` 同时知道「live 全集」与「可见集」，
 /// 别在这里临时加「缺人就丢卡」（那会让任何一次记忆删除都炸掉卡）。
 pub fn render_from_disk(active: &[LoadedMemory], owner: Option<&str>) -> Option<String> {
-    let view = crate::memory::filter_visible(active, owner);
+    match owner {
+        Some(o) => render_from_disk_any(active, &[o]),
+        None => render_from_disk_any(active, &[]),
+    }
+}
+
+/// 一组归属的卡视图（组会话：全局那份 + 本项目组 + 这一轮说话的人）。
+///
+/// 判据仍是 `visible_to`（经 `filter_visible_any`）——「谁看得见什么」只有那一处。
+pub fn render_from_disk_any(active: &[LoadedMemory], owners: &[&str]) -> Option<String> {
+    let view = crate::memory::filter_visible_any(active, owners);
     let live: HashSet<&str> = view.iter().map(|m| m.id()).collect();
-    let pruned = prune_to(&cards_for_view(owner), &live);
+    let pruned = prune_to(&cards_for_view_any(owners), &live);
     if pruned.is_empty() {
         None
     } else {
@@ -207,7 +217,9 @@ pub fn render_from_disk(active: &[LoadedMemory], owner: Option<&str>) -> Option<
 /// 同 id 时**以自己那份为准**：那份是在「全局 + 本人」的可见面上重新整理出来的。
 /// 读不动（文件损坏）按「没有卡」处理 + 一条 warn：卡是派生视图，读不动不该让会话
 /// 起不来，但静默失败也不该无声无息。
-fn cards_for_view(owner: Option<&str>) -> TopicCards {
+/// 多个归属的卡：**全局那份 + 每个归属各一份**，同 id 后面那份覆盖前面那份
+/// （越靠后越「自己」：组在说话人之前，说话人那份更贴他这一刻的活）。
+fn cards_for_view_any(owners: &[&str]) -> TopicCards {
     let mut cards = match load(None) {
         Ok(cards) => cards,
         Err(e) => {
@@ -215,17 +227,22 @@ fn cards_for_view(owner: Option<&str>) -> TopicCards {
             TopicCards::default()
         }
     };
-    let Some(owner) = normalize_owner(owner) else {
-        return cards;
-    };
-    match load(Some(owner.as_str())) {
-        Ok(own) => {
-            for c in own.cards {
-                cards.cards.retain(|g| g.id != c.id);
-                cards.cards.push(c);
+    for owner in owners {
+        let owner = owner.trim();
+        if owner.is_empty() {
+            continue;
+        }
+        match load(Some(owner)) {
+            Ok(own) => {
+                for c in own.cards {
+                    cards.cards.retain(|g| g.id != c.id);
+                    cards.cards.push(c);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, owner = %owner, "reading this scope's topic cards")
             }
         }
-        Err(e) => tracing::warn!(error = %e, owner = %owner, "reading this scope's topic cards"),
     }
     cards
 }

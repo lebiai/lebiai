@@ -23,6 +23,9 @@ pub struct SessionSummary {
     /// 人物（工位）id；`None` = 无人物会话（自由对话 / 旧会话）。
     /// 前端按它把会话挂到对应人物下。
     pub persona: Option<String>,
+    /// 项目组 id；`None` = 不属于任何项目组。与 `persona` **互斥**。
+    /// 前端按它把会话挂到侧栏「项目组」那一节。
+    pub team: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -35,6 +38,30 @@ pub struct LoadedSessionData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
     pub read_only: bool,
+    /// 人物（工位）id；`None` = 无人物会话。
+    /// **打开历史时也要带上**：不带的话，点回某个工位会丢掉「这是谁在跟你说话」。
+    pub persona: Option<String>,
+    /// 项目组 id；`None` = 不属于任何项目组。与 `persona` **互斥**。
+    pub team: Option<String>,
+    /// 窗口前面还有多少条消息（会话数组里的下标）。
+    /// **编辑重发的截断要把它加回去**：窗口内的下标不是文件里的下标。
+    pub base_offset: usize,
+    /// 更早的日子（最新在前）；短会话是空的——空 = 没有折叠条。
+    pub days: Vec<SessionDayData>,
+}
+
+/// 一条被折起来的「那天」。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDayData {
+    /// 本地日 `YYYY-MM-DD`；`None` = 那段消息没有日期（老文件 / 压缩摘要）。
+    pub day: Option<String>,
+    /// 界面上写的一行：`9 月 16 日` / `更早`。
+    pub label: String,
+    /// 人说了几句。
+    pub turns: usize,
+    /// 这一段有多少条消息。
+    pub messages: usize,
 }
 
 #[derive(Serialize)]
@@ -42,6 +69,10 @@ pub struct LoadedSessionData {
 pub struct MessageData {
     pub role: String,
     pub content: Vec<ContentBlockData>,
+    /// 这一轮开口的人（人物 id）。组会话里每一轮的人会换，界面按它标名字 ——
+    /// 没有这一项，吕老师开口那一轮会和海燕的并成一块（用户原话：「被埋」）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -63,6 +94,41 @@ pub enum ContentBlockData {
         content: String,
         is_error: bool,
     },
+}
+
+fn message_to_data(m: &hermes_core::Message) -> MessageData {
+    MessageData {
+        role: match m.role {
+            hermes_core::Role::User => "user".into(),
+            hermes_core::Role::Assistant => "assistant".into(),
+        },
+        content: m.content.iter().map(content_block_to_data).collect(),
+        speaker: m.speaker.clone(),
+    }
+}
+
+/// 整条会话 → 界面要的那一份：`(窗口前有多少条, 更早的按天索引, 最近窗口)`。
+///
+/// 判据只有 `hermes_store::window_split` 一处；这里只做形状转换。短会话
+/// （不超过一个窗口）返回 `(0, 空, 全部)`——**逐条不变**是硬要求。
+fn window_for_display(
+    messages: &[hermes_core::Message],
+) -> (usize, Vec<SessionDayData>, Vec<MessageData>) {
+    let (base, days) = hermes_store::window_split(messages, hermes_store::DEFAULT_WINDOW);
+    let days = days
+        .into_iter()
+        .map(|g| SessionDayData {
+            day: g.day,
+            label: g.label,
+            turns: g.turns,
+            messages: g.messages,
+        })
+        .collect();
+    (
+        base,
+        days,
+        messages[base..].iter().map(message_to_data).collect(),
+    )
 }
 
 fn content_block_to_data(block: &hermes_core::ContentBlock) -> ContentBlockData {
@@ -154,6 +220,7 @@ pub async fn list_sessions(_state: State<'_, AppState>) -> Result<Vec<SessionSum
             updated_at,
             path: path.to_string_lossy().into_owned(),
             persona: meta.persona.clone(),
+            team: meta.team.clone(),
             channel,
             read_only,
         };
@@ -172,10 +239,15 @@ pub async fn list_sessions(_state: State<'_, AppState>) -> Result<Vec<SessionSum
     Ok(entries)
 }
 
-/// 这个空草稿能不能被这次开会话复用：**人物必须一致**。
-/// 换人物开会话 = 换一位同事，不能顶着上一位的身份接着写。
-fn reuses_empty_draft(draft_persona: Option<&str>, requested: Option<&str>) -> bool {
-    draft_persona == requested
+/// 这个空草稿能不能被这次开会话复用：**身份必须完全一致**（人物与项目组两条轴）。
+/// 换身份开会话 = 换一位同事 / 换一张桌子，不能顶着上一个身份接着写。
+fn reuses_empty_draft(
+    draft_persona: Option<&str>,
+    draft_team: Option<&str>,
+    requested_persona: Option<&str>,
+    requested_team: Option<&str>,
+) -> bool {
+    draft_persona == requested_persona && draft_team == requested_team
 }
 
 /// 草稿摘要：草稿还没落盘、也还没有标题，所以标题一律是占位。
@@ -191,6 +263,7 @@ fn draft_summary(id: &str, active: &ActiveSession) -> SessionSummary {
         channel: None,
         read_only: false,
         persona: active.session.meta.persona.clone(),
+        team: active.session.meta.team.clone(),
     }
 }
 
@@ -203,11 +276,23 @@ fn draft_summary(id: &str, active: &ActiveSession) -> SessionSummary {
 pub async fn new_session(
     state: State<'_, AppState>,
     persona_id: Option<String>,
+    team_id: Option<String>,
 ) -> Result<SessionSummary, GuiError> {
     // 人物 id 必须先存在：写进 `meta.persona` 的不认识的 id 会让这个会话
     // 既没有人设也没有归属，且一路静默——所以在这里挡住，而不是让它落盘。
     if let Some(id) = persona_id.as_deref() {
         crate::commands::personas::require_persona(id)?;
+    }
+    // 两条轴互斥：一条会话要么属于某个人物、要么属于某个项目组。两个都写会让
+    // 「这段记忆归谁」「这一轮谁在说」同时失去唯一答案。
+    if persona_id.is_some() && team_id.is_some() {
+        return Err(GuiError::Internal(
+            "会话不能同时属于一个人物和一个项目组".into(),
+        ));
+    }
+    // 项目组必须先存在、且接口人开着：没人接的桌子开不出一条会话。
+    if let Some(id) = team_id.as_deref() {
+        crate::commands::teams::require_team_ready(id)?;
     }
     let mut sessions = state.sessions.lock().await;
 
@@ -216,7 +301,12 @@ pub async fn new_session(
         .iter()
         .find(|(_, a)| {
             a.session.messages.is_empty()
-                && reuses_empty_draft(a.session.meta.persona.as_deref(), persona_id.as_deref())
+                && reuses_empty_draft(
+                    a.session.meta.persona.as_deref(),
+                    a.session.meta.team.as_deref(),
+                    persona_id.as_deref(),
+                    team_id.as_deref(),
+                )
         })
         .map(|(id, _)| id.clone())
     {
@@ -232,6 +322,7 @@ pub async fn new_session(
     let provider = state.config.read().unwrap().default_provider.clone();
     let mut meta = SessionMeta::new(model, provider);
     meta.persona = persona_id.clone();
+    meta.team = team_id.clone();
     let path = session_path_for(&meta).map_err(|e| GuiError::Session(e.to_string()))?;
 
     let id = meta.id.clone();
@@ -245,6 +336,7 @@ pub async fn new_session(
                 messages: Vec::new(),
                 total_input_tokens: 0,
                 total_output_tokens: 0,
+                flow: Default::default(),
             },
             writer: None,
             path: path.clone(),
@@ -268,20 +360,14 @@ pub async fn load_session(
     session.messages = hermes_core::sanitize_history_for_provider(&session.messages);
     let id = session.meta.id.clone();
 
-    let messages: Vec<MessageData> = session
-        .messages
-        .iter()
-        .map(|m| MessageData {
-            role: match m.role {
-                hermes_core::Role::User => "user".into(),
-                hermes_core::Role::Assistant => "assistant".into(),
-            },
-            content: m.content.iter().map(content_block_to_data).collect(),
-        })
-        .collect();
-
     let channel = hermes_store::channel_of_session_path(&path).map(|s| s.to_string());
     let read_only = channel.is_some();
+
+    // 只把**最近窗口**交给界面（`docs/spec/projects.md` §4.4）：更早的按天折起来，
+    // 点开那一条时才来取（`load_session_day`）。`base_offset` 是窗口前还有多少条，
+    // 编辑重发要把它加回去——判据只有 `hermes_store::window_split` 一处。
+    let (base_offset, days, messages) = window_for_display(&session.messages);
+
     let writer = if read_only {
         None
     } else {
@@ -295,6 +381,10 @@ pub async fn load_session(
         output_tokens: session.total_output_tokens,
         channel: channel.clone(),
         read_only,
+        persona: session.meta.persona.clone(),
+        team: session.meta.team.clone(),
+        base_offset,
+        days,
     };
 
     state.sessions.lock().await.insert(
@@ -307,6 +397,38 @@ pub async fn load_session(
     );
 
     Ok(data)
+}
+
+/// 展开某一天：把被折起来的那一段取回来。
+///
+/// 从**内存里的那条会话**取，所以下标与窗口、与编辑重发的截断是同一个数组；
+/// 旧账只是回看——界面不给它编辑/重发的入口（v1）。
+#[tauri::command]
+pub async fn load_session_day(
+    state: State<'_, AppState>,
+    session_id: String,
+    day: Option<String>,
+) -> Result<Vec<MessageData>, GuiError> {
+    let sessions = state.sessions.lock().await;
+    let active = sessions
+        .get(&session_id)
+        .ok_or_else(|| GuiError::Session("session not found".into()))?;
+
+    // 判据与 `load_session` 画折叠条时用的那一刀是同一个（`window_day`）：
+    // 声称多少条就取回多少条，且绝不会和已经展开的最近窗口重叠。
+    let group = hermes_store::window_day(
+        &active.session.messages,
+        hermes_store::DEFAULT_WINDOW,
+        day.as_deref(),
+    )
+    .ok_or_else(|| GuiError::Session("这一天不在折叠区里".into()))?;
+
+    Ok(
+        active.session.messages[group.from..group.from + group.messages]
+            .iter()
+            .map(message_to_data)
+            .collect(),
+    )
 }
 
 #[tauri::command]
@@ -335,12 +457,50 @@ mod tests {
         }
     }
 
+    fn say(text: &str, day: u32, hour: u32) -> hermes_core::Message {
+        let mut m = hermes_core::Message::user_text(text);
+        m.at = Some(
+            format!("2026-09-{day:02}T{hour:02}:00:00Z")
+                .parse()
+                .unwrap(),
+        );
+        m
+    }
+
+    /// 短会话：一条都不折，下标从 0 起——开箱即用的那条路逐条不变。
+    #[test]
+    fn a_short_session_is_sent_whole_with_no_folds_and_no_offset() {
+        let msgs: Vec<hermes_core::Message> =
+            (0..5).map(|i| say(&format!("第 {i} 句"), 17, 4)).collect();
+        let (base, days, window) = window_for_display(&msgs);
+        assert_eq!(base, 0, "没有折起来的东西，偏移就是 0");
+        assert!(days.is_empty(), "短会话不出现折叠条");
+        assert_eq!(window.len(), 5, "一条不少");
+    }
+
+    /// 长会话：只发窗口，并且**说清楚前面还有多少条**——编辑重发就靠这个数。
+    #[test]
+    fn a_long_session_sends_the_window_and_the_offset_that_editing_needs() {
+        let msgs: Vec<hermes_core::Message> = (0..200)
+            .map(|i| say(&format!("第 {i} 句"), 16 + (i % 2), 4))
+            .collect();
+        let (base, days, window) = window_for_display(&msgs);
+        assert_eq!(base, 200 - hermes_store::DEFAULT_WINDOW);
+        assert_eq!(window.len(), hermes_store::DEFAULT_WINDOW);
+        assert_eq!(base + window.len(), msgs.len(), "窗口 + 偏移 = 全量");
+        assert!(!days.is_empty(), "更早的日子要有折叠条");
+        assert!(
+            days.iter().all(|d| d.messages > 0 && d.turns > 0),
+            "每条折叠条都得说清楚有多少轮"
+        );
+    }
+
     #[test]
     fn a_draft_summary_carries_the_persona_the_frontend_reads() {
-        let summary = draft_summary("abc12345", &draft(Some("xiao-jin")));
-        assert_eq!(summary.persona.as_deref(), Some("xiao-jin"));
+        let summary = draft_summary("abc12345", &draft(Some("sao-di-seng")));
+        assert_eq!(summary.persona.as_deref(), Some("sao-di-seng"));
         let v = serde_json::to_value(&summary).unwrap();
-        assert_eq!(v["persona"], "xiao-jin", "字段名就是前端读的那个");
+        assert_eq!(v["persona"], "sao-di-seng", "字段名就是前端读的那个");
         assert_eq!(v["readOnly"], false);
 
         let free = draft_summary("abc12345", &draft(None));
@@ -349,14 +509,37 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_draft_is_reused_only_by_its_own_persona() {
-        assert!(reuses_empty_draft(Some("xiao-xie"), Some("xiao-xie")));
-        assert!(reuses_empty_draft(None, None), "自由对话的空草稿照样复用");
+    fn an_empty_draft_is_reused_only_by_its_own_identity() {
+        assert!(reuses_empty_draft(
+            Some("sao-di-seng"),
+            None,
+            Some("sao-di-seng"),
+            None
+        ));
         assert!(
-            !reuses_empty_draft(Some("xiao-xie"), Some("yu-tian")),
+            reuses_empty_draft(None, None, None, None),
+            "自由对话的空草稿照样复用"
+        );
+        assert!(
+            !reuses_empty_draft(Some("sao-di-seng"), None, Some("yu-tian"), None),
             "换了人物就是另一位同事，不能复用同一份草稿"
         );
-        assert!(!reuses_empty_draft(Some("xiao-xie"), None));
-        assert!(!reuses_empty_draft(None, Some("yu-tian")));
+        assert!(!reuses_empty_draft(Some("sao-di-seng"), None, None, None));
+        assert!(!reuses_empty_draft(
+            None,
+            Some("caifu-zaozhidao"),
+            None,
+            None
+        ));
+        assert!(
+            !reuses_empty_draft(None, Some("caifu-zaozhidao"), Some("sao-di-seng"), None),
+            "从工位切到项目组 = 换了一张桌子，不能复用同一份草稿"
+        );
+        assert!(reuses_empty_draft(
+            None,
+            Some("caifu-zaozhidao"),
+            None,
+            Some("caifu-zaozhidao")
+        ));
     }
 }

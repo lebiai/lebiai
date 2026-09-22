@@ -329,6 +329,8 @@ mod tests {
                 zone: "general".into(),
                 supersedes: vec![],
                 owner: None,
+                because: None,
+                intentional: false,
                 extra: Default::default(),
             },
             body: "用户偏好写文档时使用短句、先结论后细节的写作结构。".into(),

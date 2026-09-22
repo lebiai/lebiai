@@ -70,6 +70,7 @@ pub async fn run_micro_after_turn(
     }
 
     let mut apply_cfg = req.apply;
+    let owner_refs: Vec<&str> = apply_cfg.memory_owners.iter().map(String::as_str).collect();
     // Always recompute explicit intent from this turn's messages.
     apply_cfg.explicit_intent = has_explicit_intent(req.turn_messages);
 
@@ -78,7 +79,7 @@ pub async fn run_micro_after_turn(
         req.turn_messages,
         req.skills,
         req.memories,
-        apply_cfg.memory_owner.as_deref(),
+        &owner_refs,
     )
     .await?;
 

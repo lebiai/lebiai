@@ -45,10 +45,6 @@ pub fn load_config_or_hint() -> Result<Config> {
     Ok(cfg)
 }
 
-/// `max_tokens` budget for `web_fetch` prompt-extraction answers — concise by
-/// design, independent of the (larger) main-turn budget.
-const WEB_EXTRACT_MAX_TOKENS: u32 = 2048;
-
 /// Build the [`WebToolsContext`] wiring the `web_fetch` / `web_search` tools:
 /// the extraction provider (reused from the main provider), the configured
 /// search backend + keys, and the cache TTL — all from the `[web]` config.
@@ -56,7 +52,7 @@ pub fn build_web_ctx(cfg: &Config, provider: Arc<dyn LlmProvider>) -> Arc<WebToo
     Arc::new(WebToolsContext {
         extract_provider: provider,
         extract_model: cfg.web.extract_model.clone(),
-        extract_max_tokens: WEB_EXTRACT_MAX_TOKENS,
+        extract_max_tokens: hermes_tools::web::DEFAULT_EXTRACT_MAX_TOKENS,
         search_backend: SearchBackend::parse(&cfg.web.search_backend),
         tavily_api_key: cfg.web.tavily_api_key.clone(),
         brave_api_key: cfg.web.brave_api_key.clone(),

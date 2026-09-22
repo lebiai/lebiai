@@ -1,17 +1,17 @@
 //! Apply a micro-reflection [`ReflectionOutput`] to the memory store.
 //!
 //! Shared by CLI and GUI so auto-accept, near-duplicate rejection, conflict
-//! gating, deferred queue, and accept logging stay one implementation.
+//! gating, pending queue, and accept logging stay one implementation.
 //!
-//! Skills are never auto-written — they always become pending (and are also
-//! appended to `deferred.jsonl` for session-end re-evaluation).
+//! Skills are never auto-written — they always become pending. Every pending
+//! candidate goes into the **one** review queue (`pending-review.json`, P1-5).
 
 use std::path::PathBuf;
 
-use hermes_memory::{Confidence, MemoryStore, MemoryStoreError, DEFAULT_DEDUP_THRESHOLD};
+use hermes_memory::{Confidence, MemoryStore, MemoryStoreError};
 
 use crate::candidate;
-use crate::deferred::{self, DeferredCandidate};
+use crate::inbox::{self, EnqueueMark, InboxPayload, InboxSource};
 use crate::log::{self, ActionTaken, CandidateKind, ReflectLogEntry};
 use crate::output::{ConflictCandidate, MemoryCandidate, ReflectionOutput, SkillCandidate};
 
@@ -25,16 +25,18 @@ pub struct MicroApplyConfig {
     pub min_confidence: Confidence,
     /// User turn taught the agent ("记住…", "always…") — bypass confidence floor.
     pub explicit_intent: bool,
-    /// Cosine threshold for near-duplicate rejection. Default = store default.
-    pub dedup_threshold: f64,
-    /// CLI session-end re-reads `deferred.jsonl`. GUI/server use inbox only.
-    pub queue_deferred: bool,
-    /// Data root that `deferred.jsonl` / `reflect-log.jsonl` land in. Explicit
+    /// 由 `apply_micro_output` 自己把待审候选放进待审队列（`pending-review.json`）。
+    /// GUI/server 置 false（`.caller_enqueues()`）：它们在 run 之后显式入队，
+    /// 因为要带 `EnqueueMark` 的替换语义（整场 distill 顶掉本会话旧条目）。
+    pub enqueue_pending: bool,
+    /// Data root that `pending-review.json` / `reflect-log.jsonl` land in. Explicit
     /// so a caller (a test, a second root) can never drift into the process-wide
     /// default root by accident.
     pub data_root: PathBuf,
-    /// 当前会话的人物归属。`None` = 无人物 / 自带角色 → 一切落全局。
-    pub memory_owner: Option<String>,
+    /// 当前会话看得见的归属，**第一个是「本会话自己」**（工位 id / 项目组 id）。
+    /// 空 = 无人物 / 自带角色 → 一切落全局。组会话有两个：组 + 这一轮说话的人
+    /// （`docs/spec/projects.md` §4.2：标准归组、手艺归说话的人）。
+    pub memory_owners: Vec<String>,
 }
 
 impl MicroApplyConfig {
@@ -49,16 +51,21 @@ impl MicroApplyConfig {
             auto_accept_memories,
             min_confidence,
             explicit_intent,
-            dedup_threshold: DEFAULT_DEDUP_THRESHOLD,
-            queue_deferred: true,
+            enqueue_pending: true,
             data_root: hermes_core::data_root(),
-            memory_owner: None,
+            memory_owners: Vec::new(),
         }
     }
 
+    /// 本会话自己（`resolve_owner` 的 `session_owner` 那一档）。空 = 全局。
+    pub fn session_owner(&self) -> Option<&str> {
+        self.memory_owners.first().map(String::as_str)
+    }
+
     /// Desktop / server: pending goes to inbox. Do not grow a second file.
-    pub fn inbox_only(mut self) -> Self {
-        self.queue_deferred = false;
+    /// 调用方自己入队（见 `enqueue_pending` 字段）。
+    pub fn caller_enqueues(mut self) -> Self {
+        self.enqueue_pending = false;
         self
     }
 
@@ -70,7 +77,13 @@ impl MicroApplyConfig {
 
     /// 归属由会话决定，不由调用方到处传字面量。
     pub fn with_memory_owner(mut self, owner: Option<String>) -> Self {
-        self.memory_owner = owner;
+        self.memory_owners = owner.into_iter().collect();
+        self
+    }
+
+    /// 一组归属（组会话：本项目组 + 这一轮说话的人）。
+    pub fn with_memory_owners(mut self, owners: Vec<String>) -> Self {
+        self.memory_owners = owners;
         self
     }
 }
@@ -84,7 +97,7 @@ pub struct MicroApplyResult {
     pub auto_accepted_paths: Vec<PathBuf>,
     /// Skill candidates still needing human approval.
     pub pending_skills: Vec<SkillCandidate>,
-    /// Memory candidates still needing human approval (or deferred).
+    /// Memory candidates still needing human approval.
     pub pending_memories: Vec<MemoryCandidate>,
     /// Conflicts that block auto-accept for the whole batch.
     pub pending_conflicts: Vec<ConflictCandidate>,
@@ -118,12 +131,25 @@ impl MicroApplyResult {
     }
 }
 
-/// 落 deferred 的记忆候选要连**来源工位**一起写下去：批准发生在下一次会话
-/// （CLI `review_deferred`），那时已经没有原会话可查（Task 1.8b）。
-fn deferred_memory(c: &MemoryCandidate, config: &MicroApplyConfig) -> DeferredCandidate {
-    DeferredCandidate::Memory {
-        candidate: c.clone(),
-        session_owner: config.memory_owner.clone(),
+/// 待审的记忆候选要连**来源工位**一起写下去：批准发生在下一次会话
+/// （CLI `review_deferred` / GUI 面板），那时已经没有原会话可查（Task 1.8b）。
+fn pending_memory(c: &MemoryCandidate) -> InboxPayload {
+    InboxPayload::Memory(c.clone())
+}
+
+/// 把一条候选放进**唯一**的待审队列（inbox，P1-5）。
+///
+/// 以前这里写的是 CLI 私有的 `deferred.jsonl`：同机同一用户，GUI/server 的待审
+/// 长在 `pending-review.json`、CLI 的长在 `deferred.jsonl`，两条各自长、互相看不见。
+/// 现在只有一条队列，落盘目标跟着 `config.data_root` 走（测试不碰真实数据根）。
+fn enqueue_pending(config: &MicroApplyConfig, payload: InboxPayload) {
+    // `append_only`：micro 每批只看最新一轮，用户在面板上还没审的旧条目
+    // 不该被下一批顶掉。
+    let mark = EnqueueMark::append_only(config.session_owner().map(str::to_string));
+    if let Err(e) =
+        inbox::enqueue_candidate_at(&config.data_root, payload, InboxSource::Micro, mark)
+    {
+        tracing::warn!(error=%e, "enqueue pending candidate to inbox failed");
     }
 }
 
@@ -156,41 +182,17 @@ pub fn apply_micro_output(
             && !has_conflicts;
 
         if !eligible {
-            if config.queue_deferred {
-                deferred::save_at(&config.data_root, deferred_memory(c, config));
+            if config.enqueue_pending {
+                enqueue_pending(config, pending_memory(c));
             }
             result.pending_memories.push(c.clone());
             continue;
         }
 
-        match store.check_near_duplicate(&c.fact, config.dedup_threshold) {
-            Ok(()) => {}
-            Err(MemoryStoreError::Conflict {
-                existing_id,
-                similarity,
-            }) => {
-                tracing::info!(
-                    %existing_id,
-                    similarity,
-                    "micro auto-accept skipped near-duplicate"
-                );
-                result.skipped_near_duplicates += 1;
-                continue;
-            }
-            Err(e) => {
-                tracing::warn!(error=%e, "near-duplicate check failed; deferring candidate");
-                if config.queue_deferred {
-                    deferred::save_at(&config.data_root, deferred_memory(c, config));
-                }
-                result.pending_memories.push(c.clone());
-                continue;
-            }
-        }
-
         // 落盘归属：判定只有一个地方（`candidate::frontmatter_for` → `resolve_owner`），
         // 这里只传参。
         // 反思路径的默认方向是 **Global**：模型没说清就落全局（宁可不隔离，不误隔离）。
-        let fm = candidate::frontmatter_for(c, config.memory_owner.as_deref());
+        let fm = candidate::frontmatter_for(c, config.session_owner());
         match store.put(c.scope, fm, &c.fact) {
             Ok(path) => {
                 tracing::info!(path=%path.display(), "micro auto-accepted memory");
@@ -207,10 +209,23 @@ pub fn apply_micro_output(
                     },
                 );
             }
+            // 查重闸门在 `put` 里（P1-4）。重复 = 「已经记过了」，跳过而不是
+            // 塞回待审：用户已经点头过一条同样的，再问一次只是打扰。
+            Err(MemoryStoreError::Conflict {
+                existing_id,
+                similarity,
+            }) => {
+                tracing::info!(
+                    %existing_id,
+                    similarity,
+                    "micro auto-accept skipped near-duplicate"
+                );
+                result.skipped_near_duplicates += 1;
+            }
             Err(e) => {
                 tracing::warn!(error=%e, "micro auto-accept put failed");
-                if config.queue_deferred {
-                    deferred::save_at(&config.data_root, deferred_memory(c, config));
+                if config.enqueue_pending {
+                    enqueue_pending(config, pending_memory(c));
                 }
                 result.pending_memories.push(c.clone());
             }
@@ -218,8 +233,8 @@ pub fn apply_micro_output(
     }
 
     for c in &output.skill_candidates {
-        if config.queue_deferred {
-            deferred::save_at(&config.data_root, DeferredCandidate::Skill(c.clone()));
+        if config.enqueue_pending {
+            enqueue_pending(config, InboxPayload::Skill(c.clone()));
         }
         result.pending_skills.push(c.clone());
     }
@@ -293,7 +308,7 @@ mod tests {
             conflicts: vec![],
         };
         let cfg = MicroApplyConfig::new("s1", true, Confidence::High, true)
-            .inbox_only()
+            .caller_enqueues()
             .with_data_root(dir.to_path_buf())
             .with_memory_owner(session_owner.map(str::to_string));
         apply_micro_output(output, store, &cfg);
@@ -503,11 +518,10 @@ mod tests {
         );
     }
 
+    /// P1-5：待审候选写进**唯一**的队列（`pending-review.json`），而且只写进
+    /// 传进来的那个数据根 —— 测试永远不许碰真实数据根。
     #[test]
-    fn micro_apply_deferred_lands_in_injected_root_only() {
-        let process_root = hermes_core::data_root();
-        let before = file_len(&process_root.join("deferred.jsonl"));
-
+    fn micro_apply_pending_lands_in_the_one_queue_inside_the_injected_root() {
         let (d, s) = store();
         let cfg = MicroApplyConfig::new("sess", false, Confidence::Medium, false)
             .with_data_root(d.path().to_path_buf());
@@ -515,7 +529,7 @@ mod tests {
             summary: "s".into(),
             skill_candidates: vec![],
             memory_candidates: vec![mem_cand(
-                "probe: deferred must not escape",
+                "用户偏好：新闻稿标题不用感叹号，先结论后依据",
                 Confidence::High,
             )],
             conflicts: vec![],
@@ -523,14 +537,12 @@ mod tests {
         let r = apply_micro_output(out, &s, &cfg);
         assert_eq!(r.pending_memories.len(), 1);
 
-        assert!(
-            d.path().join("deferred.jsonl").exists(),
-            "deferred candidate must land in the injected root"
-        );
-        assert_eq!(
-            file_len(&process_root.join("deferred.jsonl")),
-            before,
-            "process data root must not gain a deferred line"
-        );
+        // 队列只有一条，而且它是按 `config.data_root` 定位的 —— 读得到就说明
+        // 写对了地方（不需要再去比进程根：那个值会被同二进制的 inbox 测试改掉）。
+        let queue = crate::inbox::path_in(d.path());
+        assert!(queue.exists(), "待审候选必须落在注入的数据根里");
+        let raw = std::fs::read_to_string(&queue).unwrap();
+        assert!(raw.contains("新闻稿标题不用感叹号"), "{raw}");
+        assert_eq!(crate::inbox::list_at(d.path()).unwrap().len(), 1);
     }
 }

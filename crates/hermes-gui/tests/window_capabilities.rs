@@ -13,7 +13,12 @@ use std::path::{Path, PathBuf};
 ///
 /// 每条都**双向**校验：指纹找不到 = 映射表过期（要求同步），
 /// 权限没授予 = 用户点下去会静默失败。这样映射表不会烂掉后假装通过。
-const REQUIRED: &[(&str, &str)] = &[(".destroy(", "core:window:allow-destroy")];
+const REQUIRED: &[(&str, &str)] = &[
+    (".destroy(", "core:window:allow-destroy"),
+    // 正文里的链接（来源小标签）走系统浏览器。WebView 自己不会开外链：漏了这条
+    // 权限，用户点下去同样静默无反应——`opener:default` 展开含 `allow-open-url`。
+    ("openUrl(", "opener:allow-open-url"),
+];
 
 fn gui_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

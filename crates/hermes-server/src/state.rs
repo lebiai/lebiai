@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result};
-use hermes_core::{LlmProvider, Session, SessionMeta, ToolHost, ToolSpec};
+use hermes_core::{LlmProvider, Session, SessionMeta, ToolHost};
 use hermes_llm::Config;
 use hermes_mcp::{McpConfig, McpToolHost, ServerSpec};
 use hermes_memory::{FsMemoryStore, LoadedMemory, MemoryStore};
@@ -39,7 +39,6 @@ pub struct AppState {
     pub sessions: Sessions,
     pub cancel_tokens: CancelTokens,
     pub confirm_tokens: ConfirmTokens,
-    pub tools: Mutex<Vec<ToolSpec>>,
     /// Last known skill index — never read directly for a request, call
     /// [`Self::refresh_skills`] so skills created mid-run are visible.
     pub skills: Mutex<Vec<LoadedSkill>>,
@@ -119,16 +118,7 @@ impl AppState {
         let memory_store: Arc<FsMemoryStore> =
             Arc::new(FsMemoryStore::new(base.join("memories"), None));
 
-        let web_ctx = Arc::new(WebToolsContext {
-            extract_provider: provider.clone(),
-            extract_model: config.web.extract_model.clone(),
-            extract_max_tokens: 2048,
-            search_backend: SearchBackend::parse(&config.web.search_backend),
-            tavily_api_key: config.web.tavily_api_key.clone(),
-            brave_api_key: config.web.brave_api_key.clone(),
-            searxng_url: config.web.searxng_url.clone(),
-            cache_ttl_secs: config.web.cache_ttl_secs,
-        });
+        let web_ctx = build_web_ctx(&config, provider.clone());
 
         let host = load_tool_host(
             &workspace_root,
@@ -138,7 +128,6 @@ impl AppState {
             Some(web_ctx),
         )
         .await?;
-        let tools = host.list_tools().await.unwrap_or_default();
 
         let skills = skill_store.list().unwrap_or_default();
         let all_memories = memory_store.list_active().unwrap_or_default();
@@ -157,7 +146,6 @@ impl AppState {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             cancel_tokens: Arc::new(Mutex::new(HashMap::new())),
             confirm_tokens: Arc::new(Mutex::new(HashMap::new())),
-            tools: Mutex::new(tools),
             skills: Mutex::new(skills),
             pinned_memories: Arc::new(Mutex::new(pinned)),
             active_memories: Arc::new(Mutex::new(all_memories)),
@@ -212,6 +200,24 @@ impl AppState {
         *self.skills.lock().await = fresh.clone();
         fresh
     }
+}
+
+/// 造一份网页能力上下文：父的 `web_fetch` 与子代理的都用这一份口径。
+///
+/// **现算，不要存**：它握着 provider（含 API Key），而 `update_config` 只换
+/// `state.provider`，换不掉已经焊进工具宿主的旧副本。每轮现算，Key 改了下一轮就生效。
+/// 与桌面端 `hermes-gui/src/state.rs::build_web_ctx` 同一套字段、同一个用法。
+pub fn build_web_ctx(config: &Config, provider: Arc<dyn LlmProvider>) -> Arc<WebToolsContext> {
+    Arc::new(WebToolsContext {
+        extract_provider: provider,
+        extract_model: config.web.extract_model.clone(),
+        extract_max_tokens: hermes_tools::web::DEFAULT_EXTRACT_MAX_TOKENS,
+        search_backend: SearchBackend::parse(&config.web.search_backend),
+        tavily_api_key: config.web.tavily_api_key.clone(),
+        brave_api_key: config.web.brave_api_key.clone(),
+        searxng_url: config.web.searxng_url.clone(),
+        cache_ttl_secs: config.web.cache_ttl_secs,
+    })
 }
 
 async fn load_tool_host(

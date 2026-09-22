@@ -141,11 +141,16 @@ pub async fn run(opts: &DistillOpts) -> Result<()> {
         };
         // 合并天生跨会话：一个簇的成员可能来自不同工位的会话，没有唯一的
         // 「来源工位」可传 → `None`，落全局（Task 1.8b 报告里点名的取不到处）。
+        // 合并写的是「存活的那一条」：它带着 `supersedes`（= 簇里其他成员），
+        // 所以查重闸门（P1-4）会放行 —— 那正是**该**写下去的时候。
         match persist_memory(&store, &candidate, None) {
-            Ok(path) => {
+            Ok(Some(path)) => {
                 applied += 1;
                 println!("  ✓ wrote {}", path.display());
                 log_distill(&survivor.frontmatter.id, &superseded, "merge");
+            }
+            Ok(None) => {
+                eprintln!("  ↩ 库里已经有一条同样的合并结果，没重复写");
             }
             Err(e) => eprintln!("  ✗ failed to persist: {e:#}"),
         }

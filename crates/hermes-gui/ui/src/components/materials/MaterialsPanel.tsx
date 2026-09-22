@@ -47,14 +47,18 @@ type MaterialsTab = "kept" | "produced";
  * not the source, so it is not fed to retrieval. Helper scripts are filtered out
  * server-side (a `.py` is process, not a deliverable).
  */
-function OutputsSection({ query }: { query: string }) {
+function OutputsSection({ query, active }: { query: string; active: boolean }) {
   const t = useUiStore((s) => s.t);
   const [groups, setGroups] = useState<OutputGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [page, setPage] = useState(1);
 
+  // Re-read every time this tab comes back into view: files land in the
+  // workspace while you are on the other tab. The old list stays on screen
+  // during the refetch, so switching does not flash.
   useEffect(() => {
+    if (!active) return;
     let alive = true;
     void invoke<OutputGroup[]>("list_outputs")
       .then((rows) => {
@@ -71,7 +75,7 @@ function OutputsSection({ query }: { query: string }) {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [active]);
 
   useEffect(() => {
     setPage(1);
@@ -121,12 +125,12 @@ function OutputsSection({ query }: { query: string }) {
           return (
             <li key={it.relPath}>
               {startsDay && (
-                <p className="text-[11px] text-app-fg-tertiary mb-1">{it.day}</p>
+                <p className="text-app-sub text-app-fg-secondary mb-1">{it.day}</p>
               )}
               <div className={`${ui.card} px-3 py-2 flex items-center gap-3`}>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-app-fg truncate">{it.name}</p>
-                  <p className="text-[11px] text-app-fg-tertiary mt-0.5">
+                  <p className="text-app-body text-app-fg truncate">{it.name}</p>
+                  <p className="text-app-sub text-app-fg-secondary mt-0.5">
                     {it.modified}
                     {it.ext ? ` · ${it.ext.toUpperCase()}` : ""}
                   </p>
@@ -176,12 +180,15 @@ export function MaterialsPanel() {
     }
   }, [t]);
 
+  // A search re-reads after a beat; switching back to this tab re-reads now
+  // (the other tab is showing something else, so this is not a duplicate call).
   useEffect(() => {
+    if (tab !== "kept") return;
     const handle = window.setTimeout(() => {
       void reload(query.trim());
     }, 180);
     return () => window.clearTimeout(handle);
-  }, [query, reload]);
+  }, [query, tab, reload]);
 
   // A new tab or a new search starts at the top of its own list.
   useEffect(() => {
@@ -348,7 +355,7 @@ export function MaterialsPanel() {
       </div>
       <div className={`flex-1 overflow-y-auto px-5 pb-6 ${dragOver ? "ring-2 ring-inset ring-app-primary/30 rounded-xl" : ""}`}>
         {tab === "produced" ? (
-          <OutputsSection query={query.trim()} />
+          <OutputsSection query={query.trim()} active={tab === "produced"} />
         ) : loading ? (
           <p className="text-sm text-app-fg-tertiary">{t("common.loading")}</p>
         ) : loadFailed ? (
@@ -381,10 +388,10 @@ export function MaterialsPanel() {
                   className={`${ui.card} relative px-3 py-2.5 flex items-start gap-3`}
                 >
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-app-fg truncate">
+                    <p className="text-app-body font-medium text-app-fg truncate">
                       {row.title}
                     </p>
-                    <p className="text-[11px] text-app-fg-tertiary mt-0.5">
+                    <p className="text-app-sub text-app-fg-secondary mt-0.5">
                       {shortDate(row.createdAt)}
                       {row.ext ? ` · ${row.ext.toUpperCase()}` : ""}
                       {row.readable ? "" : ` · ${t("materials.unread")}`}
@@ -392,7 +399,7 @@ export function MaterialsPanel() {
                     </p>
                     <button
                       type="button"
-                      className="mt-1 text-[11px] text-app-primary hover:underline"
+                      className="mt-1 text-app-sub text-app-primary hover:underline"
                       onClick={() => void onTogglePreview(row.id)}
                     >
                       {t("materials.preview")}
@@ -405,7 +412,7 @@ export function MaterialsPanel() {
                     {row.previous ? (
                       <button
                         type="button"
-                        className="mt-1 text-[11px] text-app-fg-secondary hover:text-app-fg underline-offset-2 hover:underline"
+                        className="mt-1 text-app-sub text-app-fg-secondary hover:text-app-fg underline-offset-2 hover:underline"
                         onClick={() => void onOpen(row.previous!.id)}
                       >
                         {t("materials.previous")} · {row.previous.title} ·{" "}

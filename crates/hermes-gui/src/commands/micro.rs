@@ -163,8 +163,12 @@ pub fn spawn_after_turn(
     turn_messages: Vec<Message>,
     session_key: String,
     session_id_for_log: String,
-    // 会话的人物 id（`SessionMeta.persona`）。归属由它决定，这里不传算好的 owner。
+    // 会话的三条轴（`SessionMeta.persona` / `SessionMeta.team` / 这一轮谁接）。
+    // 归属由它们决定，这里**不传算好的 owner**——转换只许发生在
+    // `memory_owners_for` 那一处（组会话是两个归属：组 + 这一轮说话的人）。
     session_persona: Option<String>,
+    session_team: Option<String>,
+    session_holder: Option<String>,
     auto_accept: bool,
     min_confidence: Confidence,
     live_llm: Arc<LiveLlmGate>,
@@ -180,16 +184,21 @@ pub fn spawn_after_turn(
             *map.get(&session_key).unwrap_or(&0)
         };
 
-        // 本会话的工位：自动落盘用它，待审候选入队时也要记下它（批准时才有依据）。
-        let session_owner = hermes_core::persona::memory_owner_for(session_persona.as_deref());
+        // 本会话看得见的那几个归属：自动落盘用它，待审候选入队时也要记下它
+        // （批准时才有依据）。组会话是「组 + 这一轮说话的人」两个。
+        let owners = hermes_core::persona::memory_owners_for(
+            session_persona.as_deref(),
+            session_team.as_deref(),
+            session_holder.as_deref(),
+        );
         let apply = MicroApplyConfig::new(
             session_id_for_log.clone(),
             auto_accept,
             min_confidence,
             false, // filled inside run_micro_after_turn from messages
         )
-        .inbox_only()
-        .with_memory_owner(session_owner.clone());
+        .caller_enqueues()
+        .with_memory_owners(owners.clone());
 
         let outcome = run_micro_after_turn(MicroRunRequest {
             provider: provider.as_ref(),
@@ -248,7 +257,7 @@ pub fn spawn_after_turn(
             match enqueue_from_reflection_marked(
                 &pending,
                 InboxSource::Micro,
-                EnqueueMark::append_only(session_owner),
+                EnqueueMark::append_only(owners.first().cloned()),
             ) {
                 Ok(added) => {
                     if added > 0 {

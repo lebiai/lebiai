@@ -1,19 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
-import { Brain, Settings, MessageSquare } from "lucide-react";
+import { Brain, Settings } from "lucide-react";
 import brandLogo from "../../assets/logo.png";
 import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../../store/chatStore";
 import { useNavStore, type Panel } from "../../store/navStore";
 import { useUiStore } from "../../store/uiStore";
 import { refreshProviderLabel } from "../../store/uiStore";
+import type { SessionSummary } from "../../types";
 import type { TranslationKey } from "../../i18n";
 import { ui } from "../common/ui";
 import { toast } from "../../utils/toast";
 import { LicenseSidebarHint } from "../license/LicenseSidebarHint";
 
-/** Dialogue first; Continuity/Evolve in one place; settings last. */
+/** Workstations are the dialogue entry. Bottom rail is secondary only. */
 const primaryNav: { panel: Panel; icon: typeof Brain; labelKey: TranslationKey }[] = [
-  { panel: "chat", icon: MessageSquare, labelKey: "nav.chat" },
   { panel: "know", icon: Brain, labelKey: "nav.know" },
   { panel: "settings", icon: Settings, labelKey: "nav.settings" },
 ];
@@ -28,7 +28,8 @@ export function Sidebar() {
     sessionEnd,
     personas,
     personaId,
-    draftSession,
+    teams,
+    teamId,
   } = useChatStore();
   const { activePanel, setPanel, openPendingReview } = useNavStore();
   const t = useUiStore((s) => s.t);
@@ -58,7 +59,10 @@ export function Sidebar() {
    */
   useEffect(() => {
     const onVis = () => {
-      if (document.visibilityState === "visible") void fetchSessions();
+      if (document.visibilityState !== "visible") return;
+      void fetchSessions();
+      // 今天动过没取自会话文件本身，回到窗口时顺手刷一次。
+      void useChatStore.getState().fetchTeams();
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
@@ -73,25 +77,51 @@ export function Sidebar() {
     [personas]
   );
 
-  /** 点工位：优先回到该人物最近的一段对话，没有就开一段新的。 */
-  const openStation = (id: string) => {
+  /**
+   * 点一个工作位：优先回到它最近的那段对话，没有就开一段新的。
+   * 工位（人）与项目组（事）走**同一套**——差别只在「它认哪个字段」。
+   */
+  const openWorkplace = ({
+    current,
+    find,
+    open,
+  }: {
+    current: boolean;
+    find: (s: SessionSummary) => boolean;
+    open: () => Promise<void>;
+  }) => {
     if (busy) {
       toast.info(t("toast.streamingBusy"));
       return;
     }
     setPanel("chat");
-    if (draftSession?.persona === id) return;
+    if (current) return;
     const latest = sessions
-      .filter((s) => s.persona === id)
+      .filter(find)
       .sort((a, b) =>
         (b.updatedAt ?? b.createdAt).localeCompare(a.updatedAt ?? a.createdAt)
       )[0];
     if (latest) {
       void loadSession(latest.path);
     } else {
-      void newSession(id);
+      void open();
     }
   };
+
+  const openStation = (id: string) =>
+    openWorkplace({
+      current: personaId === id,
+      find: (s) => s.persona === id,
+      open: () => newSession(id),
+    });
+
+  /** 项目组：一条会话日复一日，所以同样是「回到它那一条」。 */
+  const openTeam = (id: string) =>
+    openWorkplace({
+      current: teamId === id,
+      find: (s) => s.team === id,
+      open: () => newSession(undefined, id),
+    });
 
   const navButton = (panel: Panel, Icon: typeof Brain, labelKey: TranslationKey) => {
     const active = activePanel === panel;
@@ -112,7 +142,7 @@ export function Sidebar() {
             title={t("memory.pendingZone")}
             aria-label={t("memory.pendingZone")}
             onClick={openPendingReview}
-            className="shrink-0 text-[10px] font-semibold min-w-[1.15rem] h-4 px-1 rounded-full bg-app-primary text-white flex items-center justify-center"
+            className="shrink-0 text-xs font-semibold min-w-[1.15rem] h-4 px-1 rounded-full bg-app-primary text-white flex items-center justify-center"
           >
             {inboxCount > 99 ? "99+" : inboxCount}
           </button>
@@ -145,7 +175,7 @@ export function Sidebar() {
             <div className="text-sm font-semibold tracking-tight text-app-fg dark:text-slate-100">
               {t("app.brand")}
             </div>
-            <div className="text-[11px] text-app-fg-tertiary dark:text-slate-500 truncate">
+            <div className="text-app-sub text-app-fg-secondary dark:text-slate-400 truncate">
               {t("sidebar.tagline")}
             </div>
           </div>
@@ -168,18 +198,71 @@ export function Sidebar() {
                 current ? ui.sessionActive : ui.sessionIdle
               } ${busy ? "pointer-events-none opacity-55" : ""}`}
             >
-              <span className="shrink-0 w-6 h-6 rounded-full bg-app-primary-soft dark:bg-blue-950/60 text-app-primary dark:text-blue-300 flex items-center justify-center text-[11px] font-semibold">
+              <span className="shrink-0 w-6 h-6 rounded-full bg-app-primary-soft dark:bg-blue-950/60 text-app-primary dark:text-blue-300 flex items-center justify-center text-xs font-semibold">
                 {p.name[0]}
               </span>
               <span className="flex-1 min-w-0">
                 <span className="block truncate leading-snug">{p.name}</span>
-                <span className="block truncate text-[10px] text-app-fg-tertiary leading-tight">
+                <span className="block truncate text-app-sub text-app-fg-secondary leading-tight">
                   {p.role}
                 </span>
               </span>
             </button>
           );
         })}
+
+        {teams.length > 0 && (
+          <>
+            <div className={`px-2 pt-3 pb-1.5 ${ui.sectionLabel}`}>
+              {t("team.section")}
+            </div>
+            {teams.map((team) => {
+              const current = teamId === team.id;
+              // 缺席 / 缺接口人都是信息，不是故障：灰掉、写明缺谁，不做假按钮。
+              const short = team.missing > 0 || !team.canRun;
+              return (
+                <button
+                  key={team.id}
+                  type="button"
+                  onClick={() => openTeam(team.id)}
+                  disabled={!team.canRun}
+                  title={team.canRun ? team.role : team.hint}
+                  className={`w-full flex items-center gap-2 pl-2.5 pr-2 py-1.5 rounded-lg text-sm mb-0.5 text-left ${
+                    current ? ui.sessionActive : ui.sessionIdle
+                  } ${
+                    !team.canRun
+                      ? "opacity-55 cursor-not-allowed"
+                      : busy
+                        ? "pointer-events-none opacity-55"
+                        : ""
+                  }`}
+                >
+                  <span className="shrink-0 w-6 h-6 rounded-md bg-app-primary-soft dark:bg-blue-950/60 text-app-primary dark:text-blue-300 flex items-center justify-center text-xs font-semibold">
+                    {team.name[0]}
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="block truncate leading-snug">
+                      {team.name}
+                    </span>
+                    {/*
+                      缺人是**要处理的事**，不是装饰：挤成一行会被裁在字中间，
+                      所以警示态给两行，平静态才截断。
+                    */}
+                    <span
+                      className={`block text-app-sub leading-tight ${
+                        short
+                          ? "text-amber-600 dark:text-amber-400"
+                          : "truncate text-app-fg-tertiary"
+                      }`}
+                    >
+                      {team.hint}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </>
+        )}
       </div>
 
       <nav className="border-t border-app-border dark:border-slate-800 p-2 space-y-0.5 shrink-0 max-h-[40vh] overflow-y-auto">
@@ -196,8 +279,12 @@ export function Sidebar() {
               {displayName || t("sidebar.userGuest")}
             </div>
             {/* Provider when calm; license chip/date when it matters — not a separate battery block */}
-            <div className="flex items-center gap-1.5 min-w-0 mt-0.5">
-              <span className="text-[10px] text-app-fg-tertiary dark:text-slate-500 truncate shrink min-w-0">
+            {/*
+              两段信息挤一行时会被裁成「不足 1 …」——授权提示是**要看的**，
+              所以允许换行，宁可占两行也不截断。
+            */}
+            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0 mt-0.5">
+              <span className="text-app-sub text-app-fg-secondary dark:text-slate-400 truncate min-w-0">
                 {providerLabel}
               </span>
               <LicenseSidebarHint />

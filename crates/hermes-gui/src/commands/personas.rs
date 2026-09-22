@@ -4,7 +4,7 @@
 //! `enabled = builtin || (授权名单含该 id && 用户在设置里勾过)`。
 //!
 //! - 授权名单 = 授权码里的 `personas`（`hermes_core::LicenseStatus.personas`）。
-//! - 试用期 / 老码没带名单 → 空 → 只有四个自带。
+//! - 试用期 / 老码没带名单 → 空 → 只有三个自带（大导演 / 工具人李现在 / 资料员小文）。
 //! - 授权过期 → 名单照最后一份有效码，人物不消失（`LicenseStatus` 已经这么给）。
 //! - 授权文件读不动 → **报错**，不假装「什么都没有」：静默收窄名单会连带把用户的选择抹掉。
 
@@ -138,11 +138,10 @@ pub(crate) fn enable_licensed_at(
     commit(path, &chosen, licensed)
 }
 
-/// 会话绑定的人物：`None` = 没绑定，或 id 不认识。
-/// 容错口径与会话 → 归属的转换（`persona::memory_owner_for`）完全一致：
-/// 不认识的 id 不会 panic，只是这个会话没有人设/没有工位。
-pub fn bound_persona(session_persona: Option<&str>) -> Option<&'static persona::Persona> {
-    persona::get(session_persona?)
+/// 这台机器上**开着**的工位 id（授权 ∩ 勾选 + 自带）。组块「今天谁在桌上」与
+/// 指路名册读的是同一份（`persona::open`），别处不许再判一遍。
+pub fn open_ids() -> Vec<&'static str> {
+    persona::open().iter().map(|p| p.id.as_str()).collect()
 }
 
 /// 只报「谁不认识」，不改口径：`new_session` 拿它挡掉叫错名字的开场。
@@ -202,7 +201,7 @@ mod tests {
     #[test]
     fn a_missing_file_shows_the_builtins_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
-        let licensed = roster(&["xiao-xie", "yu-tian"]);
+        let licensed = roster(&["sao-di-seng", "yu-tian"]);
         let items = build_items(
             &read_enabled(&dir.path().join("personas.json"), &licensed),
             &licensed,
@@ -219,15 +218,21 @@ mod tests {
     fn a_saved_choice_comes_back_as_enabled() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("personas.json");
-        let licensed = roster(&["xiao-xie", "yu-tian", "xiao-jin"]);
-        write_enabled(&path, &roster(&["xiao-xie", "yu-tian"]), &licensed).unwrap();
+        let licensed = roster(&["sao-di-seng", "yu-tian", "lv-lao-shi"]);
+        write_enabled(&path, &roster(&["sao-di-seng", "yu-tian"]), &licensed).unwrap();
         let items = build_items(&read_enabled(&path, &licensed), &licensed);
         assert_eq!(
             enabled_ids(&items),
-            vec!["li-xian", "xiao-wen", "da-dao-yan", "xiao-xie", "yu-tian"]
+            vec![
+                "li-xian",
+                "xiao-wen",
+                "da-dao-yan",
+                "sao-di-seng",
+                "yu-tian"
+            ]
         );
-        assert!(item(&items, "xiao-jin").licensed, "授权里有 → 候选");
-        assert!(!item(&items, "xiao-jin").enabled, "但用户没勾 → 不显示");
+        assert!(item(&items, "lv-lao-shi").licensed, "授权里有 → 候选");
+        assert!(!item(&items, "lv-lao-shi").enabled, "但用户没勾 → 不显示");
     }
 
     #[test]
@@ -247,52 +252,46 @@ mod tests {
     fn a_trial_never_shows_a_licensed_role_even_if_the_file_asks_for_one() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("personas.json");
-        std::fs::write(&path, r#"{"enabled":["xiao-xie","xiao-jin"]}"#).unwrap();
+        std::fs::write(&path, r#"{"enabled":["sao-di-seng","lv-lao-shi"]}"#).unwrap();
         let trial = BTreeSet::new();
         let items = build_items(&read_enabled(&path, &trial), &trial);
         assert_eq!(enabled_ids(&items), BUILTINS, "试用期只有三个自带");
-        assert!(!item(&items, "xiao-xie").licensed);
-        assert!(!item(&items, "xiao-xie").enabled);
+        assert!(!item(&items, "sao-di-seng").licensed);
+        assert!(!item(&items, "sao-di-seng").enabled);
     }
 
     #[test]
     fn an_unauthorized_id_cannot_be_turned_on_from_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("personas.json");
-        let licensed = roster(&["xiao-xie"]);
+        let licensed = roster(&["sao-di-seng"]);
         std::fs::write(
             &path,
-            r#"{"enabled":["xiao-xie","xiao-jin","not-a-person","da-dao-yan"]}"#,
+            r#"{"enabled":["sao-di-seng","lv-lao-shi","not-a-person","da-dao-yan"]}"#,
         )
         .unwrap();
         assert_eq!(
             read_enabled(&path, &licensed)
                 .into_iter()
                 .collect::<Vec<_>>(),
-            vec!["xiao-xie".to_string()],
+            vec!["sao-di-seng".to_string()],
             "未授权 id、幽灵 id、自带都不进内存"
         );
         write_enabled(
             &path,
-            &roster(&["xiao-jin", "ghost", "xiao-xie"]),
+            &roster(&["lv-lao-shi", "ghost", "sao-di-seng"]),
             &licensed,
         )
         .unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "{\n  \"enabled\": [\n    \"xiao-xie\"\n  ]\n}",
+            "{\n  \"enabled\": [\n    \"sao-di-seng\"\n  ]\n}",
             "落盘的只有已授权且非自带的真实选择"
         );
     }
 
     #[test]
-    fn a_bound_session_resolves_to_its_persona_and_an_unknown_one_is_ignored() {
-        assert_eq!(
-            bound_persona(Some("wang-hai-yan")).unwrap().name,
-            "情报王海燕"
-        );
-        assert!(bound_persona(Some("who-is-this")).is_none());
-        assert!(bound_persona(None).is_none());
+    fn an_unknown_persona_is_refused_not_invented() {
         assert!(require_persona("who-is-this").is_err());
         assert_eq!(require_persona("xiao-yu").unwrap().name, "主播小雨");
     }

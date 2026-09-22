@@ -4,7 +4,7 @@
 |------|------|
 | **编号** | `20260809-windows-markitdown-bundle` |
 | **日期** | 2026-08-09 |
-| **状态** | **已实施**（本机编译/clippy 绿 · Windows 实跑待 CI 验证） |
+| **状态** | **已验收**（2026-09-19 统一签收 · 依据与未验项见 [`20260919-acceptance-sweep`](./20260919-acceptance-sweep.md)）；原状态：**已实施**（本机编译/clippy 绿 · Windows 实跑待 CI 验证） |
 | **负责人** | Codex Agent |
 | **关联** | 用户反馈：Windows 也要开箱即用（文档导入） |
 

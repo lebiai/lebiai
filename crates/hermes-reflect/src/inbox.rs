@@ -13,7 +13,7 @@ use std::hash::{Hash, Hasher};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use hermes_memory::MemoryStore;
+use hermes_memory::{MemoryStore, MemoryStoreError};
 use serde::{Deserialize, Serialize};
 
 use crate::candidate;
@@ -92,12 +92,17 @@ struct InboxFile {
     items: Vec<InboxItem>,
 }
 
-fn path() -> PathBuf {
-    hermes_core::data_path("pending-review.json")
+const FILE: &str = "pending-review.json";
+
+/// `pending-review.json` **在给定数据根里**。待审队列只有这一份文件：
+/// micro、session-end、CLI、GUI、server 全写它（P1-5：以前 CLI 另有一条
+/// `deferred.jsonl`，同机同用户两条队列各自长）。
+pub fn path_in(root: &std::path::Path) -> PathBuf {
+    root.join(FILE)
 }
 
-fn load_file() -> Result<InboxFile> {
-    let p = path();
+fn load_file_at(root: &std::path::Path) -> Result<InboxFile> {
+    let p = path_in(root);
     if !p.exists() {
         return Ok(InboxFile::default());
     }
@@ -108,13 +113,24 @@ fn load_file() -> Result<InboxFile> {
     serde_json::from_str(&raw).with_context(|| format!("parse {}", p.display()))
 }
 
-fn save_file(file: &InboxFile) -> Result<()> {
-    let p = path();
+fn save_file_at(root: &std::path::Path, file: &InboxFile) -> Result<()> {
+    let p = path_in(root);
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent)?;
     }
     let raw = serde_json::to_string_pretty(file)?;
-    fs::write(&p, raw).with_context(|| format!("write {}", p.display()))
+    // 原子写：待审队列会被后台反思并写入，写到一半断电不该把用户点过的项弄没。
+    let tmp = p.with_extension("json.tmp");
+    fs::write(&tmp, raw).with_context(|| format!("write {}", tmp.display()))?;
+    fs::rename(&tmp, &p).with_context(|| format!("rename {}", p.display()))
+}
+
+fn load_file() -> Result<InboxFile> {
+    load_file_at(&hermes_core::data_root())
+}
+
+fn save_file(file: &InboxFile) -> Result<()> {
+    save_file_at(&hermes_core::data_root(), file)
 }
 
 fn hash_str(s: &str) -> String {
@@ -251,7 +267,17 @@ pub fn enqueue_from_reflection_marked(
     source: InboxSource,
     mark: EnqueueMark,
 ) -> Result<usize> {
-    let mut file = load_file()?;
+    enqueue_from_reflection_marked_at(&hermes_core::data_root(), output, source, mark)
+}
+
+/// [`enqueue_from_reflection_marked`] into an explicit data root.
+pub fn enqueue_from_reflection_marked_at(
+    root: &std::path::Path,
+    output: &ReflectionOutput,
+    source: InboxSource,
+    mark: EnqueueMark,
+) -> Result<usize> {
+    let mut file = load_file_at(root)?;
     let mut incoming: Vec<InboxItem> = Vec::new();
 
     for c in &output.memory_candidates {
@@ -322,13 +348,49 @@ pub fn enqueue_from_reflection_marked(
         file.items.drain(0..drop_n);
     }
 
-    save_file(&file)?;
+    save_file_at(root, &file)?;
     Ok(added)
+}
+
+/// 入队**一条**候选（micro 每批只看最新一轮，通常就 1 条）。
+///
+/// 走的是与整场 distill 完全相同的那道闸门：质量门槛 + 指纹去重 + 上限淘汰。
+/// 质量不过关的候选**不入队**，返回 `Ok(0)` —— 「nothing is lost」指的是
+/// 不静默丢弃**够格**的候选，不是把噪声也堆给用户。
+pub fn enqueue_candidate(
+    payload: InboxPayload,
+    source: InboxSource,
+    mark: EnqueueMark,
+) -> Result<usize> {
+    enqueue_candidate_at(&hermes_core::data_root(), payload, source, mark)
+}
+
+pub fn enqueue_candidate_at(
+    root: &std::path::Path,
+    payload: InboxPayload,
+    source: InboxSource,
+    mark: EnqueueMark,
+) -> Result<usize> {
+    let mut output = ReflectionOutput {
+        summary: String::new(),
+        skill_candidates: Vec::new(),
+        memory_candidates: Vec::new(),
+        conflicts: Vec::new(),
+    };
+    match &payload {
+        InboxPayload::Memory(c) => output.memory_candidates.push(c.clone()),
+        InboxPayload::Skill(c) => output.skill_candidates.push(c.clone()),
+    }
+    enqueue_from_reflection_marked_at(root, &output, source, mark)
 }
 
 /// Drop items that no longer pass quality gates (garbage cleanup).
 pub fn prune_low_quality() -> Result<usize> {
-    let mut file = load_file()?;
+    prune_low_quality_at(&hermes_core::data_root())
+}
+
+pub fn prune_low_quality_at(root: &std::path::Path) -> Result<usize> {
+    let mut file = load_file_at(root)?;
     let before = file.items.len();
     file.items.retain(|item| match &item.payload {
         InboxPayload::Memory(c) => memory_passes_gate(c),
@@ -336,14 +398,18 @@ pub fn prune_low_quality() -> Result<usize> {
     });
     let removed = before.saturating_sub(file.items.len());
     if removed > 0 {
-        save_file(&file)?;
+        save_file_at(root, &file)?;
     }
     Ok(removed)
 }
 
 pub fn list() -> Result<Vec<InboxItem>> {
-    let _ = prune_low_quality();
-    let mut items = load_file()?.items;
+    list_at(&hermes_core::data_root())
+}
+
+pub fn list_at(root: &std::path::Path) -> Result<Vec<InboxItem>> {
+    let _ = prune_low_quality_at(root);
+    let mut items = load_file_at(root)?.items;
     items.sort_by_key(|b| std::cmp::Reverse(b.created_at));
     Ok(items)
 }
@@ -375,11 +441,14 @@ pub fn remove(id: &str) -> Result<bool> {
 ///
 /// 归属判定本身只有 `hermes_memory::resolve_owner` 一个地方，这里只负责把参数
 /// 从**条目**里取出来：会话工位是入队时记下的（`session_owner`），不反查会话文件。
+/// 返回 `Ok(None)` = **库里已经有一条同样的**：不重复落盘，但这条待审算处理完了
+/// （条目仍会从队列里移除）。查重闸门在 `put` 里（P1-4），这里只把「重复」翻译成
+/// 一个正常的结局，而不是一个错误 —— 用户点的是「我同意」，不是「再存一份」。
 pub fn accept_memory_item(
     store: &dyn MemoryStore,
     item: &InboxItem,
     c: &MemoryCandidate,
-) -> Result<PathBuf> {
+) -> Result<Option<PathBuf>, MemoryStoreError> {
     let mut fm = candidate::frontmatter_for(c, item.session_owner.as_deref());
     // 出处写进 frontmatter：回顾时说得清这条是哪一轮、哪个会话来的。
     for (key, value) in [
@@ -394,11 +463,19 @@ pub fn accept_memory_item(
             );
         }
     }
-    candidate::put_with_fallback(store, c.scope, fm, &c.fact).map_err(|e| anyhow::anyhow!("{e}"))
+    match candidate::put_with_fallback(store, c.scope, fm, &c.fact) {
+        Ok(path) => Ok(Some(path)),
+        Err(MemoryStoreError::Conflict { .. }) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 pub fn clear() -> Result<()> {
-    let p = path();
+    clear_at(&hermes_core::data_root())
+}
+
+pub fn clear_at(root: &std::path::Path) -> Result<()> {
+    let p = path_in(root);
     if p.exists() {
         fs::remove_file(p)?;
     }
@@ -731,7 +808,7 @@ mod tests {
                 "payload":{"kind":"memory","fact":"旧文件里的候选，没有工位键",
                 "tags":[],"zone":"general","scope":"user","confidence":"high",
                 "rationale":"old","supersedes":[]}}]}"#;
-            std::fs::write(path(), old).unwrap();
+            std::fs::write(path_in(&hermes_core::data_root()), old).unwrap();
 
             let item = get("pend_m_old").unwrap().expect("老条目必须读得出来");
             assert!(item.session_owner.is_none(), "老文件没有这个键 → None");
@@ -776,6 +853,7 @@ mod tests {
             };
             let (_d, store) = store();
             let written = accept_memory_item(&store, &item, c).unwrap();
+            let written = written.expect("批准必须真落盘");
             assert!(written.exists(), "批准必须真落盘：{}", written.display());
             assert_eq!(owner_of(&store, "IEA").as_deref(), Some("xiao-xie"));
         });
@@ -874,7 +952,7 @@ mod tests {
             )
             .unwrap();
 
-            let raw = std::fs::read_to_string(path()).unwrap();
+            let raw = std::fs::read_to_string(path_in(&hermes_core::data_root())).unwrap();
             assert!(
                 !raw.contains("session_owner"),
                 "没有工位就别写这个键：{raw}"

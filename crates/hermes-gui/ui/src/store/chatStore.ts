@@ -3,16 +3,17 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ChatStreamEvent,
-  ConfirmAction,
   ContentBlock,
+  EpisodeView,
   LoadedSessionData,
   MessageData,
   MicroReflectionEvent,
-  PendingConfirm,
   PersonaItem,
   ReflectionResult,
+  SessionDay,
   SessionEndReflectionOutcome,
   SessionSummary,
+  TeamItem,
 } from "../types";
 import {
   MICRO_REFLECTION_EVENT,
@@ -77,9 +78,33 @@ interface ChatState {
   personas: PersonaItem[];
   /** 当前会话/草稿所属工位；null = 没有工位（人物落地之前的老会话、别的渠道进来的会话）。 */
   personaId: string | null;
+  /** 项目组列表（名册 + 缺席 + 这活跑到哪了）。 */
+  teams: TeamItem[];
+  /** 当前会话/草稿所属项目组；null = 不在任何项目组。与 personaId 互斥。 */
+  teamId: string | null;
+  /** 今天的产物 / 待点头的选题 / 这一棒在谁手上。真源是文件，不另存一份。 */
+  episode: EpisodeView | null;
   messages: MessageData[];
+  /**
+   * 更早的日子（最新在前）。空 = 这条会话还不长，没有折叠条。
+   * 真源是会话文件；这里只是窗口（`load_session` 只发最近一截，见 spec §4.4）。
+   */
+  days: SessionDay[];
+  /** 窗口前还有多少条消息 —— 编辑重发要用它把下标换算回会话数组。 */
+  baseOffset: number;
+  /** 已经展开过的旧账：天的 key → 那一段消息（只读）。 */
+  expandedDays: Record<string, MessageData[]>;
+  /** 正在翻的那一天（条上写「正在翻…」）。 */
+  dayLoading: string | null;
+  /** 哪一天没翻出来（灰字 + 再试一次，不弹红）。 */
+  dayError: string | null;
   streamingText: string;
   streamingThinking: string;
+  /**
+   * 本轮发送时较早的上下文被整理成摘要。一次性的安静提示：留在本轮回答上方，
+   * 下次发送或切换会话时清掉；不落进消息列表，也不要求用户做任何决定。
+   */
+  contextCompacted: boolean;
   activeToolCalls: ToolCall[];
   isStreaming: boolean;
   inputTokens: number;
@@ -94,7 +119,6 @@ interface ChatState {
   microReview: ReflectionResult | null;
   /** Whether the in-chat micro review modal is open. */
   microReviewOpen: boolean;
-  pendingConfirm: PendingConfirm | null;
   /** Background / review reflection after leaving a session. */
   sessionEnd: SessionEndState | null;
   /** Monotonic id so stale background jobs cannot clobber newer UI state. */
@@ -103,10 +127,23 @@ interface ChatState {
   fetchSessions: () => Promise<void>;
   clearSessionsError: () => void;
   fetchPersonas: () => Promise<void>;
+  fetchTeams: () => Promise<void>;
+  /** 重读今天有没有待点头的选题、棒在谁手上。组会话在切换、每轮结束时都会回来读一次。 */
+  fetchEpisode: () => Promise<void>;
+  /** 对一份决定的答复：点头 / 要改。只改我们写的头。 */
+  answerDecision: (
+    path: string,
+    approve: boolean,
+    note?: string
+  ) => Promise<void>;
   setPersonas: (ids: string[]) => Promise<void>;
-  setPersonaId: (id: string | null) => void;
-  newSession: (personaId?: string | null) => Promise<void>;
+  newSession: (
+    personaId?: string | null,
+    teamId?: string | null
+  ) => Promise<void>;
   loadSession: (path: string) => Promise<void>;
+  /** 翻旧账：展开/收起某一天（第一次点才去取那一段）。 */
+  toggleDay: (day: string | null) => Promise<void>;
   deleteSession: (path: string) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
   /** Re-run after last human user message (drops trailing assistant/tool turns). */
@@ -121,7 +158,6 @@ interface ChatState {
   openMicroReview: () => void;
   updateMicroReview: (result: ReflectionResult | null) => void;
   dismissMicroReview: () => void;
-  respondConfirm: (action: ConfirmAction, reason?: string) => Promise<void>;
   /**
    * Leave immediately, then run session-end reflection in the background.
    * Does **not** wait for the LLM (fixes multi-second hang on New Chat).
@@ -138,6 +174,11 @@ interface ChatState {
 let turnStartedAt = 0;
 let turnInputTokens = 0;
 let turnOutputTokens = 0;
+
+/** 旧账的 key：没有日期的那一段（「更早」）也要能展开。 */
+export function dayKey(day: string | null): string {
+  return day ?? "__earlier__";
+}
 
 function indexAfterLastHumanUser(messages: MessageData[]): number | null {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -167,6 +208,42 @@ function bindStreamChannel(
   turnInputTokens = 0;
   turnOutputTokens = 0;
 
+  /**
+   * 流式文本按帧合并再进 state。模型一秒能吐几十个 token；逐个 set 会让整条对话跟着
+   * 重解析几十遍 markdown（用户原话：「文字不出来，最后整段蹦出来」）。合并到一帧一次：
+   * 同一帧里肉眼看不出差别，主线程少跑一大截。
+   * 帧回调在窗口藏起来时不一定触发——所以每个非文本事件、以及回合收尾都**先冲一次**。
+   */
+  let pendingText = "";
+  let pendingThinking = "";
+  let flushHandle: number | null = null;
+
+  const flush = () => {
+    if (flushHandle !== null) {
+      cancelAnimationFrame(flushHandle);
+      flushHandle = null;
+    }
+    if (!pendingText && !pendingThinking) return;
+    const text = pendingText;
+    const thinking = pendingThinking;
+    pendingText = "";
+    pendingThinking = "";
+    set((s) => ({
+      streamingText: text ? s.streamingText + text : s.streamingText,
+      streamingThinking: thinking
+        ? s.streamingThinking + thinking
+        : s.streamingThinking,
+    }));
+  };
+
+  const scheduleFlush = () => {
+    if (flushHandle !== null) return;
+    flushHandle = requestAnimationFrame(() => {
+      flushHandle = null;
+      flush();
+    });
+  };
+
   const onEvent = new Channel<ChatStreamEvent>();
   onEvent.onmessage = (event) => {
     // Drop late events from a previous turn after the user switched session.
@@ -175,24 +252,29 @@ function bindStreamChannel(
         // Still clear streaming if this session is not active — avoid stuck flag
         // only when we still believe we are streaming for this id.
         if (get().isStreaming && get().activeSessionId === sessionId) {
-          set({ isStreaming: false, pendingConfirm: null });
+          set({ isStreaming: false });
         }
       }
       return;
     }
     switch (event.event) {
       case "textDelta":
-        set((s) => ({ streamingText: s.streamingText + event.data.text }));
+        pendingText += event.data.text;
+        scheduleFlush();
         break;
       case "textCorrected":
+        // 纠正文才是权威全文：还没冲出去的增量直接作废，别让它盖回去。
+        pendingText = "";
+        flush();
         set({ streamingText: event.data.text });
         break;
       case "thinkingDelta":
-        set((s) => ({
-          streamingThinking: s.streamingThinking + event.data.text,
-        }));
+        pendingThinking += event.data.text;
+        scheduleFlush();
         break;
       case "toolUseStart":
+        // 工具调用开新一段之前，先把上一段话冲出去，否则顺序会倒。
+        flush();
         set((s) => ({
           // The segment just finished was process narration, not the answer:
           // a tool call starts a new segment. This matches what survives the
@@ -237,16 +319,6 @@ function bindStreamChannel(
         }
         break;
       }
-      case "confirmRequired":
-        set({
-          pendingConfirm: {
-            id: event.data.id,
-            toolName: event.data.toolName,
-            summary: event.data.summary,
-            reason: event.data.reason,
-          },
-        });
-        break;
       case "usageUpdate":
         turnInputTokens += event.data.inputTokens;
         turnOutputTokens += event.data.outputTokens;
@@ -256,6 +328,7 @@ function bindStreamChannel(
         }));
         break;
       case "error": {
+        flush();
         const msg = event.data.message ?? "";
         if (msg === "cancelled" || msg.toLowerCase().includes("cancelled")) {
           set((s) => ({
@@ -275,6 +348,7 @@ function bindStreamChannel(
         break;
       }
       case "cancelled":
+        flush();
         set((s) => ({
           streamingText:
             s.streamingText.trim().length > 0
@@ -286,6 +360,10 @@ function bindStreamChannel(
       case "zaibanUpdated":
         useZaibanStore.getState().applyStream(event.data);
         break;
+      case "contextCompacted":
+        // 安静的一行提示：本轮发送时较早的上下文被整理成了摘要。
+        set({ contextCompacted: true });
+        break;
       case "rememberQueued":
         toast.info(useUiStore.getState().t("materials.rememberQueued"));
         break;
@@ -293,6 +371,8 @@ function bindStreamChannel(
         // Inbox only — do not open a mid-dialogue modal.
         break;
       case "done": {
+        // 最后一帧可能还没冲：done 是在 run_turn 里发的，随后不会再有事件了。
+        flush();
         const state = get();
         const blocks: ContentBlock[] = [];
         if (state.streamingThinking) {
@@ -339,13 +419,15 @@ function bindStreamChannel(
             streamingText: "",
             streamingThinking: "",
             activeToolCalls: [],
-            pendingConfirm: null,
             sessions,
           };
         });
         turnStartedAt = 0;
         turnInputTokens = 0;
         turnOutputTokens = 0;
+        // 这一轮可能写出了一份新决定——回读待点头的选题和侧栏那一行小字。
+        void get().fetchEpisode();
+        void get().fetchTeams();
         break;
       }
     }
@@ -356,19 +438,24 @@ function bindStreamChannel(
 async function doNewSession(
   set: (partial: Partial<ChatState> | ((s: ChatState) => Partial<ChatState>)) => void,
   get: () => ChatState,
-  personaId: string | null = null
+  personaId: string | null = null,
+  teamId: string | null = null
 ) {
-  // Already on an empty draft for this same 工位 — do not create another session.
+  // Already on an empty draft for this same 工作位（人 / 项目组）— do not create another.
   const cur = get();
   if (
     cur.activeSessionId &&
     cur.messages.length === 0 &&
-    cur.personaId === personaId
+    cur.personaId === personaId &&
+    cur.teamId === teamId
   ) {
     return;
   }
 
-  const session = await invoke<SessionSummary>("new_session", { personaId });
+  const session = await invoke<SessionSummary>("new_session", {
+    personaId,
+    teamId,
+  });
   set((s) => ({
     // Draft is active but NOT listed in history until it has user content.
     sessions: s.sessions.filter((x) => x.id !== session.id),
@@ -376,9 +463,11 @@ async function doNewSession(
     activeReadOnly: false,
     activeChannel: null,
     personaId: session.persona ?? personaId,
+    teamId: session.team ?? teamId,
     messages: [],
     streamingText: "",
     streamingThinking: "",
+    contextCompacted: false,
     activeToolCalls: [],
     inputTokens: 0,
     outputTokens: 0,
@@ -400,11 +489,18 @@ async function doLoadSession(
     activeReadOnly: !!data.readOnly,
     activeChannel: data.channel ?? null,
     personaId: data.persona ?? null,
+    teamId: data.team ?? null,
     messages: data.messages,
+    days: data.days ?? [],
+    baseOffset: data.baseOffset ?? 0,
+    expandedDays: {},
+    dayLoading: null,
+    dayError: null,
     inputTokens: data.inputTokens,
     outputTokens: data.outputTokens,
     streamingText: "",
     streamingThinking: "",
+    contextCompacted: false,
     activeToolCalls: [],
     lastReflection: null,
     microReview: null,
@@ -422,9 +518,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeChannel: null,
   personas: [],
   personaId: null,
+  teams: [],
+  teamId: null,
+  episode: null,
   messages: [],
+  days: [],
+  baseOffset: 0,
+  expandedDays: {},
+  dayLoading: null,
+  dayError: null,
   streamingText: "",
   streamingThinking: "",
+  contextCompacted: false,
   activeToolCalls: [],
   isStreaming: false,
   inputTokens: 0,
@@ -432,7 +537,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   lastReflection: null,
   microReview: null,
   microReviewOpen: false,
-  pendingConfirm: null,
   sessionEnd: null,
   reflectJobId: 0,
 
@@ -461,10 +565,54 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  fetchTeams: async () => {
+    try {
+      const teams = await invoke<TeamItem[]>("list_teams");
+      set({ teams });
+    } catch {
+      // 没有项目组不影响对话；静默留空。
+      set({ teams: [] });
+    }
+  },
+
+  fetchEpisode: async () => {
+    const teamId = get().teamId;
+    if (!teamId) {
+      set({ episode: null });
+      return;
+    }
+    try {
+      const episode = await invoke<EpisodeView>("list_episode", { teamId });
+      // 这中间用户可能已经换了桌子——晚到的答案不许盖上来。
+      if (get().teamId === teamId) set({ episode });
+    } catch {
+      // 读不到今天的产物不影响对话；静默留空。
+      if (get().teamId === teamId) set({ episode: null });
+    }
+  },
+
+  answerDecision: async (path, approve, note) => {
+    try {
+      await invoke("answer_decision", {
+        path,
+        approve,
+        note: note && note.trim() ? note : null,
+      });
+      await Promise.all([get().fetchEpisode(), get().fetchTeams()]);
+      toast.success(
+        useUiStore.getState().t(approve ? "decision.approved" : "decision.revising")
+      );
+    } catch (e) {
+      toast.error(String(e));
+    }
+  },
+
   setPersonas: async (ids) => {
     try {
       const personas = await invoke<PersonaItem[]>("set_personas", { ids });
       set({ personas });
+      // 谁在册变了，桌上的人也跟着变（缺席是同一份判据算出来的）。
+      void get().fetchTeams();
       const cur = get().personaId;
       // 被取消勾选的工位若正开着，退回自由对话，不让用户卡在空工位上。
       if (cur && !personas.some((p) => p.id === cur && p.enabled)) {
@@ -475,8 +623,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       toast.error(String(e));
     }
   },
-
-  setPersonaId: (id) => set({ personaId: id }),
 
   runAfterSessionEnd: async (action) => {
     const { activeSessionId, isStreaming, messages } = get();
@@ -587,18 +733,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({ sessionEnd: null, reflectJobId: s.reflectJobId + 1 }));
   },
 
-  newSession: async (personaId) => {
-    const target = personaId === undefined ? null : personaId;
-    // Empty draft for the same 工位: no leave/reflect — just stay.
+  newSession: async (personaId, teamId) => {
+    const targetPersona = personaId ?? null;
+    const targetTeam = teamId ?? null;
+    // Empty draft for the same 工作位: no leave/reflect — just stay.
+    const cur = get();
     if (
-      get().activeSessionId &&
-      get().messages.length === 0 &&
-      get().personaId === target
+      cur.activeSessionId &&
+      cur.messages.length === 0 &&
+      cur.personaId === targetPersona &&
+      cur.teamId === targetTeam
     ) {
       return;
     }
     await get().runAfterSessionEnd(async () => {
-      await doNewSession(set, get, target);
+      await doNewSession(set, get, targetPersona, targetTeam);
     });
   },
 
@@ -611,6 +760,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
       await doLoadSession(path, set);
       set({ draftSession: null });
     });
+  },
+
+  toggleDay: async (day: string | null) => {
+    const { activeSessionId, expandedDays, dayLoading } = get();
+    const key = dayKey(day);
+    if (!activeSessionId || dayLoading) return;
+
+    // 已经展开过 → 收起来（不丢数据，再点开还是它）。
+    if (expandedDays[key]) {
+      const next = { ...expandedDays };
+      delete next[key];
+      set({ expandedDays: next, dayError: null });
+      return;
+    }
+
+    set({ dayLoading: key, dayError: null });
+    try {
+      const messages = await invoke<MessageData[]>("load_session_day", {
+        sessionId: activeSessionId,
+        day,
+      });
+      set({
+        expandedDays: { ...get().expandedDays, [key]: messages },
+        dayLoading: null,
+      });
+    } catch (e) {
+      // 读不出来就说读不出来，给一条再试一次——不弹红。
+      set({ dayLoading: null, dayError: key });
+    }
   },
 
   deleteSession: async (path: string) => {
@@ -629,9 +807,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
           sessions: nextSessions,
           activeSessionId: null,
           draftSession: null,
+          teamId: null,
           messages: [],
+          days: [],
+          baseOffset: 0,
+          expandedDays: {},
+          dayLoading: null,
+          dayError: null,
           streamingText: "",
           streamingThinking: "",
+          contextCompacted: false,
           activeToolCalls: [],
           inputTokens: 0,
           outputTokens: 0,
@@ -642,7 +827,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (isActive) {
       await get().runAfterSessionEnd(remove);
       if (!get().activeSessionId) {
-        await doNewSession(set, get, get().personaId ?? null);
+        await doNewSession(
+          set,
+          get,
+          get().personaId ?? null,
+          get().teamId ?? null
+        );
       }
     } else {
       await remove();
@@ -708,6 +898,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isStreaming: true,
         streamingText: "",
         streamingThinking: "",
+        contextCompacted: false,
         activeToolCalls: [],
         sessions,
         draftSession: null,
@@ -724,7 +915,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (err) {
       // A rejected invoke (e.g. missing API key via direct call, bad state)
       // must not leave the UI stuck in "generating".
-      set({ isStreaming: false, pendingConfirm: null });
+      set({ isStreaming: false });
       const msg = String(err).replace(/^(config|session):\s*/i, "");
       toast.error(msg);
     }
@@ -752,8 +943,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isStreaming: true,
       streamingText: "",
       streamingThinking: "",
+      contextCompacted: false,
       activeToolCalls: [],
-      pendingConfirm: null,
     });
 
     const onEvent = bindStreamChannel(set, get, activeSessionId);
@@ -763,13 +954,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         onEvent,
       });
     } catch (e) {
-      set({ isStreaming: false, pendingConfirm: null });
+      set({ isStreaming: false });
       toast.error(String(e).replace(/^(config|session):\s*/i, ""));
     }
   },
 
   editAndResend: async (rawStart, content) => {
-    const { activeSessionId, isStreaming, messages } = get();
+    const { activeSessionId, isStreaming, messages, baseOffset } = get();
     if (!activeSessionId || isStreaming) return;
     if (rawStart < 0 || rawStart > messages.length) return;
 
@@ -777,9 +968,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!trimmed) return;
 
     try {
+      // rawStart 是**窗口内**的下标；会话数组前面还折着 `baseOffset` 条。
+      // 截断吃的是会话数组，所以这里必须加回去——偏移只有这一处。
       await invoke("truncate_session", {
         sessionId: activeSessionId,
-        keepCount: rawStart,
+        keepCount: rawStart + baseOffset,
       });
     } catch (e) {
       toast.error(String(e));
@@ -798,7 +991,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (activeSessionId) {
       invoke("cancel_stream", { sessionId: activeSessionId });
     }
-    set({ pendingConfirm: null });
   },
 
   clearReflection: () => set({ lastReflection: null }),
@@ -854,19 +1046,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  respondConfirm: async (action, reason) => {
-    const pending = get().pendingConfirm;
-    if (!pending) return;
-    set({ pendingConfirm: null });
-    await invoke("respond_confirm", {
-      id: pending.id,
-      action,
-      toolName: pending.toolName,
-      reason: reason && reason.trim() ? reason : null,
-    });
-  },
-
 }));
+
+/**
+ * 组会话里这一轮开口的人（接棒的；没交过棒就是第一棒采集）。别的会话没有「说话人」这一说——
+ * 头部已经写着这是谁的工位，再标一次就是噪音。
+ */
+export function speakerNameOf(s: {
+  teamId: string | null;
+  teams: TeamItem[];
+}): string | null {
+  if (!s.teamId) return null;
+  const team = s.teams.find((t) => t.id === s.teamId);
+  if (!team) return null;
+  return team.members.find((m) => m.id === team.speakerId)?.name ?? null;
+}
 
 /** Subscribe once for post-turn micro-reflection (not on the stream Channel). */
 export async function bindMicroReflectionListener(): Promise<UnlistenFn> {

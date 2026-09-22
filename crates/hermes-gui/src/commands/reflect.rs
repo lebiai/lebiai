@@ -272,6 +272,7 @@ pub async fn run_session_end_reflection(
         through_at: through_at_s,
         session_owner: hermes_core::persona::memory_owner_for(
             session_snapshot.meta.persona.as_deref(),
+            session_snapshot.meta.team.as_deref(),
         ),
     };
 
@@ -333,7 +334,10 @@ async fn distill_wechat_file_if_idle(
         session_id: Some(session.meta.id.clone()),
         distill_id: Some(distill_id.clone()),
         through_at: through_at.map(|t| t.to_rfc3339()),
-        session_owner: hermes_core::persona::memory_owner_for(session.meta.persona.as_deref()),
+        session_owner: hermes_core::persona::memory_owner_for(
+            session.meta.persona.as_deref(),
+            session.meta.team.as_deref(),
+        ),
     };
     let added = hermes_reflect::enqueue_from_reflection_marked(
         &output,
@@ -470,6 +474,7 @@ pub async fn drain_pending_leave(state: State<'_, AppState>) -> Result<(), GuiEr
                 through_at: through_at.map(|t| t.to_rfc3339()),
                 session_owner: hermes_core::persona::memory_owner_for(
                     session.meta.persona.as_deref(),
+                    session.meta.team.as_deref(),
                 ),
             };
             let added = hermes_reflect::enqueue_from_reflection_marked(
@@ -516,6 +521,7 @@ mod tests {
                 text: "hello".into(),
             }],
             at: None,
+            speaker: None,
         });
         session.messages.push(Message {
             role: Role::User,
@@ -525,6 +531,7 @@ mod tests {
                 is_error: false,
             }],
             at: None,
+            speaker: None,
         });
         session.messages.push(Message::user_text("again"));
         assert_eq!(count_user_text_turns(&session), 2);
@@ -709,5 +716,11 @@ fn put_memory_with_fallback(
 ) -> Result<(), GuiError> {
     hermes_reflect::candidate::put_with_fallback(store, scope, fm, body)
         .map(|_| ())
-        .map_err(|e| GuiError::Internal(e.to_string()))
+        .map_err(|e| match e {
+            // 重复不是「内部错误」：它是一句用户能懂的话。
+            hermes_memory::MemoryStoreError::Conflict { .. } => {
+                GuiError::Config("memory_duplicate".into())
+            }
+            e => GuiError::Internal(e.to_string()),
+        })
 }

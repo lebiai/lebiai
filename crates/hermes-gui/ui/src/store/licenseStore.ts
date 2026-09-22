@@ -79,6 +79,8 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
       // 否则用户输了码却在侧栏里看不到刚开通的工位。**等它回来**再返回，
       // 调用方（表单）才能立刻按名字说「已开通哪几个工位」。
       await useChatStore.getState().fetchPersonas();
+      // 桌上的人跟着授权名单变：谁缺席是同一份判据算出来的。
+      await useChatStore.getState().fetchTeams();
       return {
         status: res.status,
         enabledPersonas: res.enabledPersonas ?? [],

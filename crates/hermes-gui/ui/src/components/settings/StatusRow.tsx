@@ -26,7 +26,7 @@ export function StatusRow({
       <div className="min-w-0 flex-1">
         <p className="text-sm text-app-fg dark:text-slate-100 truncate">{title}</p>
         {subtitle && (
-          <p className="text-[11px] text-app-fg-tertiary truncate">{subtitle}</p>
+          <p className="text-app-sub text-app-fg-secondary truncate">{subtitle}</p>
         )}
       </div>
       {action && <div className="shrink-0">{action}</div>}

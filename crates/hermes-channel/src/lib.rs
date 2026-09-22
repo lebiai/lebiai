@@ -18,6 +18,7 @@ pub use channel::{
 };
 /// GUI/server companion prompt builder (shared).
 pub use companion_context::ContextSources as CompanionContextSources;
+pub use companion_context::TeamContext;
 pub use context::ContextSources;
 pub use persona_scope::{others as other_stations, visible_skills};
 pub use system_prompt::{compose_system_prompt, inject_time_header, PromptKind};

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use hermes_core::companion::tags as companion_tags;
 use hermes_core::companion::zones;
 
-use crate::memory::{normalize_owner, visible_to, LoadedMemory, MemoryFrontmatter, Scope};
+use crate::memory::{normalize_owner, visible_to_any, LoadedMemory, MemoryFrontmatter, Scope};
 use crate::store::{MemoryStore, Result};
 
 /// 没写 owner 时往哪边倒。
@@ -32,11 +32,15 @@ pub enum OwnerDefault {
 /// 规则按序：
 /// 1. 会话没有人物（`None` / 空 / 纯空白）→ 全局。自带角色李现 / 小文走这条——
 ///    调用方用 `Persona::memory_owner()` 得出 `session_owner`，判定里不认识 `builtin`。
-/// 2. `zone ∈ {preferences, standards}`（含 `core` 等别名）**或** `tags` 里出现
+/// 2. **会话在项目组里**（`session_owner` 是一张桌子，见 [`team_owner`]）→
+///    **偏好仍归全局**（「关于你本人」在哪儿都算数），其余一律归这张桌子：
+///    点名了**桌上的成员** → 归他（手艺跟着人走），
+///    其余（这份活的标准 / 判不准 / 点了桌外人）→ **归组**（宁可窄，不要串味）。
+/// 3. `zone ∈ {preferences, standards}`（含 `core` 等别名）**或** `tags` 里出现
 ///    `preference` / `prefers` / `standard` → 全局。确定性兜底，不靠模型自觉：
 ///    用户偏好被锁进一顶帽子 = 只在那个工位生效。
-/// 3. 明确写了**本会话**的人物 id → 归该人物。
-/// 4. 其余（没写 / 写了别人）→ 按 [`OwnerDefault`] 倒；永远不会落到"当前视图看不见"的
+/// 4. 明确写了**本会话**的人物 id → 归该人物。
+/// 5. 其余（没写 / 写了别人）→ 按 [`OwnerDefault`] 倒；永远不会落到"当前视图看不见"的
 ///    地方（写了别人物时不会顺着别人的 id 存下去）。
 pub fn resolve_owner(
     session_owner: Option<&str>,
@@ -46,6 +50,10 @@ pub fn resolve_owner(
     default: OwnerDefault,
 ) -> Option<String> {
     let session = normalize_owner(session_owner)?;
+
+    if let Some(t) = hermes_core::team::get(&session) {
+        return resolve_team_owner(t, asked_owner, zone, tags);
+    }
 
     if zones::is_preferences(zone) || zones::is_standards(zone) || tags_mark_user_level(tags) {
         return None;
@@ -61,6 +69,35 @@ pub fn resolve_owner(
     }
 }
 
+/// 项目组会话里那一档（`docs/spec/projects.md` §4.2）：
+/// 偏好 → 全局；点名桌上成员 → 他（手艺）；其余 → 组。
+///
+/// **只有偏好**算「关于用户本人」：`standard` 这个 zone / tag 在组里说的是
+/// 「这个栏目的标准」，不是用户的偏好——今天它会漏成全局，串到每个工位上去。
+fn resolve_team_owner(
+    t: &hermes_core::team::Team,
+    asked_owner: Option<&str>,
+    zone: &str,
+    tags: &[String],
+) -> Option<String> {
+    if zones::is_preferences(zone) || tags.iter().any(|t| companion_tags::is_preference_tag(t)) {
+        return None;
+    }
+    if let Some(asked) = normalize_owner(asked_owner) {
+        if t.member(&asked).is_some() {
+            return Some(asked);
+        }
+    }
+    Some(t.id.clone())
+}
+
+/// 这个 owner 是不是一张桌子（项目组）。**判据只此一处**：会话 → 归属的转换
+/// （[`hermes_core::persona::memory_owner_for`]）之后，读侧与「它记得的」都得问它
+/// 才知道该显示组名还是人物名。
+pub fn team_owner(owner: &str) -> Option<&'static hermes_core::team::Team> {
+    hermes_core::team::get(owner)
+}
+
 /// tag 也会说「这是关于用户本人的」——模型常常只打 tag 不填 `zone`，缺了这道闸，
 /// 一条只带 `["preference"]` 的用户偏好就被锁进当前工位（规格 §5.3 点名的 bug）。
 ///
@@ -74,7 +111,9 @@ fn tags_mark_user_level(tags: &[String]) -> bool {
 
 pub struct ScopedMemoryStore {
     inner: Arc<dyn MemoryStore>,
-    owner: Option<String>,
+    /// 这个视图看得见的那几个归属。**空 = 只看得到全局**（无人物 / 自带角色）。
+    /// 组会话有两个：本项目组 + 这一轮说话的人（`docs/spec/projects.md` §4.2）。
+    owners: Vec<String>,
 }
 
 impl ScopedMemoryStore {
@@ -83,12 +122,32 @@ impl ScopedMemoryStore {
     pub fn new(inner: Arc<dyn MemoryStore>, owner: Option<String>) -> Self {
         Self {
             inner,
-            owner: normalize_owner(owner.as_deref()),
+            owners: normalize_owner(owner.as_deref()).into_iter().collect(),
         }
     }
 
+    /// 一组归属的视图（组会话：本项目组 + 这一轮说话的人）。顺序有意义：
+    /// **第一个是「本会话自己」**，越界写入会被夹到它身上（见 [`Self::guard_owner`]）。
+    pub fn with_owners(inner: Arc<dyn MemoryStore>, owners: Vec<String>) -> Self {
+        let owners = owners
+            .iter()
+            .filter_map(|o| normalize_owner(Some(o)))
+            .collect();
+        Self { inner, owners }
+    }
+
+    /// 本会话自己（越界归它）。没有归属 → `None`（＝全局）。
+    fn owns(&self) -> Option<&str> {
+        self.owners.first().map(String::as_str)
+    }
+
+    fn can_see(&self, m: &LoadedMemory) -> bool {
+        let owners: Vec<&str> = self.owners.iter().map(String::as_str).collect();
+        visible_to_any(m, &owners)
+    }
+
     fn visible(&self, mut items: Vec<LoadedMemory>) -> Vec<LoadedMemory> {
-        items.retain(|m| visible_to(m, self.owner.as_deref()));
+        items.retain(|m| self.can_see(m));
         items
     }
 
@@ -96,16 +155,18 @@ impl ScopedMemoryStore {
     /// 方向**永远只能是更窄或相等**，绝不夹成全局——把别人物的内容变成谁都看得见，
     /// 比放错工位严重得多。归属判定不在这里，只有 [`resolve_owner`] 一处。
     fn guard_owner(&self, asked: Option<String>) -> Option<String> {
-        match (self.owner.as_deref(), normalize_owner(asked.as_deref())) {
-            // 没写（`None` = 全局）或写的就是本视图：原样。
+        let asked = normalize_owner(asked.as_deref());
+        match (self.owns(), asked) {
+            // 没写（`None` = 全局）→ 原样。
             (_, None) => None,
-            (Some(mine), Some(a)) if a == mine => Some(a),
-            // 本视图看不见的归属 → 夹回本视图自己。
+            // 写的就是本视图里的某一个归属（组会话里：组 或 这一轮说话的人）→ 原样。
+            (_, Some(a)) if self.owners.contains(&a) => Some(a),
+            // 本视图看不见的归属 → 夹回本视图自己（组会话夹回**组**，见 §4.2「判不准归组」）。
             (Some(mine), Some(a)) => {
                 tracing::warn!(
                     asked_owner = %a,
                     session_owner = %mine,
-                    "memory write asked for another persona's owner; clamped to the session owner"
+                    "memory write asked for an owner outside this view; clamped to the session owner"
                 );
                 Some(mine.to_string())
             }
@@ -131,7 +192,7 @@ impl ScopedMemoryStore {
     fn guard_supersedes(&self, ids: Vec<String>) -> Vec<String> {
         ids.into_iter()
             .filter(|id| match self.inner.get(id) {
-                Ok(Some(m)) => visible_to(&m, self.owner.as_deref()),
+                Ok(Some(m)) => self.can_see(&m),
                 Ok(None) => {
                     tracing::warn!(id = %id, "supersede target not found; dropped");
                     false
@@ -159,15 +220,19 @@ impl MemoryStore for ScopedMemoryStore {
     }
 
     fn get(&self, id: &str) -> Result<Option<LoadedMemory>> {
-        Ok(self
-            .inner
-            .get(id)?
-            .filter(|m| visible_to(m, self.owner.as_deref())))
+        Ok(self.inner.get(id)?.filter(|m| self.can_see(m)))
     }
 
     fn put(&self, scope: Scope, mut frontmatter: MemoryFrontmatter, body: &str) -> Result<PathBuf> {
         // 不打标：`None` 就是全局，原样落盘。归属判定只有 resolve_owner 一处，
         // 否则「模型没写 → 全局」（§5.3）会被这里改写成「→ 会话私有」。
+        //
+        // 「有意写下去」的意图要在**守卫之前**记下来：守卫可能把本视图看不见的
+        // supersedes id 全部丢掉，但用户/模型想替换这件事并没有因此变成「随手记一条」。
+        // 意图丢了，查重闸门（P1-4）就会把这次写入误判成重复。
+        if !frontmatter.supersedes.is_empty() {
+            frontmatter.intentional = true;
+        }
         frontmatter.owner = self.guard_owner(frontmatter.owner);
         frontmatter.supersedes = self.guard_supersedes(frontmatter.supersedes);
         self.inner.put(scope, frontmatter, body)
@@ -176,7 +241,7 @@ impl MemoryStore for ScopedMemoryStore {
     fn delete(&self, scope: Scope, id: &str) -> Result<bool> {
         // 看不见的 id 不是错误，只是没删到——上层提示语不该说「删除失败」。
         match self.inner.get(id)? {
-            Some(m) if visible_to(&m, self.owner.as_deref()) => self.inner.delete(scope, id),
+            Some(m) if self.can_see(&m) => self.inner.delete(scope, id),
             _ => Ok(false),
         }
     }
@@ -213,6 +278,12 @@ mod tests {
 
     fn store_with(dir: &std::path::Path) -> Arc<dyn MemoryStore> {
         Arc::new(FsMemoryStore::new(dir.to_path_buf(), None))
+    }
+
+    /// 关掉写入查重的 store：只有**故意**要造近重复条目的测试才用它
+    /// （比如验证「排序前先按归属过滤」需要五条几乎一样的记忆）。
+    fn store_without_dedup(dir: &std::path::Path) -> Arc<dyn MemoryStore> {
+        Arc::new(FsMemoryStore::new(dir.to_path_buf(), None).with_dedup_threshold(0.0))
     }
 
     fn put(store: &dyn MemoryStore, owner: Option<&str>, body: &str) {
@@ -365,7 +436,7 @@ mod tests {
     #[test]
     fn search_filters_before_ranking_so_my_own_memory_is_not_pushed_out() {
         let dir = tempdir().unwrap();
-        let raw = store_with(dir.path());
+        let raw = store_without_dedup(dir.path());
         for i in 0..5 {
             put(
                 raw.as_ref(),
@@ -437,7 +508,7 @@ mod tests {
         // 所以 `new(_, owner)` 天然全局落盘。这里用 persona 定义的真值，不硬编码 None,
         // 免得以后有人把 id 直接传进来。
         let dir = tempdir().unwrap();
-        let raw = store_with(dir.path());
+        let raw = store_without_dedup(dir.path());
         for id in ["li-xian", "xiao-wen"] {
             let owner = hermes_core::persona::get(id)
                 .unwrap_or_else(|| panic!("自带角色 {id} 必须在定义表里"))
@@ -511,6 +582,107 @@ mod tests {
         assert!(xie
             .check_near_duplicate("林碳配额口径用 2026 版", DEFAULT_DEDUP_THRESHOLD)
             .is_ok());
+    }
+
+    /// 组里那一档（`docs/spec/projects.md` §4.2）：**标准归组、手艺归点名的人、
+    /// 判不准归组、偏好仍归全局**。
+    ///
+    /// 「标准归组」今天会红：`zone=standards` 曾一律落全局——组里的口径就那么漏进了
+    /// 每一个工位（串味；比放错工位严重）。
+    #[test]
+    fn on_a_team_standards_belong_to_the_team_and_craft_to_the_named_member() {
+        const TEAM: &str = "caifu-zaozhidao";
+
+        // 这份活的标准 → 归组
+        for zone in ["standards", "standard", "Standards"] {
+            assert_eq!(
+                resolve_owner(Some(TEAM), None, zone, &[], OwnerDefault::Global),
+                Some(TEAM.to_string()),
+                "组里的 {zone} 归组，不许漏成全局"
+            );
+        }
+        // 判不准（没写 owner、也没写 zone）→ 归组（宁可窄，不要串味）
+        assert_eq!(
+            resolve_owner(Some(TEAM), None, "general", &[], OwnerDefault::Global),
+            Some(TEAM.to_string())
+        );
+        // 点名桌上的成员 → 手艺归他
+        assert_eq!(
+            resolve_owner(
+                Some(TEAM),
+                Some("wang-hai-yan"),
+                "work",
+                &[],
+                OwnerDefault::Global
+            ),
+            Some("wang-hai-yan".to_string()),
+            "组里点名的人，手艺跟着他走"
+        );
+        assert_eq!(
+            resolve_owner(
+                Some(TEAM),
+                Some("wang-hai-yan"),
+                "standards",
+                &[],
+                OwnerDefault::Global
+            ),
+            Some("wang-hai-yan".to_string()),
+            "只有「关于用户本人」才拦得住；标准也可以是某个人的口径"
+        );
+        // 点了桌外的人 / 桌外的人写了组 → 都归组
+        assert_eq!(
+            resolve_owner(
+                Some(TEAM),
+                Some("xiao-jin"),
+                "work",
+                &[],
+                OwnerDefault::Global
+            ),
+            Some(TEAM.to_string()),
+            "桌外人点不出来（这个版本不认识他）→ 归组"
+        );
+        assert_eq!(
+            resolve_owner(
+                Some("xiao-jin"),
+                Some(TEAM),
+                "work",
+                &[],
+                OwnerDefault::Session
+            ),
+            Some("xiao-jin".to_string()),
+            "工位会话里写了个组 id，不该把记忆挂到组上去"
+        );
+        // 关于用户本人的 → 全局（在组里也一样）
+        for zone in ["preferences", "preference", "core"] {
+            assert_eq!(
+                resolve_owner(Some(TEAM), None, zone, &[], OwnerDefault::Global),
+                None,
+                "组里的 {zone} 仍是关于用户的偏好 → 全局"
+            );
+        }
+        let preference_tag = vec!["preference".to_string()];
+        assert_eq!(
+            resolve_owner(
+                Some(TEAM),
+                None,
+                "general",
+                &preference_tag,
+                OwnerDefault::Global
+            ),
+            None
+        );
+        // `standard` 这个 tag 在组里说的是「这个栏目的标准」→ 归组（不是用户偏好）
+        let standard_tag = vec!["standard".to_string()];
+        assert_eq!(
+            resolve_owner(
+                Some(TEAM),
+                None,
+                "general",
+                &standard_tag,
+                OwnerDefault::Global
+            ),
+            Some(TEAM.to_string())
+        );
     }
 
     #[test]

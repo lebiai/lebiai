@@ -8,13 +8,6 @@ pub const NEAR_ASK: f64 = 0.48;
 /// Safe to fold without asking (containment or very high overlap).
 pub const NEAR_FOLD: f64 = 0.78;
 
-#[derive(Debug, Clone)]
-pub struct NearHit {
-    pub id: String,
-    pub title: String,
-    pub score: f64,
-}
-
 /// Score how likely `a` and `b` name the same open debt (0.0–1.0).
 pub fn score_near(a: &str, b: &str) -> f64 {
     let na = normalize(a);

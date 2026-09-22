@@ -11,16 +11,20 @@
 //! same conversation has read the answer key; blind grading needs separation.
 //!
 //! Safety:
-//! - Recursion guard: an [`AtomicUsize`] depth counter shared via Arc; tool
-//!   refuses if `depth >= max_depth` (default 1 — parent spawns subagents,
-//!   subagents don't spawn subagents → no fork bomb).
+//! - No nesting, **structurally**: `build_child_host` never hangs a
+//!   `SubagentHost` / [`SubagentContext`] on the child, so the child's tool
+//!   surface has no `subagent` in it at all — recursion cannot be expressed,
+//!   not merely refused. That is the **only** place nesting is decided.
+//! - Fan-out cap: an [`AtomicUsize`] *in-flight* counter shared via Arc; tool
+//!   refuses once `max_concurrent` children are running at the same time. This
+//!   bounds parallelism (one reply may legitimately launch several children at
+//!   once), it does **not** bound nesting.
 //! - Tool whitelist: the subagent only sees tools the caller named in
 //!   `allow_tools`. The `subagent` tool itself is always excluded.
 //! - Fresh tool host: built per-call from the same workspace and memory/skill
 //!   stores, with NO `propose_ctx` and NO subagent context — and, when the parent
 //!   session is scoped, wrapped in the **same** `PersonaToolHost` the parent wears
 //!   (so a child's memory writes carry the session's owner too; Task 1.10f B-1).
-//!   That structural choice — not a check — is what prevents recursion.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -73,12 +77,30 @@ pub struct SubagentContext {
     /// `visible_to` / `resolve_owner` 各一处。
     pub memory_view: MemoryView,
     pub skill_store: Option<Arc<dyn SkillStore>>,
-    /// Recursion depth tracker; shared via Arc so increments from parallel
-    /// subagent invocations are coherent. Increment on entry, decrement on
-    /// drop. Refuse to enter when depth >= max_depth.
-    pub depth: Arc<AtomicUsize>,
-    pub max_depth: usize,
+    /// child 的网页能力。**不接就是残的**：没有它，child 调 `web_fetch` 拿到的是
+    /// 整页 markdown（默认两万字），而不是抽取后的答案——父会话刚为此付过代价
+    /// （2026-09-20：17 个站一次倒回 159632 字，把整轮输出预算撞爆）。
+    /// 子代理要能替父去采集，这一项必须跟着走。
+    pub web_ctx: Option<Arc<crate::web::WebToolsContext>>,
+    /// **同时在飞**的 child 数（不是嵌套深度）；`Arc` 共享，所以同一条回复里并发
+    /// 发出的几个 `subagent` 都看得到同一个数。进入时 +1、guard drop 时 -1；到
+    /// `max_concurrent` 就拒收。
+    ///
+    /// 别把它读成深度：嵌套由**结构**挡死（[`build_child_host`] 从不给 child 挂
+    /// `SubagentHost`，child 的工具面里压根没有 `subagent`）。两个相反的概念以前
+    /// 共用一个计数器，结果「父一轮并行派 3 个子代理」里只有 1 个能跑（2026-09-20）。
+    pub in_flight: Arc<AtomicUsize>,
+    /// 并发扇出上限：同一时刻最多几个 child 在跑。默认 [`DEFAULT_MAX_CONCURRENT`]。
+    ///
+    /// **为什么是 8**：父一轮回复按板块派活，实测的扇出是 3–5 个（一次采集派
+    /// 3 个板块），8 留了余量；同时它挡得住模型自己转圈——真跑飞的循环会连着发
+    /// 十几个 child，8 就是那堵墙。这是**工程取舍，不是实测最优**：没有数据说 8
+    /// 比 6 或 12 好，它只是「够用且能兜底」。
+    pub max_concurrent: usize,
 }
+
+/// 默认并发扇出上限（见 [`SubagentContext::max_concurrent`]）。
+pub const DEFAULT_MAX_CONCURRENT: usize = 8;
 
 impl SubagentContext {
     #[allow(clippy::too_many_arguments)]
@@ -103,9 +125,16 @@ impl SubagentContext {
             memory_store,
             memory_view,
             skill_store,
-            depth: Arc::new(AtomicUsize::new(0)),
-            max_depth: 1,
+            web_ctx: None,
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            max_concurrent: DEFAULT_MAX_CONCURRENT,
         }
+    }
+
+    /// 给 child 接上网页能力（见 [`SubagentContext::web_ctx`]）。
+    pub fn with_web_ctx(mut self, web_ctx: Arc<crate::web::WebToolsContext>) -> Self {
+        self.web_ctx = Some(web_ctx);
+        self
     }
 }
 
@@ -133,6 +162,9 @@ fn build_child_host(ctx: &SubagentContext) -> Arc<dyn ToolHost> {
     }
     if let Some(s) = &ctx.skill_store {
         child = child.with_skill_store(s.clone());
+    }
+    if let Some(w) = &ctx.web_ctx {
+        child = child.with_web_ctx(w.clone());
     }
     let child: Arc<dyn ToolHost> = Arc::new(child);
     match &ctx.memory_view {
@@ -174,17 +206,22 @@ struct SubagentArgs {
 pub fn spec() -> ToolSpec {
     ToolSpec {
         name: "subagent".into(),
-        description: "Spawn a child agent in a fresh context to run a sub-task. \
-            Use for: (a) executing each test-case prompt during skill evaluation \
-            (clean context per run, no leakage from parent reasoning), \
-            (b) grading transcripts with a dedicated grader prompt, \
-            (c) blind A/B comparison between two outputs, \
-            (d) description-optimization loop. \
-            The child has its own context: it sees only the `system` and `prompt` \
-            you pass — none of your conversation history. Returns the child's \
-            final text reply plus a summary of tool calls it made. \
-            Multiple `subagent` calls in the same response run in parallel (the model \
-            batches them). Subagents cannot themselves call `subagent` (depth=1 hard cap)."
+        description: "Spawn a child agent in a fresh context and get back only its final \
+            answer, plus a summary of the tools it used. \
+            Use it when a job is too big or too noisy for your own context: split it by \
+            board/topic and launch the children **in the same response** so they run in \
+            parallel. The child sees ONLY the `system` and `prompt` you pass — none of \
+            your conversation history — so a child that reads ten pages hands you a few \
+            hundred words instead of the pages. That is the point: your context stays clean. \
+            Write both fields self-contained: the contract (what to produce, in what shape, \
+            what \"can't get it\" means) goes in `system`; the actual work order (sources, \
+            entry points, time window, deliverable) goes in `prompt`. \
+            `allow_tools` is the minimum set the child needs — e.g. \
+            ['web_fetch','bash'] to collect, ['read','write'] to write. \
+            Also used for skill evaluation: one child per test case, plus a grader child. \
+            Fan out in the same response: up to 8 children run at once (extra calls are \
+            refused and can be retried after some finish). Subagents cannot themselves call \
+            `subagent` — the tool is absent from a child's list, so there is no nesting."
             .into(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -206,41 +243,67 @@ pub fn spec() -> ToolSpec {
             },
             "required": ["system", "prompt"]
         }),
-        requires_confirmation: true,
+        // 不设确认闸：child 用的是**父会话同一套** `PermissionChecker`，跑不出父的授权
+        // 范围；而且 child 没有确认通道（`run_turn(confirm_tx: None)`），任何仍需要
+        // 点头的工具在它那里一律拒绝（fail-closed）。风险在原工具上，那一层照旧拦；
+        // 在这里再问一遍，只是让「一次派四个子代理」变成四次弹窗。
+        //
+        // 真要说它加了什么：加了**并发**。所以并发扇出上限（`max_concurrent`，默认 8）
+        // 必须留着；嵌套不靠闸门——child 的工具面里没有 `subagent`（见
+        // `build_child_host`），那是唯一的嵌套判定点。
+        requires_confirmation: false,
     }
 }
 
-/// Guard that decrements the depth counter on drop — keeps the counter
+/// Guard that decrements the in-flight counter on drop — keeps the counter
 /// consistent even if `run_turn` panics or the host fails mid-call.
-struct DepthGuard {
-    depth: Arc<AtomicUsize>,
+struct InFlightGuard {
+    in_flight: Arc<AtomicUsize>,
 }
 
-impl Drop for DepthGuard {
+impl Drop for InFlightGuard {
     fn drop(&mut self) {
-        self.depth.fetch_sub(1, Ordering::SeqCst);
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+/// 占一个并发名额；`None` = 同时在飞的 child 已经到顶（`max_concurrent`）。
+///
+/// 判的是**并发扇出**，不是嵌套：引擎把同一条回复里的所有工具调用一起
+/// `join_all`（`hermes-turn` 的 safe_calls），所以 3 个 `subagent` 会同时进来，
+/// 计数必须容得下同一批。嵌套不在这里判——child 的工具面里没有 `subagent`。
+fn try_admit(ctx: &SubagentContext) -> Option<InFlightGuard> {
+    // 原子 CAS 式占位：先加再说。
+    let prev = ctx.in_flight.fetch_add(1, Ordering::SeqCst);
+    if prev >= ctx.max_concurrent {
+        // 多加了，回滚。
+        ctx.in_flight.fetch_sub(1, Ordering::SeqCst);
+        return None;
+    }
+    Some(InFlightGuard {
+        in_flight: ctx.in_flight.clone(),
+    })
 }
 
 pub async fn run(ctx: &SubagentContext, args: serde_json::Value) -> Result<ToolCallOutcome> {
     let a: SubagentArgs = serde_json::from_value(args)
         .map_err(|e| hermes_core::Error::ToolHost(format!("subagent: bad args: {e}")))?;
 
-    // Recursion guard — atomic CAS-style increment.
-    let prev = ctx.depth.fetch_add(1, Ordering::SeqCst);
-    if prev >= ctx.max_depth {
-        // We over-incremented; roll back and refuse.
-        ctx.depth.fetch_sub(1, Ordering::SeqCst);
+    // Fan-out cap, not a nesting cap: several children launched from one reply
+    // are normal and run in parallel; only the ones beyond `max_concurrent`
+    // waiting elsewhere get told to come back later.
+    let Some(_guard) = try_admit(ctx) else {
+        let in_flight = ctx.in_flight.load(Ordering::SeqCst);
         return Ok(ToolCallOutcome {
             content: format!(
-                "subagent: refused — recursion depth {prev} already at max {} (subagents cannot themselves spawn subagents).",
-                ctx.max_depth
+                "subagent: refused — {in_flight} subagents already in flight; the cap is {} running at the same time. \
+                 This is a parallelism cap on how many children run at once, not a limit on how deep they may go \
+                 (subagents cannot spawn subagents at all — `subagent` is absent from a child's tool list). \
+                 Let some in-flight children finish, then retry.",
+                ctx.max_concurrent
             ),
             is_error: true,
         });
-    }
-    let _guard = DepthGuard {
-        depth: ctx.depth.clone(),
     };
 
     // Build a fresh tool host for the child (bare `BuiltinToolHost`, or it wrapped
@@ -251,9 +314,10 @@ pub async fn run(ctx: &SubagentContext, args: serde_json::Value) -> Result<ToolC
     let all_specs = child.list_tools().await?;
     let allowed: std::collections::HashSet<&str> =
         a.allow_tools.iter().map(|s| s.as_str()).collect();
-    // Always exclude `subagent` from the child's tool list (depth guard would
-    // catch a sneaky call anyway, but filter at the API surface so the model
-    // doesn't see it advertised).
+    // Always exclude `subagent` from the child's tool list — this is the same
+    // structural decision `build_child_host` makes (it never wires a
+    // `SubagentHost`), kept here too because the whitelist is caller-supplied
+    // and a name in `allow_tools` should not be able to reintroduce the tool.
     let filtered: Vec<ToolSpec> = all_specs
         .into_iter()
         .filter(|t| t.name != "subagent" && allowed.contains(t.name.as_str()))
@@ -342,6 +406,45 @@ pub async fn run(ctx: &SubagentContext, args: serde_json::Value) -> Result<ToolC
         content,
         is_error: false,
     })
+}
+
+/// per-turn 薄壳：把 `subagent` 这一条工具**按本轮会话**接上。
+///
+/// 为什么需要它：child 的记忆视野得跟着**当前会话**走（`MemoryView::Scoped(owner)`），
+/// 而桌面端（GUI）的工具宿主是**启动时建一次、所有会话共用**的——人物是每轮才定的。
+/// 把 ctx 焊死在启动宿主上只能二选一：要么当没有人物（child 只看得到全局），要么给
+/// 所有会话发同一个错的归属。所以照 [`crate::session_recall::SessionRecallHost`] 的
+/// 样子做一层 per-turn 壳：`list_tools` 多挂一条 `subagent`，`call` 只截它，其余原样转发。
+///
+/// **注意它只负责挂工具**：调用点必须拿 `host.list_tools()` 当这一轮的工具面。
+/// 启动时缓存的那一份里没有 `subagent`，读缓存 = 模型根本看不见这条工具。
+pub struct SubagentHost {
+    inner: Arc<dyn ToolHost>,
+    ctx: Arc<SubagentContext>,
+}
+
+impl SubagentHost {
+    pub fn new(inner: Arc<dyn ToolHost>, ctx: Arc<SubagentContext>) -> Self {
+        Self { inner, ctx }
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolHost for SubagentHost {
+    async fn list_tools(&self) -> Result<Vec<ToolSpec>> {
+        let mut tools = self.inner.list_tools().await?;
+        if !tools.iter().any(|t| t.name == "subagent") {
+            tools.push(spec());
+        }
+        Ok(tools)
+    }
+
+    async fn call(&self, name: &str, args: serde_json::Value) -> Result<ToolCallOutcome> {
+        if name == "subagent" {
+            return run(&self.ctx, args).await;
+        }
+        self.inner.call(name, args).await
+    }
 }
 
 #[cfg(test)]
@@ -672,5 +775,181 @@ mod tests {
                 zone.content
             );
         }
+    }
+
+    /// 假 provider：不碰网络，回一句正文就结束（`EndTurn` → 一轮即完）。用它跑
+    /// **真** `run()` 路径，才能把并发准入这段真代码测到，而不是另写一份判据。
+    struct GatedTextProvider {
+        /// child 一进 `complete` 就报一声——测试据此知道「这一批真的同时在飞」。
+        started: tokio::sync::mpsc::UnboundedSender<()>,
+        /// 闸门（0 个许可起步）：child 全卡在这儿，直到测试收齐 3 声才放行。
+        /// 卡住是**故意**的：不卡，第一个 child 会先跑完、把名额还回去，
+        /// 于是「并发」退化成「轮流」，旧实现（把并发当嵌套）也能蒙对。
+        gate: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for GatedTextProvider {
+        async fn complete(
+            &self,
+            _req: hermes_core::CompletionRequest,
+        ) -> hermes_core::Result<hermes_core::CompletionResponse> {
+            let _ = self.started.send(());
+            let _permit = self
+                .gate
+                .acquire()
+                .await
+                .map_err(|e| hermes_core::Error::Provider(format!("test gate closed: {e}")))?;
+            Ok(hermes_core::CompletionResponse {
+                content: vec![ContentBlock::Text {
+                    text: "child ok".into(),
+                }],
+                stop_reason: hermes_core::StopReason::EndTurn,
+                usage: hermes_core::Usage::default(),
+                truncated_tool_ids: Vec::new(),
+            })
+        }
+
+        fn capabilities(&self) -> hermes_core::Capabilities {
+            hermes_core::Capabilities {
+                tool_use: true,
+                prompt_caching: false,
+                streaming: false,
+            }
+        }
+
+        fn name(&self) -> &str {
+            "gated-text"
+        }
+    }
+
+    /// 并发扇出（2026-09-20 修的真问题）：引擎把**同一条回复里的所有工具调用**
+    /// 一次性 `join_all`（`hermes-turn` 的 safe_calls），所以父一轮派 3 个
+    /// `subagent` 是三个同时进来的调用。旧实现把 `depth` 既当嵌套深度又当并发计数，
+    /// 第一个 `fetch_add` 拿到 0 放行，第二个拿到 1 就撞上 `max_depth = 1`
+    /// ——「一条回复派 3 个子代理并行采集」里**只有 1 个能跑**，另外两个拿到
+    /// `is_error` 的拒收文案。这条钉住修复后的行为。
+    ///
+    /// 三个 child 必须**同时**在飞：闸门收到第 3 声开跑信号之前谁也不许结束。
+    /// 旧实现下第 2 个会在闸门开之前就返回拒收 —— 断言当场点出它。
+    #[tokio::test]
+    async fn three_children_launched_in_one_reply_all_run() {
+        let _root = crate::test_env::temp_data_root();
+        let dir = tempfile::tempdir().unwrap();
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let ctx = Arc::new(SubagentContext::new(
+            Arc::new(GatedTextProvider {
+                started: started_tx,
+                gate: gate.clone(),
+            }),
+            "test-model".into(),
+            1024,
+            4,
+            PermissionChecker::new(&[], &[]),
+            dir.path().to_path_buf(),
+            None,
+            MemoryView::Unscoped,
+            None,
+        ));
+
+        let mut children = tokio::task::JoinSet::new();
+        for board in 0..3 {
+            let ctx = ctx.clone();
+            children.spawn(async move {
+                run(
+                    &ctx,
+                    serde_json::json!({"system": "test", "prompt": format!("board {board}")}),
+                )
+                .await
+            });
+        }
+
+        let mut started = 0usize;
+        let mut gate_opened = false;
+        let mut done: Vec<ToolCallOutcome> = Vec::new();
+        while done.len() < 3 {
+            tokio::select! {
+                Some(()) = started_rx.recv() => {
+                    started += 1;
+                    if started == 3 {
+                        gate_opened = true;
+                        gate.add_permits(3);
+                    }
+                }
+                Some(joined) = children.join_next() => {
+                    let out = joined.expect("child 任务不该 panic");
+                    assert!(
+                        gate_opened,
+                        "只收到 {started} 个 child 开跑信号，就有一个结束了 —— 被并发闸拒了：{:?}",
+                        out.as_ref().map(|o| o.content.clone())
+                    );
+                    done.push(out.expect("run() 不该返回 Err"));
+                }
+            }
+        }
+
+        for (i, out) in done.iter().enumerate() {
+            let nth = i + 1;
+            assert!(
+                !out.is_error,
+                "第 {nth} 个 child 被拒收了（旧实现的 `depth 1 already at max 1`）：{}",
+                out.content
+            );
+            assert!(
+                !out.content.contains("refused"),
+                "第 {nth} 个 child 收到拒收文案：{}",
+                out.content
+            );
+            // 正面控制：真的跑了 child，而不是「三个都没报错但谁也没动」。
+            assert!(
+                out.content.contains("child ok"),
+                "第 {nth} 个 child 没跑出正文：{}",
+                out.content
+            );
+        }
+        assert_eq!(started, 3, "三个 child 都该真的进到 provider");
+    }
+
+    /// 名额账本：第 1..8 个放行、第 9 个被拒、有人跑完名额就还回来。
+    /// （8 这个数从哪来，见 `SubagentContext::max_concurrent` 的注释。）
+    #[test]
+    fn the_fan_out_cap_admits_eight_and_refuses_the_ninth() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = SubagentContext::new(
+            Arc::new(NeverCalledProvider),
+            "test-model".into(),
+            1024,
+            4,
+            PermissionChecker::new(&[], &[]),
+            dir.path().to_path_buf(),
+            None,
+            MemoryView::Unscoped,
+            None,
+        );
+
+        // 取值本身也钉住：旧值 1 正是「把并发当嵌套」那个 bug，改回小数字
+        // 之前得先把 `max_concurrent` 注释里那段理由推翻。
+        assert_eq!(ctx.max_concurrent, 8);
+
+        let mut held: Vec<InFlightGuard> = (0..DEFAULT_MAX_CONCURRENT)
+            .map(|n| try_admit(&ctx).unwrap_or_else(|| panic!("第 {} 个 child 该放行", n + 1)))
+            .collect();
+        assert_eq!(ctx.in_flight.load(Ordering::SeqCst), DEFAULT_MAX_CONCURRENT);
+        assert!(
+            try_admit(&ctx).is_none(),
+            "第 {} 个必须被拒（同时最多 {} 个）",
+            DEFAULT_MAX_CONCURRENT + 1,
+            DEFAULT_MAX_CONCURRENT
+        );
+        assert_eq!(
+            ctx.in_flight.load(Ordering::SeqCst),
+            DEFAULT_MAX_CONCURRENT,
+            "被拒的那次不许把名额留住"
+        );
+
+        let finished = held.pop().expect("前面占了名额");
+        drop(finished);
+        assert!(try_admit(&ctx).is_some(), "有人跑完，名额必须还回来");
     }
 }

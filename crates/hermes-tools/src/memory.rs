@@ -5,7 +5,7 @@ use hermes_core::{Result, ToolCallOutcome, ToolSpec};
 use hermes_memory::{
     distill::{find_clusters, DEFAULT_THRESHOLD},
     load_effectiveness, resolve_owner, Confidence, MemoryFrontmatter, MemoryStore,
-    MemoryStoreError, OwnerDefault, Scope, Source, DEFAULT_DEDUP_THRESHOLD,
+    MemoryStoreError, OwnerDefault, Scope, Source,
 };
 use serde::Deserialize;
 
@@ -219,52 +219,38 @@ pub async fn save_run(
     // members of a merged cluster).
     fm.supersedes = a.supersedes;
 
-    // Plain saves (no supersedes) reject near-duplicates of active memories.
-    // Intentional replace/merge via supersedes skips the gate so distill and
-    // conflict resolution can write the survivor body.
-    if fm.supersedes.is_empty() {
-        match store.check_near_duplicate(&a.content, DEFAULT_DEDUP_THRESHOLD) {
-            Ok(()) => {}
-            Err(MemoryStoreError::Conflict {
-                existing_id,
-                similarity,
-            }) => {
-                // 查重看的是**全库**（`ScopedMemoryStore` 有意透传，见 scoped.rs）：
-                // 命中的那条可能是本视图看不见的别人的记忆。id 与相似度都是「它存在」
-                // 的探针，所以看不见时只回一句通用的拒绝，不留任何线索。
-                let visible = store
-                    .get(&existing_id)
-                    .map_err(|e| hermes_core::Error::ToolHost(format!("memory_save: {e}")))?
-                    .is_some();
-                return Ok(ToolCallOutcome {
-                    content: if visible {
-                        format!(
-                            "memory_save refused: too similar to existing memory {existing_id} \
-                             (similarity {similarity:.2}). Use memory_search to review it, or \
-                             call memory_save with supersedes=[\"{existing_id}\"] to replace it."
-                        )
-                    } else {
-                        "memory_save refused: too similar to an existing memory. \
-                         Try rephrasing."
-                            .to_string()
-                    },
-                    is_error: true,
-                });
-            }
-            Err(e) => {
-                return Ok(ToolCallOutcome {
-                    content: format!("memory_save failed (dedup check): {e}"),
-                    is_error: true,
-                });
-            }
-        }
-    }
-
+    // 查重由 `put` 自己把关（P1-4）——这里只负责把 `Conflict` 翻译成模型看得懂的话。
     match store.put(Scope::User, fm, &a.content) {
         Ok(path) => Ok(ToolCallOutcome {
             content: format!("Saved memory {id} → {}", path.display()),
             is_error: false,
         }),
+        Err(MemoryStoreError::Conflict {
+            existing_id,
+            similarity,
+        }) => {
+            // 查重看的是**全库**（`ScopedMemoryStore` 有意透传，见 scoped.rs）：
+            // 命中的那条可能是本视图看不见的别人的记忆。id 与相似度都是「它存在」
+            // 的探针，所以看不见时只回一句通用的拒绝，不留任何线索。
+            let visible = store
+                .get(&existing_id)
+                .map_err(|e| hermes_core::Error::ToolHost(format!("memory_save: {e}")))?
+                .is_some();
+            Ok(ToolCallOutcome {
+                content: if visible {
+                    format!(
+                        "memory_save refused: too similar to existing memory {existing_id} \
+                         (similarity {similarity:.2}). Use memory_search to review it, or \
+                         call memory_save with supersedes=[\"{existing_id}\"] to replace it."
+                    )
+                } else {
+                    "memory_save refused: too similar to an existing memory. \
+                     Try rephrasing."
+                        .to_string()
+                },
+                is_error: true,
+            })
+        }
         Err(e) => Ok(ToolCallOutcome {
             content: format!("memory_save failed: {e}"),
             is_error: true,
@@ -478,6 +464,14 @@ mod tests {
         (dir, store)
     }
 
+    /// 一个**显式关掉查重**的 store：只有「故意要造一堆近似条目」的测试才该用它
+    /// （例如蒸馏的聚类检测 —— 它的输入就是近重复）。生产写入永远走带闸门的 store。
+    fn fresh_store_without_dedup() -> (tempfile::TempDir, FsMemoryStore) {
+        let dir = tempdir().unwrap();
+        let store = FsMemoryStore::new(dir.path().to_path_buf(), None).with_dedup_threshold(0.0);
+        (dir, store)
+    }
+
     /// `handles` 与 `dispatch` 的分派臂是同文件里的两张名单，会漂移：名字进了
     /// `handles` 却没进 `dispatch` → 调用方拿到 `None`，最后报「unknown memory
     /// tool」。这条测试把两张名单钉在一起。
@@ -524,7 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn distill_run_reports_a_cluster_for_near_duplicates() {
-        let (_dir, store) = fresh_store();
+        let (_dir, store) = fresh_store_without_dedup();
         // Two near-duplicates + one unrelated.
         let m1 = MemoryFrontmatter::new(Source::User, Confidence::Medium, vec![], "general".into());
         let id1 = m1.id.clone();
@@ -565,7 +559,7 @@ mod tests {
 
     #[tokio::test]
     async fn distill_run_flags_protected_clusters() {
-        let (_dir, store) = fresh_store();
+        let (_dir, store) = fresh_store_without_dedup();
         let m1 = MemoryFrontmatter::new(Source::User, Confidence::Medium, vec![], "core".into());
         store
             .put(

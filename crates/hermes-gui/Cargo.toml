@@ -43,9 +43,14 @@ tauri-plugin-dialog = "2.7.2"
 serde_yaml = { workspace = true }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# 链接要能点开系统浏览器（WebView 里 <a> 自己不会开）。
+tauri-plugin-opener = "2"
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "fast"] }
 
 [dev-dependencies]
 tempfile = "3"
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "fast", "rand_core"] }
+rand = "0.8"
 
 [lints]
 workspace = true

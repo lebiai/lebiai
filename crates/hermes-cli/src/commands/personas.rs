@@ -54,15 +54,15 @@ mod tests {
     fn an_unknown_persona_is_refused_with_the_valid_list() {
         let err = resolve_persona(Some("nobody")).unwrap_err();
         assert!(err.contains("nobody"));
-        assert!(err.contains("xiao-xie"), "报错要给出可用 id：{err}");
+        assert!(err.contains("sao-di-seng"), "报错要给出可用 id：{err}");
     }
 
     #[test]
     fn no_persona_means_the_todays_behaviour() {
         assert!(resolve_persona(None).unwrap().is_none());
         assert_eq!(
-            resolve_persona(Some("xiao-xie")).unwrap().unwrap().id,
-            "xiao-xie"
+            resolve_persona(Some("sao-di-seng")).unwrap().unwrap().id,
+            "sao-di-seng"
         );
     }
 
@@ -72,6 +72,6 @@ mod tests {
         assert!(lines
             .iter()
             .any(|l| l.contains("li-xian") && l.contains("自带")));
-        assert!(lines.iter().any(|l| l.contains("xiao-xie")));
+        assert!(lines.iter().any(|l| l.contains("sao-di-seng")));
     }
 }

@@ -22,7 +22,9 @@ use crate::memory;
 pub struct PersonaToolHost {
     inner: Arc<dyn ToolHost>,
     store: Option<Arc<dyn MemoryStore>>,
-    owner: Option<String>,
+    /// 这个视图看得见的那几个归属（第一个 = 本会话自己）。空 = 无人物 / 自带角色。
+    /// 组会话有两个：本项目组 + 这一轮说话的人（`docs/spec/projects.md` §4.2）。
+    owners: Vec<String>,
 }
 
 impl PersonaToolHost {
@@ -37,11 +39,26 @@ impl PersonaToolHost {
         store: Option<Arc<dyn MemoryStore>>,
         owner: Option<String>,
     ) -> Self {
+        Self::with_owners(inner, store, owner.into_iter().collect())
+    }
+
+    /// 一组归属（组会话：本项目组 + 这一轮说话的人）。顺序有意义：**第一个是本会话
+    /// 自己**——写入归属判不出来时会夹到它身上（组夹回组，§4.2「判不准归组」）。
+    pub fn with_owners(
+        inner: Arc<dyn ToolHost>,
+        store: Option<Arc<dyn MemoryStore>>,
+        owners: Vec<String>,
+    ) -> Self {
         Self {
             inner,
             store,
-            owner,
+            owners,
         }
+    }
+
+    /// 本会话自己（`resolve_owner` 的 `session_owner`）。空 = 全局。
+    fn session_owner(&self) -> Option<&str> {
+        self.owners.first().map(String::as_str)
     }
 }
 
@@ -55,8 +72,8 @@ impl ToolHost for PersonaToolHost {
         if let Some(store) = self.store.as_ref().filter(|_| memory::handles(name)) {
             // 读面：过滤在 `ScopedMemoryStore` 内；写面：`self.owner` 是归属判断的
             // 输入，判定本身仍只在 `resolve_owner` 一处。
-            let scoped = ScopedMemoryStore::new(store.clone(), self.owner.clone());
-            return memory::dispatch(&scoped, name, args, self.owner.as_deref())
+            let scoped = ScopedMemoryStore::with_owners(store.clone(), self.owners.clone());
+            return memory::dispatch(&scoped, name, args, self.session_owner())
                 .await
                 .unwrap_or_else(|| Err(Error::ToolHost(format!("unknown memory tool: {name}"))));
         }

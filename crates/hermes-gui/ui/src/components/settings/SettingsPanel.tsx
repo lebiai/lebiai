@@ -555,7 +555,7 @@ export function SettingsPanel() {
                     {t("settings.greetTitle", { name: greetName })}
                   </p>
                   <p className="text-xs text-app-fg-secondary">{t(greetKey)}</p>
-                  <p className="text-[11px] text-app-fg-tertiary mt-1">
+                  <p className="text-app-sub text-app-fg-secondary mt-1">
                     {t("settings.currentModel")}: {providerLabel ?? "—"}
                   </p>
                 </div>
@@ -658,7 +658,7 @@ export function SettingsPanel() {
             <p className="text-xs text-app-fg-tertiary leading-relaxed">
               {t("settings.providerHint")}
             </p>
-            <p className="text-[11px] text-app-fg-tertiary">{t("settings.savePolicyHint")}</p>
+            <p className="text-app-sub text-app-fg-secondary">{t("settings.savePolicyHint")}</p>
 
             <SelectField
               label={t("settings.providerSelect")}
@@ -748,7 +748,7 @@ export function SettingsPanel() {
                 />
                 {t("settings.advanced")}
               </button>
-              <p className="text-[11px] text-app-fg-tertiary mt-1">
+              <p className="text-app-sub text-app-fg-secondary mt-1">
                 {t("settings.modelAdvancedHint")}
               </p>
               {modelAdvancedOpen && (
@@ -870,7 +870,7 @@ export function SettingsPanel() {
         {/* ── 更多 ─────────────────────────────────────────────── */}
         {tab === "more" && (
           <div className="space-y-3 fade-up-in">
-            <p className="text-[11px] text-app-fg-tertiary">{t("settings.savePolicyHint")}</p>
+            <p className="text-app-sub text-app-fg-secondary">{t("settings.savePolicyHint")}</p>
 
             <Accordion
               title={t("settings.sectionLicense")}
@@ -986,7 +986,7 @@ export function SettingsPanel() {
                   onChange={(v) => update("contextModelLimit", v)}
                   type="number"
                 />
-                <p className="text-[11px] text-app-fg-tertiary">
+                <p className="text-app-sub text-app-fg-secondary">
                   {t("settings.permissionHelp")}
                 </p>
                 <PermList
@@ -1013,7 +1013,7 @@ export function SettingsPanel() {
             >
               <div className="space-y-2 p-1">
                 <ReadOnlyField label={t("settings.root")} value={config.workspaceRoot} />
-                <p className="text-[11px] text-app-fg-tertiary">
+                <p className="text-app-sub text-app-fg-secondary">
                   {t("settings.workspaceHelp")}
                 </p>
               </div>
@@ -1158,7 +1158,7 @@ function PersonaSection() {
           <span className="min-w-0">
             <span className="font-medium">{p.name}</span>
             {p.builtin && (
-              <span className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded bg-app-muted dark:bg-slate-800 text-app-fg-tertiary">
+              <span className="ml-1.5 text-xs font-medium px-1.5 py-0.5 rounded bg-app-muted dark:bg-slate-800 text-app-fg-tertiary">
                 {t("persona.builtinBadge")}
               </span>
             )}
@@ -1214,7 +1214,7 @@ function SettingsRow({
     <div className="space-y-1.5">
       <label className="block text-xs text-app-fg-secondary">{label}</label>
       {children}
-      {hint && <p className="text-[11px] text-app-fg-tertiary">{hint}</p>}
+      {hint && <p className="text-app-sub text-app-fg-secondary">{hint}</p>}
     </div>
   );
 }
@@ -1288,7 +1288,7 @@ function PermList({
           {items.map((item) => (
             <li
               key={item}
-              className="flex items-center gap-2 text-[12px] font-mono text-app-fg"
+              className="flex items-center gap-2 text-xs font-mono text-app-fg"
             >
               <span className="flex-1 min-w-0 truncate">{item}</span>
               <button

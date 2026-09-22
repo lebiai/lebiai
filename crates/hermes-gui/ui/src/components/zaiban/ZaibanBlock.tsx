@@ -110,10 +110,10 @@ export function ZaibanBlock() {
   return (
     <div className="px-5 pt-1 pb-5 shrink-0">
       <div className="flex items-center gap-1 px-0.5 mb-2">
-        <span className="text-[13px] text-app-fg-secondary">{t("zaiban.drawerLead")}</span>
+        <span className="text-app-sub text-app-fg-secondary">{t("zaiban.drawerLead")}</span>
         <button
           type="button"
-          className="ml-auto text-[12px] font-medium text-app-primary hover:opacity-80 px-1.5 py-0.5 rounded-md"
+          className="ml-auto text-xs font-medium text-app-primary hover:opacity-80 px-1.5 py-0.5 rounded-md"
           onClick={() => {
             setAdding((v) => !v);
             setNear(null);
@@ -124,12 +124,12 @@ export function ZaibanBlock() {
       </div>
 
       {error && (
-        <p className="px-1 text-[11px] text-app-fg-tertiary">{t("zaiban.loadError")}</p>
+        <p className="px-1 text-app-sub text-app-fg-secondary">{t("zaiban.loadError")}</p>
       )}
 
       {list && !error && suggested.length === 0 && owed.length === 0 && !adding && (
         <div className="px-0.5 space-y-2">
-          <p className="text-[13px] text-app-fg-tertiary leading-relaxed">{t("zaiban.empty")}</p>
+          <p className="text-app-sub text-app-fg-secondary leading-relaxed">{t("zaiban.empty")}</p>
           <DueChips
             value={due}
             onChange={(v) => {
@@ -162,7 +162,7 @@ export function ZaibanBlock() {
           />
           <DueChips value={due} onChange={setDue} />
           {near && (
-            <div className="text-[11px] text-app-fg-secondary leading-snug">
+            <div className="text-app-sub text-app-fg-secondary leading-snug">
               {t("zaiban.mergeAsk", { title: near.title })}
               <div className="mt-1 flex gap-2">
                 <button
@@ -182,7 +182,7 @@ export function ZaibanBlock() {
       )}
 
       {suggested.map((item) => (
-        <div key={item.id} className="px-0.5 py-2 space-y-1.5 text-[12px] text-app-fg-secondary">
+        <div key={item.id} className="px-0.5 py-2 space-y-1.5 text-xs text-app-fg-secondary">
           <p className="leading-snug opacity-80">{item.title}</p>
           <DueChips
             value={acceptDue[item.id] ?? item.softDue ?? ""}
@@ -232,20 +232,20 @@ export function ZaibanBlock() {
             } ${editing ? "bg-app-muted/40 dark:bg-slate-800/40" : "bg-app-surface dark:bg-slate-900"}`}
           >
             <button type="button" className="w-full text-left" onClick={() => start(item)}>
-              <span className="block text-[14px] leading-snug text-app-fg dark:text-slate-100">
+              <span className="block text-sm leading-snug text-app-fg dark:text-slate-100">
                 {item.status === "waiting" && (
                   <span className="text-app-fg-tertiary mr-1">{t("zaiban.waiting")}</span>
                 )}
                 {item.title}
               </span>
               {item.status === "waiting" && item.note && (
-                <span className="block text-[12px] mt-1 text-app-fg-tertiary">
+                <span className="block text-xs mt-1 text-app-fg-tertiary">
                   {t("zaiban.waiting")} · {item.note}
                 </span>
               )}
               {label && (
                 <span
-                  className={`block text-[12px] mt-1 ${
+                  className={`block text-xs mt-1 ${
                     item.overdue
                       ? "text-amber-700 dark:text-amber-400"
                       : item.dueToday
@@ -298,12 +298,12 @@ export function ZaibanBlock() {
                   value={editTitle}
                   autoFocus
                   onChange={(e) => setEditTitle(e.target.value)}
-                  className="w-full px-2 py-1.5 text-[13px] rounded-lg border border-app-border dark:border-slate-700 bg-app-bg dark:bg-slate-950 text-app-fg select-text"
+                  className="w-full px-2 py-1.5 text-app-sub rounded-lg border border-app-border dark:border-slate-700 bg-app-bg dark:bg-slate-950 text-app-fg select-text"
                 />
                 <DueChips value={editDue} onChange={setEditDue} />
                 <button
                   type="button"
-                  className="text-[13px] font-medium text-app-primary"
+                  className="text-app-sub font-medium text-app-primary"
                   onClick={() =>
                     void act(async () => {
                       if (editTitle.trim() && editTitle.trim() !== item.title) {
@@ -334,7 +334,7 @@ export function ZaibanBlock() {
                   {t("zaiban.saveEdit")}
                 </button>
                 <div className="space-y-1.5">
-                  <div className="text-[11px] text-app-fg-tertiary">{t("zaiban.wait")}</div>
+                  <div className="text-app-sub text-app-fg-secondary">{t("zaiban.wait")}</div>
                   {item.status === "waiting" ? (
                     <RowBtn
                       onClick={() =>
@@ -360,7 +360,7 @@ export function ZaibanBlock() {
                         value={waitNote}
                         onChange={(e) => setWaitNote(e.target.value)}
                         placeholder={t("zaiban.waitHint")}
-                        className="flex-1 min-w-0 px-2 py-1.5 text-[13px] rounded-lg border border-app-border dark:border-slate-700 bg-app-bg dark:bg-slate-950 text-app-fg select-text"
+                        className="flex-1 min-w-0 px-2 py-1.5 text-app-sub rounded-lg border border-app-border dark:border-slate-700 bg-app-bg dark:bg-slate-950 text-app-fg select-text"
                       />
                       <RowBtn
                         onClick={() => {
@@ -390,13 +390,13 @@ export function ZaibanBlock() {
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  <div className="text-[11px] text-app-fg-tertiary">{t("zaiban.split")}</div>
+                  <div className="text-app-sub text-app-fg-secondary">{t("zaiban.split")}</div>
                   <textarea
                     value={splitText}
                     onChange={(e) => setSplitText(e.target.value)}
                     placeholder={t("zaiban.splitHint")}
                     rows={2}
-                    className="w-full px-2 py-1.5 text-[13px] rounded-lg border border-app-border dark:border-slate-700 bg-app-bg dark:bg-slate-950 text-app-fg select-text"
+                    className="w-full px-2 py-1.5 text-app-sub rounded-lg border border-app-border dark:border-slate-700 bg-app-bg dark:bg-slate-950 text-app-fg select-text"
                   />
                   <RowBtn
                     onClick={() => {
@@ -424,7 +424,7 @@ export function ZaibanBlock() {
             {item.sessionId && (
               <button
                 type="button"
-                className="mt-2 text-[11px] text-app-fg-tertiary hover:text-app-fg-secondary"
+                className="mt-2 text-app-sub text-app-fg-secondary hover:text-app-fg-secondary"
                 onClick={() => void openSource(item.sessionId)}
               >
                 {t("zaiban.source")}
@@ -435,18 +435,18 @@ export function ZaibanBlock() {
       })}
 
       {list?.crowded && (
-        <p className="px-1 text-[10px] text-amber-700 dark:text-amber-400">{t("zaiban.crowded")}</p>
+        <p className="px-1 text-app-sub text-amber-700 dark:text-amber-400">{t("zaiban.crowded")}</p>
       )}
       {recentDone.length > 0 && (
         <details className="mt-4 px-0.5">
-          <summary className="text-[11px] text-app-fg-tertiary cursor-pointer select-none">
+          <summary className="text-app-sub text-app-fg-secondary cursor-pointer select-none">
             {t("zaiban.recentDone")}
           </summary>
           <ul className="mt-2 space-y-1.5">
             {recentDone.map((item) => (
               <li
                 key={item.id}
-                className="text-[12px] text-app-fg-tertiary line-through decoration-app-border"
+                className="text-xs text-app-fg-tertiary line-through decoration-app-border"
               >
                 {item.title}
               </li>
@@ -474,7 +474,7 @@ function RowBtn({
         e.stopPropagation();
         onClick();
       }}
-      className={`px-2.5 py-1 rounded-lg text-[12px] border ${
+      className={`px-2.5 py-1 rounded-lg text-xs border ${
         danger
           ? "border-app-danger/40 text-app-danger"
           : "border-app-border dark:border-slate-700 text-app-fg-secondary hover:text-app-fg hover:border-app-fg/20"

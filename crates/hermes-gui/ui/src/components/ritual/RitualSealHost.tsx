@@ -49,7 +49,7 @@ export function RitualSealHost() {
             {payload.label}
           </p>
           {payload.first && (
-            <p className="text-[11px] text-center text-white/90 dark:text-violet-100/90 max-w-[16rem] leading-relaxed bg-slate-900/50 dark:bg-black/40 px-3 py-1.5 rounded-lg mt-1">
+            <p className="text-app-sub text-center text-white/90 dark:text-violet-100/90 max-w-[16rem] leading-relaxed bg-slate-900/50 dark:bg-black/40 px-3 py-1.5 rounded-lg mt-1">
               {t("ritual.firstSealHint")}
             </p>
           )}

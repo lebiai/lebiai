@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Info, X, XCircle } from "lucide-react";
+import { CheckCircle2, Info, X } from "lucide-react";
+import { useUiStore } from "../../store/uiStore";
 import {
   subscribeToasts,
   dismissToast,
@@ -9,7 +10,9 @@ import {
 
 function styles(variant: ToastVariant): string {
   if (variant === "error") {
-    return "bg-red-600 text-white border-red-700/80";
+    // 错误不用红底红叉：满屏红叉读起来像「处处都坏了」。深色底 + 一道玫红边
+    // + 一个「没成」的字样，说的是同一件事，但不吓人。
+    return "bg-slate-800 text-white border-slate-900 border-l-4 border-l-rose-400 dark:bg-slate-700 dark:border-slate-600 dark:border-l-rose-400";
   }
   if (variant === "success") {
     return "bg-emerald-600 text-white border-emerald-700/80";
@@ -17,14 +20,19 @@ function styles(variant: ToastVariant): string {
   return "bg-slate-800 text-white border-slate-900 dark:bg-slate-700 dark:border-slate-600";
 }
 
-function Icon({ variant }: { variant: ToastVariant }) {
-  if (variant === "error") return <XCircle size={16} className="shrink-0 mt-0.5" />;
+function Marker({ variant, label }: { variant: ToastVariant; label: string }) {
+  if (variant === "error") {
+    return (
+      <span className="shrink-0 mt-0.5 text-xs font-semibold text-rose-300">{label}</span>
+    );
+  }
   if (variant === "success") return <CheckCircle2 size={16} className="shrink-0 mt-0.5" />;
   return <Info size={16} className="shrink-0 mt-0.5" />;
 }
 
 /** Global toast host — mount once in App. */
 export function ToastHost() {
+  const t = useUiStore((s) => s.t);
   const [items, setItems] = useState<ToastItem[]>([]);
 
   useEffect(() => subscribeToasts(setItems), []);
@@ -44,7 +52,7 @@ export function ToastHost() {
           role="status"
           aria-live={item.variant === "error" ? "assertive" : "polite"}
         >
-          <Icon variant={item.variant} />
+          <Marker variant={item.variant} label={t("toast.failed")} />
           <span className="flex-1 break-words whitespace-pre-wrap">{item.message}</span>
           {item.action ? (
             <button
