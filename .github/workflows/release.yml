@@ -64,7 +64,24 @@ jobs:
           TAURI_TARGET: universal-apple-darwin
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: scripts/build-dmg.sh
+        # 这个仓库的 job 日志下载接口要 admin 权限，跑挂了在界面上只剩「exit code 1」。
+        # 所以日志落盘，失败时把尾部转成 annotation 抛出来 —— annotation 能通过 API 读到。
+        run: |
+          LOG="$RUNNER_TEMP/dmg-build.log"
+          set +e
+          scripts/build-dmg.sh 2>&1 | tee "$LOG"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [ "$code" -ne 0 ]; then
+            echo "::error::scripts/build-dmg.sh exit=$code"
+            tail -n 30 "$LOG" | tr -d '\r' | while IFS= read -r line; do
+              echo "::error::${line:0:900}"
+            done
+            df -h / "$RUNNER_TEMP" | while IFS= read -r line; do
+              echo "::warning::disk ${line:0:900}"
+            done
+            exit "$code"
+          fi
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
