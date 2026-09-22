@@ -91,6 +91,59 @@ mv "$SITE_DIR" "$OUT/site-packages"
 # builder's home directory out of the bundle.
 rm -rf "$OUT/venv"
 
+# ── Canonicalise：bundle 里不许留符号链接（尤其别指向构建机） ──────────────
+# `cp -R` 会把解释器前缀里的链接原样搬进来。Homebrew 的 python 前缀里
+# `lib/python3.x/site-packages` 就是一条 —— 在别的机器上是**悬空**的；
+# tauri 打包时按 glob 逐个校验资源，撞上悬空链接就报
+# `resource path ... doesn't exist`，把整轮构建打死（2026-09-22 CI 上连挂三轮）。
+# 所以：能解析的链接落成实体文件，悬空的直接删掉（构建机残渣，运行时用不到 ——
+# wrapper 只认 `$OUT/python/bin/python3.*` 与 `$OUT/site-packages`）。
+# 验收标准写在这里：规范化之后 `$OUT` 里不该再有任何符号链接。
+python3 - "$OUT" <<'CANON'
+import os
+import pathlib
+import shutil
+import sys
+
+
+def symlinks(root):
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in list(dirnames) + list(filenames):
+            p = pathlib.Path(dirpath) / name
+            if p.is_symlink():
+                yield p
+
+
+def main(root):
+    dropped = 0
+    for p in list(symlinks(root)):
+        if not p.exists():
+            p.unlink()
+            dropped += 1
+
+    dereferenced = 0
+    for p in sorted(symlinks(root), key=lambda q: len(q.parts), reverse=True):
+        real = p.resolve()
+        p.unlink()
+        if real.is_dir():
+            shutil.copytree(real, p, symlinks=False, ignore_dangling_symlinks=True)
+        else:
+            shutil.copy2(real, p)
+        dereferenced += 1
+
+    left = list(symlinks(root))
+    print(
+        f"==> canonicalised: dereferenced={dereferenced} "
+        f"dropped-dangling={dropped} left={len(left)}"
+    )
+    for p in left[:10]:
+        print(f"    leftover symlink: {p} -> {os.readlink(p)}", file=sys.stderr)
+    return 1 if left else 0
+
+
+sys.exit(main(pathlib.Path(sys.argv[1])))
+CANON
+
 # Relocatable wrapper — never rely on an absolute shebang.
 cat > "$OUT/markitdown" <<'EOF'
 #!/usr/bin/env bash
